@@ -122,6 +122,7 @@ model Organization {
 
   members      OrganizationMember[]
   cases        Case[]
+  emails       Email[]
   auditLogs    AuditLog[]
   alerts       Alert[]
   systemConfig SystemSetting[]
@@ -305,6 +306,7 @@ model InvestigationNote {
 
 model Email {
   id             String              @id @default(uuid())
+  organizationId String
   caseId         String?
   messageId      String?
   subject        String?             @db.Text
@@ -314,12 +316,14 @@ model Email {
   date           DateTime?
   ingestionSrc   String              @default("UPLOAD") // UPLOAD, GMAIL_API, etc.
   rawStorageKey  String? // Path in object storage
+  sha256         String              // Added for deduplication
   classification EmailClassification @default(UNKNOWN)
   riskScore      Float?
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
   case            Case?                 @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   headers         EmailHeader[]
   relayHops       RelayHop[]
   attachments     EmailAttachment[]
@@ -329,6 +333,8 @@ model Email {
   riskAssessments RiskAssessment[]
   campaigns       CampaignEmail[]
 
+  @@unique([organizationId, sha256])
+  @@index([organizationId])
   @@index([messageId])
   @@index([senderAddress])
   @@index([caseId])

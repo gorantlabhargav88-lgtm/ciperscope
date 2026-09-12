@@ -1,0 +1,88 @@
+import { FastifyInstance } from 'fastify';
+import { EmailIngestionService } from './ingestion.service';
+import { prisma } from '@ciperscope/database';
+import { LocalRawEmailStore } from '@ciperscope/storage';
+import { QueueManager, IdempotencyManager, createRedisConnection } from '@ciperscope/queue';
+import { env } from '@ciperscope/config';
+import { getRequestContext } from '@ciperscope/logger';
+
+export default async function emailRoutes(server: FastifyInstance) {
+  // Setup dependencies for the route
+  const storage = new LocalRawEmailStore(); // In production, this would be dependency injected
+  const redisConnection = createRedisConnection(env.REDIS_URL || 'redis://127.0.0.1:6379');
+  const queueManager = new QueueManager(env.REDIS_URL || 'redis://127.0.0.1:6379');
+  const idempotencyManager = new IdempotencyManager(redisConnection, prisma);
+  
+  const ingestionService = new EmailIngestionService(prisma, storage, idempotencyManager, queueManager);
+
+  // Close connections when Fastify closes
+  server.addHook('onClose', async () => {
+    await queueManager.closeAll();
+    redisConnection.disconnect();
+  });
+
+  server.post('/ingest', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_INGEST')]
+  }, async (request, reply) => {
+    // 1. Verify organization context (tenant isolation)
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    // 2. Validate Multipart
+    const data = await request.file({
+      limits: {
+        fileSize: 30 * 1024 * 1024, // 30 MB limit
+      }
+    });
+
+    if (!data) {
+      return reply.status(400).send({ error: 'Bad Request', message: 'No file uploaded' });
+    }
+
+    data.file.on('limit', () => {
+      data.file.destroy(new Error('File size limit reached'));
+    });
+
+    // 3. Process ingestion securely
+    try {
+      const context = getRequestContext();
+      const result = await ingestionService.ingestFromStream(data.file, {
+        organizationId,
+        source: 'UPLOAD',
+        traceId: context?.traceId,
+        requestId: request.id as string,
+        userId: userId,
+      });
+
+      if (result.duplicate) {
+        return reply.status(200).send({
+          message: 'Duplicate email detected',
+          ...result
+        });
+      }
+
+      return reply.status(202).send({
+        message: 'Email ingested and queued for processing',
+        ...result
+      });
+    } catch (err: any) {
+      if (err.message.includes('Empty file')) {
+         return reply.status(400).send({ error: 'Bad Request', message: 'Empty file uploaded' });
+      }
+      if (err.message.includes('Concurrent ingestion detected')) {
+         return reply.status(409).send({ error: 'Conflict', message: err.message });
+      }
+      if (err.message === 'File size limit reached' || 
+          err instanceof server.multipartErrors.FilesLimitError || 
+          err instanceof server.multipartErrors.FieldsLimitError || 
+          err instanceof server.multipartErrors.PartsLimitError || 
+          err instanceof server.multipartErrors.RequestFileTooLargeError) {
+          return reply.status(413).send({ error: 'Payload Too Large', message: 'Upload limits exceeded' });
+      }
+      throw err;
+    }
+  });
+}

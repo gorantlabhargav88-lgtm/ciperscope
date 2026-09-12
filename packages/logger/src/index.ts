@@ -71,3 +71,7 @@ export const runWithContext = <T>(
 ): T | Promise<T> => {
   return requestContextStorage.run(context, fn);
 };
+
+export const getRequestContext = (): RequestContext | undefined => {
+  return requestContextStorage.getStore();
+};

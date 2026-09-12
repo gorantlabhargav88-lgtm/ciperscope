@@ -263,6 +263,13 @@ export interface TenantAwareJobPayload {
   traceId?: string;
 }
 
+export interface EmailIngestionJobPayload extends TenantAwareJobPayload {
+  emailId: string;           // Maps to resourceId in TenantAwareJobPayload
+  storageReference: string;
+  rawSha256: string;
+  source: string;
+}
+
 export type ResourceValidator = (resourceId: string, organizationId: string) => Promise<boolean>;
 
 export const wrapTenantScopedProcessor = <T extends TenantAwareJobPayload, R>(

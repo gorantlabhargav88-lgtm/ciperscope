@@ -7,6 +7,8 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import { prisma } from '@ciperscope/database';
 import authRoutes from './modules/auth/auth.routes';
 import rbacPlugin from './plugins/rbac';
+import emailRoutes from './modules/email/email.routes';
+import fastifyMultipart from '@fastify/multipart';
 
 import { logger, loggerOptions, generateRequestId, runWithContext } from '@ciperscope/logger';
 import { env } from '@ciperscope/config';
@@ -76,6 +78,9 @@ server.register(fastifyCookie);
 // Register Custom RBAC/Auth Middleware
 server.register(rbacPlugin);
 
+// Register Multipart for File Uploads
+server.register(fastifyMultipart);
+
 // Health Check
 server.get('/health', async () => {
   return { status: 'ok', timestamp: new Date().toISOString() };
@@ -95,6 +100,7 @@ server.get('/readiness', async (request, reply) => {
 
 // Register API Modules
 server.register(authRoutes, { prefix: '/api/v1/auth' });
+server.register(emailRoutes, { prefix: '/api/v1/emails' });
 
 const start = async () => {
   try {

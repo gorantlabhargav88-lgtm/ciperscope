@@ -1,7 +1,39 @@
-import { Mail, Shield, FileText, Globe, Server, Link } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Mail, Shield, FileText, Globe, Server, Link, UploadCloud, Loader2 } from 'lucide-react';
 import { DemoModeBanner } from '../components/DemoModeBanner';
 
 export const EmailAnalysis = () => {
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<{message?: string, error?: string, duplicate?: boolean} | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setUploadResult(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const res = await fetch('http://localhost:3000/api/v1/emails/ingest', {
+        method: 'POST',
+        headers: {
+          // Dummy organization ID for UI
+          'x-organization-id': '00000000-0000-0000-0000-000000000000'
+        },
+        body: formData
+      });
+      const data = await res.json();
+      setUploadResult(res.ok ? data : { error: data.message || 'Upload failed' });
+    } catch (err: any) {
+      setUploadResult({ error: err.message });
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <DemoModeBanner />
@@ -14,7 +46,29 @@ export const EmailAnalysis = () => {
           </h1>
           <p className="text-slate-400 mt-1">Detailed forensics and threat analysis of the email artifact.</p>
         </div>
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-4">
+          <div className="flex flex-col items-end">
+            <input 
+               type="file" 
+               ref={fileInputRef} 
+               className="hidden" 
+               accept=".eml" 
+               onChange={handleFileUpload} 
+            />
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center transition-colors disabled:opacity-50"
+            >
+              {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <UploadCloud className="w-4 h-4 mr-2" />}
+              {uploading ? 'Ingesting...' : 'Ingest Raw Email'}
+            </button>
+            {uploadResult && (
+               <div className={`text-xs mt-2 ${uploadResult.error ? 'text-rose-400' : (uploadResult.duplicate ? 'text-amber-400' : 'text-emerald-400')}`}>
+                 {uploadResult.error || uploadResult.message}
+               </div>
+            )}
+          </div>
           <div className="text-right">
             <div className="text-sm font-medium text-slate-400">Risk Score</div>
             <div className="text-xl font-bold text-rose-500">89/100</div>
