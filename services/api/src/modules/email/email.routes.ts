@@ -68,14 +68,15 @@ export default async function emailRoutes(server: FastifyInstance) {
         message: 'Email ingested and queued for processing',
         ...result
       });
-    } catch (err: any) {
-      if (err.message.includes('Empty file')) {
+    } catch (err: unknown) {
+      const error = err as Error;
+      if (error.message.includes('Empty file')) {
          return reply.status(400).send({ error: 'Bad Request', message: 'Empty file uploaded' });
       }
-      if (err.message.includes('Concurrent ingestion detected')) {
-         return reply.status(409).send({ error: 'Conflict', message: err.message });
+      if (error.message.includes('Concurrent ingestion detected')) {
+         return reply.status(409).send({ error: 'Conflict', message: error.message });
       }
-      if (err.message === 'File size limit reached' || 
+      if (error.message === 'File size limit reached' || 
           err instanceof server.multipartErrors.FilesLimitError || 
           err instanceof server.multipartErrors.FieldsLimitError || 
           err instanceof server.multipartErrors.PartsLimitError || 
@@ -84,5 +85,109 @@ export default async function emailRoutes(server: FastifyInstance) {
       }
       throw err;
     }
+  });
+
+  // ==========================================
+  // Phase 8 Forensics Endpoints
+  // ==========================================
+
+  server.get('/:emailId/analysis', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+    
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({
+      where: { id: emailId, organizationId }
+    });
+
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    return reply.send({
+      id: email.id,
+      analysisStatus: email.analysisStatus || 'UNKNOWN',
+      classification: email.classification,
+      riskScore: email.riskScore,
+      createdAt: email.createdAt
+    });
+  });
+
+  server.get('/:emailId/headers', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+    
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    // Verify ownership
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const headers = await prisma.emailHeader.findMany({
+      where: { emailId },
+      orderBy: { index: 'asc' }
+    });
+
+    return reply.send({ headers });
+  });
+
+  server.get('/:emailId/received-hops', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+    
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    // Verify ownership
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const hops = await prisma.relayHop.findMany({
+      where: { emailId },
+      orderBy: { hopOrder: 'asc' }
+    });
+
+    return reply.send({ hops });
+  });
+
+  server.get('/:emailId/mime-parts', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+    
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    // Verify ownership
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    // Fetch all parts, they are usually minimal so flat array is fine, UI can reconstruct tree
+    const parts = await prisma.mimePart.findMany({
+      where: { emailId },
+      orderBy: { partIndex: 'asc' }
+    });
+
+    return reply.send({ mimeParts: parts });
   });
 }

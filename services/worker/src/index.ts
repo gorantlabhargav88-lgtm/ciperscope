@@ -4,6 +4,7 @@ import { prisma } from '@ciperscope/database';
 import { env } from '@ciperscope/config';
 import IORedis from 'ioredis';
 import { LocalRawEmailStore } from '@ciperscope/storage';
+import { EmailForensicParser } from './parser/EmailForensicParser';
 
 const redisUrl = env.REDIS_URL;
 
@@ -79,17 +80,84 @@ export async function start() {
                throw new Error(`Raw email object missing in storage: ${job.data.storageReference}`);
             }
 
-            // At this point in Phase 7, the ingestion pipeline has successfully stored the raw bytes,
-            // verified tenant ownership (via createTenantScopedWorker wrapper), and verified integrity.
-            // Further MIME parsing, threat analysis, and extraction are part of Phase 8.
+            // 4. Stream and parse the email
+            const rawStream = await rawEmailStore.get(job.data.storageReference);
+            const parsed = await EmailForensicParser.parse(rawStream);
 
-            // 4. Update ingestion state to READY_FOR_ANALYSIS
-            await prisma.email.update({
-              where: { id: job.data.resourceId },
-              data: {
-                // In Phase 7 we just mark it as successfully ingested
-                // (Assuming we had an ingestionStatus enum, but currently it's just classification=UNKNOWN)
+            // 5. Transactionally insert all forensic data
+            await prisma.$transaction(async (tx) => {
+              // Create headers
+              if (parsed.headers.length > 0) {
+                await tx.emailHeader.createMany({
+                  data: parsed.headers.map(h => ({
+                    emailId: job.data.resourceId,
+                    name: h.name,
+                    value: h.value,
+                    index: h.index
+                  }))
+                });
               }
+
+              // Create addresses
+              if (parsed.addresses.length > 0) {
+                await tx.emailAddress.createMany({
+                  data: parsed.addresses.map(a => ({
+                    emailId: job.data.resourceId,
+                    headerName: a.headerName,
+                    displayName: a.displayName,
+                    address: a.address,
+                    localPart: a.localPart,
+                    domain: a.domain,
+                    raw: a.raw
+                  }))
+                });
+              }
+
+              // Create relay hops
+              if (parsed.relayHops.length > 0) {
+                await tx.relayHop.createMany({
+                  data: parsed.relayHops.map(r => ({
+                    emailId: job.data.resourceId,
+                    hopOrder: r.hopOrder,
+                    receivingHost: r.receivingHost,
+                    sendingHost: r.sendingHost,
+                    fromHost: r.fromHost,
+                    byHost: r.byHost,
+                    protocol: r.protocol,
+                    parsedConfidence: r.parsedConfidence,
+                    sourceIp: r.sourceIp,
+                    hostname: r.hostname,
+                    timestamp: r.timestamp,
+                    receivedHeader: r.receivedHeader
+                  }))
+                });
+              }
+
+              // Create Mime Parts
+              if (parsed.mimeParts.length > 0) {
+                await tx.mimePart.createMany({
+                  data: parsed.mimeParts.map(m => ({
+                    emailId: job.data.resourceId,
+                    partIndex: m.partIndex,
+                    contentType: m.contentType,
+                    contentDisposition: m.contentDisposition,
+                    filename: m.filename,
+                    contentId: m.contentId,
+                    contentLocation: m.contentLocation,
+                    transferEncoding: m.transferEncoding,
+                    sizeBytes: m.sizeBytes,
+                    isAttachment: m.isAttachment
+                  }))
+                });
+              }
+
+              // Update Analysis Status
+              await tx.email.update({
+                where: { id: job.data.resourceId },
+                data: {
+                  analysisStatus: 'COMPLETED'
+                }
+              });
             });
 
             logger.info({ emailId: job.data.resourceId }, 'Email successfully ingested and validated');
@@ -108,6 +176,17 @@ export async function start() {
               job.data.resourceId,
               error instanceof Error ? error.message : 'Unknown error'
             );
+            
+            // Mark analysis as failed
+            try {
+              await prisma.email.update({
+                where: { id: job.data.resourceId },
+                data: { analysisStatus: 'FAILED' }
+              });
+            } catch (updateErr) {
+              logger.error({ err: updateErr }, 'Failed to update analysis status to FAILED');
+            }
+
             throw error;
           }
         }

@@ -2,14 +2,11 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import fastifyMultipart from '@fastify/multipart';
 import emailRoutes from '../email.routes';
-import { prisma, IdempotencyOperationStatus } from '@ciperscope/database';
-import { QueueManager, createRedisConnection, IdempotencyManager } from '@ciperscope/queue';
+import { prisma } from '@ciperscope/database';
+import { createRedisConnection } from '@ciperscope/queue';
 import { env } from '@ciperscope/config';
 import FormData from 'form-data';
-import fs from 'fs';
 import crypto from 'crypto';
-import path from 'path';
-import os from 'os';
 
 describe('Email Ingestion API (Integration)', () => {
   let server: FastifyInstance;
@@ -21,11 +18,11 @@ describe('Email Ingestion API (Integration)', () => {
     server.register(fastifyMultipart);
     
     // Mock Authentication and Authorization for tests
-    server.decorate('authenticate', async (request: any) => {
+    server.decorate('authenticate', async (request: { user: { sub: string } }) => {
       request.user = { sub: testUserId };
     });
-    server.decorate('requirePermission', (action: string) => {
-      return async (request: any) => {
+    server.decorate('requirePermission', () => {
+      return async (request: { headers: Record<string, string> }) => {
          // Mock RBAC logic. Use header for org
          if (!request.headers['x-organization-id']) {
            throw new Error('Tenant isolation failed');

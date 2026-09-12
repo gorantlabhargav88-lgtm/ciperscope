@@ -119,7 +119,7 @@ export class IdempotencyManager {
 
     const lockAcquired = await this.redis.set(redisKey, 'locked', 'EX', ttlSeconds, 'NX');
     if (!lockAcquired) {
-      return false; 
+      return false;
     }
 
     try {
@@ -152,7 +152,7 @@ export class IdempotencyManager {
         await this.redis.del(redisKey);
         return false;
       }
-      
+
       if (op.status === IdempotencyOperationStatus.RECONCILIATION_REQUIRED) {
         await this.redis.del(redisKey);
         throw new Error('Operation requires external reconciliation before retry.');
@@ -222,7 +222,7 @@ export class IdempotencyManager {
     const redisKey = `idempotency_lock:${organizationId}:${operationKey}:${resourceId}`;
     await this.redis.del(redisKey);
   }
-  
+
   public async markReconciliationRequired(
     organizationId: string,
     operationKey: string,
@@ -284,14 +284,14 @@ export const wrapTenantScopedProcessor = <T extends TenantAwareJobPayload, R>(
     if (!resourceId) {
       throw new Error('Tenant isolation failed: Missing resourceId in job payload.');
     }
-    
+
     if (resourceValidator) {
       const isAuthorized = await resourceValidator(resourceId, organizationId);
       if (!isAuthorized) {
         throw new Error(`Tenant isolation failed: Resource ${resourceId} does not belong to organization ${organizationId}`);
       }
     }
-    
+
     return processor(job);
   };
 };

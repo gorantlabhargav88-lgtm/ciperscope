@@ -109,6 +109,14 @@ enum AlertSeverity {
   CRITICAL
 }
 
+enum AnalysisState {
+  PENDING
+  PROCESSING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
 // ============================================================================
 // IDENTITY / ACCESS
 // ============================================================================
@@ -318,6 +326,7 @@ model Email {
   rawStorageKey  String? // Path in object storage
   sha256         String              // Added for deduplication
   classification EmailClassification @default(UNKNOWN)
+  analysisStatus AnalysisState       @default(PENDING)
   riskScore      Float?
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
@@ -325,7 +334,9 @@ model Email {
   case            Case?                 @relation(fields: [caseId], references: [id], onDelete: SetNull)
   organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   headers         EmailHeader[]
+  addresses       EmailAddress[]
   relayHops       RelayHop[]
+  mimeParts       MimePart[]
   attachments     EmailAttachment[]
   urls            EmailUrl[]
   authResults     AuthenticationResult?
@@ -345,6 +356,7 @@ model EmailHeader {
   emailId   String
   name      String
   value     String   @db.Text
+  index     Int      @default(0) // Preserves original header order
   createdAt DateTime @default(now())
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
@@ -356,6 +368,15 @@ model RelayHop {
   id             String    @id @default(uuid())
   emailId        String
   hopOrder       Int
+  
+  // Extracted fields
+  receivingHost  String?
+  sendingHost    String?
+  fromHost       String?
+  byHost         String?
+  protocol       String?
+  parsedConfidence Float?
+  
   sourceIp       String?
   hostname       String?
   timestamp      DateTime?
@@ -388,6 +409,45 @@ model EmailUrl {
   url       String   @db.Text
   domain    String?
   createdAt DateTime @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+}
+
+model MimePart {
+  id                 String   @id @default(uuid())
+  emailId            String
+  parentId           String?
+  partIndex          String   // e.g. "1", "1.1", "2"
+  contentType        String
+  contentDisposition String?
+  filename           String?
+  contentId          String?
+  contentLocation    String?
+  transferEncoding   String?
+  charset            String?
+  sizeBytes          Int?
+  isAttachment       Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  email    Email      @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  parent   MimePart?  @relation("MimePartHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children MimePart[] @relation("MimePartHierarchy")
+
+  @@index([emailId])
+}
+
+model EmailAddress {
+  id          String   @id @default(uuid())
+  emailId     String
+  headerName  String   // e.g. "From", "To", "Cc"
+  displayName String?
+  address     String?  // Normalized email address
+  localPart   String?
+  domain      String?
+  raw         String   @db.Text // Original unparsed value
+  createdAt   DateTime @default(now())
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 

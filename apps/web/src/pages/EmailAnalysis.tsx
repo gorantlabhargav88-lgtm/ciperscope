@@ -1,11 +1,18 @@
-import { useState, useRef } from 'react';
-import { Mail, Shield, FileText, Globe, Server, Link, UploadCloud, Loader2 } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { DemoModeBanner } from '../components/DemoModeBanner';
 
 export const EmailAnalysis = () => {
   const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<{message?: string, error?: string, duplicate?: boolean} | null>(null);
+  const [uploadResult, setUploadResult] = useState<{message?: string, error?: string, duplicate?: boolean, emailId?: string} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [analysis, setAnalysis] = useState<any>(null);
+  const [headers, setHeaders] = useState<any[]>([]);
+  const [hops, setHops] = useState<any[]>([]);
+  const [mimeParts, setMimeParts] = useState<any[]>([]);
+  
+  const organizationId = '00000000-0000-0000-0000-000000000000'; // dummy for UI
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -13,6 +20,11 @@ export const EmailAnalysis = () => {
 
     setUploading(true);
     setUploadResult(null);
+    setAnalysis(null);
+    setHeaders([]);
+    setHops([]);
+    setMimeParts([]);
+    
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -20,8 +32,7 @@ export const EmailAnalysis = () => {
       const res = await fetch('http://localhost:3000/api/v1/emails/ingest', {
         method: 'POST',
         headers: {
-          // Dummy organization ID for UI
-          'x-organization-id': '00000000-0000-0000-0000-000000000000'
+          'x-organization-id': organizationId
         },
         body: formData
       });
@@ -34,8 +45,52 @@ export const EmailAnalysis = () => {
     }
   };
 
+  useEffect(() => {
+    let interval: any;
+    if (uploadResult?.emailId) {
+      const fetchDetails = async () => {
+        try {
+          const res = await fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/analysis`, {
+            headers: { 'x-organization-id': organizationId }
+          });
+          const data = await res.json();
+          setAnalysis(data);
+
+          if (data.analysisStatus === 'COMPLETED') {
+            clearInterval(interval);
+            
+            // Fetch headers
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/headers`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setHeaders(d.headers || []));
+            
+            // Fetch hops
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/received-hops`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setHops(d.hops || []));
+            
+            // Fetch mime
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/mime-parts`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setMimeParts(d.mimeParts || []));
+          } else if (data.analysisStatus === 'FAILED') {
+            clearInterval(interval);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+
+      interval = setInterval(fetchDetails, 2000);
+      fetchDetails();
+    }
+    return () => clearInterval(interval);
+  }, [uploadResult?.emailId]);
+
+  const getHeader = (name: string) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-20">
       <DemoModeBanner />
       
       <div className="flex justify-between items-start">
@@ -69,104 +124,131 @@ export const EmailAnalysis = () => {
                </div>
             )}
           </div>
-          <div className="text-right">
-            <div className="text-sm font-medium text-slate-400">Risk Score</div>
-            <div className="text-xl font-bold text-rose-500">89/100</div>
-          </div>
-          <div className="h-10 w-10 rounded bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
-            <Shield className="w-5 h-5 text-rose-500" />
-          </div>
+          {analysis && (
+             <div className="text-right flex items-center gap-3">
+               <div className="text-sm font-medium text-slate-400">Status</div>
+               {analysis.analysisStatus === 'PROCESSING' || analysis.analysisStatus === 'PENDING' ? (
+                  <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+               ) : analysis.analysisStatus === 'COMPLETED' ? (
+                  <CheckCircle className="w-5 h-5 text-emerald-400" />
+               ) : (
+                  <XCircle className="w-5 h-5 text-rose-500" />
+               )}
+             </div>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column: Metadata */}
-        <div className="lg:col-span-2 space-y-6">
-          <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-              <h2 className="font-medium text-slate-200">Header Information</h2>
-              <span className="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded">Parsed</span>
-            </div>
-            <div className="p-5 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="text-sm text-slate-400">From</div>
-                <div className="md:col-span-3 text-sm font-medium text-slate-200 flex items-center">
-                  admin@paypal-security-update.com
-                  <span className="ml-3 px-2 py-0.5 rounded border border-rose-500/20 bg-rose-500/10 text-rose-500 text-xs">Phishing Domain</span>
+      {!analysis && !uploadResult && (
+        <div className="p-8 text-center text-slate-500 border border-slate-800 rounded-lg border-dashed">
+          Upload an .eml file to begin analysis.
+        </div>
+      )}
+
+      {analysis?.analysisStatus === 'COMPLETED' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            
+            {/* Header Forensics */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Header Information</h2>
+                <span className="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded">Parsed</span>
+              </div>
+              <div className="p-5 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="text-sm text-slate-400">From</div>
+                  <div className="md:col-span-3 text-sm font-medium text-slate-200">{getHeader('from') || 'N/A'}</div>
+
+                  <div className="text-sm text-slate-400">To</div>
+                  <div className="md:col-span-3 text-sm text-slate-200">{getHeader('to') || 'N/A'}</div>
+
+                  <div className="text-sm text-slate-400">Subject</div>
+                  <div className="md:col-span-3 text-sm text-slate-200">{getHeader('subject') || 'N/A'}</div>
+
+                  <div className="text-sm text-slate-400">Date</div>
+                  <div className="md:col-span-3 text-sm text-slate-200">{getHeader('date') || 'N/A'}</div>
+                  
+                  <div className="text-sm text-slate-400">Message-ID</div>
+                  <div className="md:col-span-3 text-sm text-slate-400 font-mono break-all">{getHeader('message-id') || 'N/A'}</div>
                 </div>
-
-                <div className="text-sm text-slate-400">To</div>
-                <div className="md:col-span-3 text-sm text-slate-200">target.user@enterprise.com</div>
-
-                <div className="text-sm text-slate-400">Subject</div>
-                <div className="md:col-span-3 text-sm text-slate-200">URGENT: Your account has been suspended</div>
-
-                <div className="text-sm text-slate-400">Date</div>
-                <div className="md:col-span-3 text-sm text-slate-200">Oct 24, 2023, 14:32:01 UTC</div>
-                
-                <div className="text-sm text-slate-400">Message-ID</div>
-                <div className="md:col-span-3 text-sm text-slate-400 font-mono break-all">&lt;202310241432.89423@mail.paypal-security-update.com&gt;</div>
               </div>
             </div>
-          </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50">
-              <h2 className="font-medium text-slate-200">Authentication & Relay Path</h2>
-            </div>
-            <div className="p-5">
-              <div className="flex flex-col space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-slate-800">
-                <div className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
-                  <div className="flex items-center justify-center w-10 h-10 rounded-full border border-slate-700 bg-slate-900 text-slate-400 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2">
-                    <Server className="w-5 h-5" />
-                  </div>
-                  <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 rounded-lg border border-slate-800 bg-slate-950/50">
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="font-medium text-sm text-slate-200">Originating IP</div>
-                      <span className="text-xs text-rose-500 font-medium">192.168.45.2 (Malicious)</span>
+            {/* Transport Trace */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50">
+                <h2 className="font-medium text-slate-200">Transport Trace (Received Hops)</h2>
+              </div>
+              <div className="p-5">
+                <div className="flex flex-col space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-slate-800">
+                  {hops.map((hop, idx) => (
+                    <div key={idx} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+                      <div className="flex items-center justify-center w-10 h-10 rounded-full border border-slate-700 bg-slate-900 text-slate-400 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2">
+                        <Server className="w-5 h-5" />
+                      </div>
+                      <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 rounded-lg border border-slate-800 bg-slate-950/50">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="font-medium text-sm text-slate-200">Hop {idx}</div>
+                          {hop.sourceIp && <span className="text-xs text-slate-400 font-medium font-mono">{hop.sourceIp}</span>}
+                        </div>
+                        <div className="text-xs text-slate-500 line-clamp-3" title={hop.receivedHeader}>{hop.receivedHeader}</div>
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-500">Ukraine (UA) AS12345</div>
+                  ))}
+                  {hops.length === 0 && <div className="text-sm text-slate-500 text-center w-full">No Received hops detected.</div>}
+                </div>
+              </div>
+            </div>
+            
+            {/* Authentication Observations */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Authentication Observations</h2>
+                <span className="text-xs bg-amber-500/20 text-amber-500 px-2 py-1 rounded">Unverified (Phase 8)</span>
+              </div>
+              <div className="p-5">
+                 {headers.filter(h => h.name.toLowerCase() === 'authentication-results').map((h, i) => (
+                    <div key={i} className="mb-2 p-3 bg-slate-950 border border-slate-800 rounded text-sm text-slate-300 font-mono break-all">
+                      {h.value}
+                    </div>
+                 ))}
+                 {headers.filter(h => h.name.toLowerCase() === 'authentication-results').length === 0 && (
+                   <div className="text-sm text-slate-500">No Authentication-Results headers found.</div>
+                 )}
+              </div>
+            </div>
+
+          </div>
+
+          {/* Right Column: MIME Tree */}
+          <div className="space-y-6">
+            <div className="bg-slate-900 border border-slate-800 rounded-lg p-5">
+              <h2 className="font-medium text-slate-200 mb-4 flex items-center">
+                <FileText className="w-5 h-5 mr-2 text-slate-400" />
+                MIME Tree
+              </h2>
+              <div className="space-y-3">
+                {mimeParts.map((part, i) => (
+                  <div key={i} className="p-3 bg-slate-950 border border-slate-800 rounded flex flex-col items-start">
+                    <div className="text-sm font-medium text-slate-200 flex items-center w-full justify-between">
+                       <span>{part.partIndex}. {part.filename || 'Part'}</span>
+                       <span className="text-xs bg-slate-800 px-1.5 py-0.5 rounded text-slate-400">{part.contentType}</span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-2">
+                       Size: {part.sizeBytes ? Math.round(part.sizeBytes / 1024) + ' KB' : 'Unknown'}
+                       {part.isAttachment && <span className="ml-2 text-amber-500 border border-amber-500/20 bg-amber-500/10 px-1 rounded">Attachment</span>}
+                    </div>
                   </div>
-                </div>
+                ))}
+                {mimeParts.length === 0 && (
+                   <div className="text-sm text-slate-500">No MIME parts detected.</div>
+                )}
               </div>
             </div>
           </div>
         </div>
-
-        {/* Right Column: Indicators & Actions */}
-        <div className="space-y-6">
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-5">
-            <h2 className="font-medium text-slate-200 mb-4">Indicators of Compromise</h2>
-            <div className="space-y-3">
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded flex items-start">
-                <Globe className="w-4 h-4 text-rose-500 mt-0.5 mr-3 shrink-0" />
-                <div>
-                  <div className="text-sm font-medium text-slate-200">paypal-security-update.com</div>
-                  <div className="text-xs text-slate-500 mt-1">Domain Age: 2 days</div>
-                </div>
-              </div>
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded flex items-start">
-                <FileText className="w-4 h-4 text-orange-500 mt-0.5 mr-3 shrink-0" />
-                <div>
-                  <div className="text-sm font-medium text-slate-200">invoice_urgent.pdf.exe</div>
-                  <div className="text-xs text-slate-500 mt-1">Attachment (Hidden Extension)</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-5">
-            <h2 className="font-medium text-slate-200 mb-4">Chain of Custody</h2>
-            <div className="flex items-center text-sm text-emerald-500 mb-4">
-              <Link className="w-4 h-4 mr-2" />
-              Evidence Blockchain Anchored
-            </div>
-            <button className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium py-2 px-4 rounded transition-colors text-sm border border-slate-700">
-              Verify Integrity
-            </button>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

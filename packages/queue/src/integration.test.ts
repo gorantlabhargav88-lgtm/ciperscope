@@ -124,7 +124,13 @@ describe('Integration: Tenant Isolation (Real PostgreSQL)', () => {
     });
     
     const email = await prisma.email.create({
-      data: { case: { connect: { id: testCase.id } }, senderAddress: 'test@a.com', date: new Date() }
+      data: { 
+        organizationId: testOrgId,
+        caseId: testCase.id,
+        senderAddress: 'test@a.com',
+        date: new Date(),
+        sha256: `test-sha256-${Date.now()}`
+      }
     });
     testEmailId = email.id;
   });

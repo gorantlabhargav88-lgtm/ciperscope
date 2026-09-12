@@ -1,7 +1,6 @@
-import { FastifyRequest } from 'fastify';
-import { PrismaClient, EmailClassification, IdempotencyOperationStatus } from '@ciperscope/database';
+import { PrismaClient, EmailClassification } from '@ciperscope/database';
 import { RawEmailStore } from '@ciperscope/storage';
-import { QueueManager, IdempotencyManager, generateIdempotencyKey } from '@ciperscope/queue';
+import { QueueManager, IdempotencyManager } from '@ciperscope/queue';
 import { logger } from '@ciperscope/logger';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -41,7 +40,7 @@ export class EmailIngestionService {
     let sizeBytes = 0;
 
     const hashStream = new Transform({
-      transform(chunk: Buffer, encoding: string, callback: any) {
+      transform(chunk: Buffer, _encoding: string, callback: () => void) {
         hash.update(chunk);
         sizeBytes += chunk.length;
         this.push(chunk);
@@ -56,7 +55,7 @@ export class EmailIngestionService {
         fs.createWriteStream(tempFilePath)
       );
 
-      if ((stream as any).truncated) {
+      if ((stream as NodeJS.ReadableStream & { truncated?: boolean }).truncated) {
         throw new Error('File size limit reached');
       }
 
@@ -95,7 +94,6 @@ export class EmailIngestionService {
         throw new Error('Concurrent ingestion detected for the same email hash. Please retry if it fails.');
       }
 
-      let emailId = '';
       try {
         // 4. Store raw bytes
         const storageKey = `${organizationId}/${rawSha256}.eml`;
@@ -114,8 +112,6 @@ export class EmailIngestionService {
             // Additional extraction happens in the worker
           }
         });
-        emailId = email.id;
-
         // 6. Enqueue BullMQ job
         const queue = this.queueManager.getQueue('email-processing');
         await queue.add('process-email', {
@@ -136,8 +132,8 @@ export class EmailIngestionService {
         await this.idempotencyManager.markCompleted(organizationId, operationKey, 'email', email.id);
 
         return { emailId: email.id, status: 'RECEIVED', duplicate: false };
-      } catch (err: any) {
-        await this.idempotencyManager.markFailed(organizationId, operationKey, 'email', err.message);
+      } catch (err: unknown) {
+        await this.idempotencyManager.markFailed(organizationId, operationKey, 'email', err instanceof Error ? err.message : String(err));
         throw err;
       }
     } finally {
