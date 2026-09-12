@@ -1,0 +1,22 @@
+{
+  "name": "@ciperscope/http-client",
+  "version": "1.0.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "clean": "rm -rf dist",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "opossum": "^8.1.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/opossum": "^8.1.9",
+    "typescript": "^5.0.0",
+    "vitest": "^1.6.0"
+  }
+}

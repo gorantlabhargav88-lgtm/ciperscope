@@ -1,0 +1,694 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum CaseStatus {
+  OPEN
+  INVESTIGATING
+  CONTAINED
+  RESOLVED
+  CLOSED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum EmailClassification {
+  UNKNOWN
+  LEGITIMATE
+  SUSPICIOUS
+  PHISHING
+  IMPERSONATION
+  BEC
+  FRAUD
+  MALWARE
+}
+
+enum AuthResultStatus {
+  PASS
+  FAIL
+  SOFTFAIL
+  NEUTRAL
+  NONE
+  TEMPERROR
+  PERMERROR
+}
+
+enum IndicatorType {
+  IP
+  DOMAIN
+  URL
+  HASH
+  EMAIL_ADDRESS
+  ASN
+}
+
+enum ThreatVerdict {
+  CLEAN
+  SUSPICIOUS
+  MALICIOUS
+  UNKNOWN
+}
+
+enum EvidenceType {
+  RAW_EMAIL
+  HEADER
+  ATTACHMENT
+  URL
+  IP
+  DOMAIN
+  SCREENSHOT
+  REPORT
+  LOG
+  OTHER
+}
+
+enum EvidenceStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum CustodyAction {
+  COLLECTED
+  UPLOADED
+  HASHED
+  ANALYZED
+  EXPORTED
+  VERIFIED
+  BLOCKCHAIN_ANCHORED
+  ACCESSED
+}
+
+enum BlockchainAnchorStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+  VERIFICATION_FAILED
+}
+
+enum AlertSeverity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// ============================================================================
+// IDENTITY / ACCESS
+// ============================================================================
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  domain    String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members      OrganizationMember[]
+  cases        Case[]
+  auditLogs    AuditLog[]
+  alerts       Alert[]
+  systemConfig SystemSetting[]
+  Role         Role[]
+  APIKey       APIKey[]
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  firstName    String?
+  lastName     String?
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  memberships   OrganizationMember[]
+  sessions      Session[]
+  custodyEvents ChainOfCustodyEvent[]
+}
+
+model OrganizationMember {
+  id             String   @id @default(uuid())
+  userId         String
+  organizationId String
+  roleId         String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+model Role {
+  id             String   @id @default(uuid())
+  organizationId String? // Null means system-wide default role
+  name           String
+  description    String?
+  isSystem       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organization Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions  RolePermission[]
+  members      OrganizationMember[]
+
+  @@unique([organizationId, name])
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  action      String // e.g., "evidence.verify", "case.read"
+  description String?
+  createdAt   DateTime @default(now())
+
+  roles RolePermission[]
+
+  @@unique([action])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model Session {
+  id        String    @id @default(uuid())
+  userId    String
+  deviceId  String?
+  ipAddress String?
+  userAgent String?
+  isValid   Boolean   @default(true)
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  sessionId String
+  tokenHash String   @unique
+  isRevoked Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  id        String   @id @default(uuid())
+  email     String
+  tokenHash String   @unique
+  type      String // "EMAIL_VERIFY" or "PASSWORD_RESET"
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email, type])
+}
+
+model APIKey {
+  id             String    @id @default(uuid())
+  organizationId String
+  name           String
+  prefix         String // First few chars to show in UI
+  hash           String    @unique
+  expiresAt      DateTime?
+  lastUsedAt     DateTime?
+  isRevoked      Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+// ============================================================================
+// CASE MANAGEMENT
+// ============================================================================
+
+model Case {
+  id             String     @id @default(uuid())
+  organizationId String
+  title          String
+  description    String?    @db.Text
+  severity       Priority   @default(LOW)
+  priority       Priority   @default(LOW)
+  status         CaseStatus @default(OPEN)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  emails         Email[]
+  evidence       Evidence[]
+  reports        Report[]
+  alerts         Alert[]
+  investigations Investigation[]
+
+  @@index([organizationId])
+  @@index([status, priority])
+}
+
+model Investigation {
+  id          String   @id @default(uuid())
+  caseId      String
+  title       String
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  case  Case                @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  notes InvestigationNote[]
+}
+
+model InvestigationNote {
+  id              String   @id @default(uuid())
+  investigationId String
+  content         String   @db.Text
+  authorId        String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  investigation Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// EMAIL FORENSICS
+// ============================================================================
+
+model Email {
+  id             String              @id @default(uuid())
+  caseId         String?
+  messageId      String?
+  subject        String?             @db.Text
+  senderAddress  String?
+  replyTo        String?
+  returnPath     String?
+  date           DateTime?
+  ingestionSrc   String              @default("UPLOAD") // UPLOAD, GMAIL_API, etc.
+  rawStorageKey  String? // Path in object storage
+  classification EmailClassification @default(UNKNOWN)
+  riskScore      Float?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  case            Case?                 @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  headers         EmailHeader[]
+  relayHops       RelayHop[]
+  attachments     EmailAttachment[]
+  urls            EmailUrl[]
+  authResults     AuthenticationResult?
+  inferences      MLInference[]
+  riskAssessments RiskAssessment[]
+  campaigns       CampaignEmail[]
+
+  @@index([messageId])
+  @@index([senderAddress])
+  @@index([caseId])
+}
+
+model EmailHeader {
+  id        String   @id @default(uuid())
+  emailId   String
+  name      String
+  value     String   @db.Text
+  createdAt DateTime @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+}
+
+model RelayHop {
+  id             String    @id @default(uuid())
+  emailId        String
+  hopOrder       Int
+  sourceIp       String?
+  hostname       String?
+  timestamp      DateTime?
+  receivedHeader String    @db.Text
+  createdAt      DateTime  @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+}
+
+model EmailAttachment {
+  id         String   @id @default(uuid())
+  emailId    String
+  filename   String
+  mimeType   String
+  sizeBytes  Int
+  sha256     String?
+  storageKey String?
+  createdAt  DateTime @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+}
+
+model EmailUrl {
+  id        String   @id @default(uuid())
+  emailId   String
+  url       String   @db.Text
+  domain    String?
+  createdAt DateTime @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+}
+
+// ============================================================================
+// AUTHENTICATION RESULTS
+// ============================================================================
+
+model AuthenticationResult {
+  id        String           @id @default(uuid())
+  emailId   String           @unique
+  spf       AuthResultStatus @default(NONE)
+  dkim      AuthResultStatus @default(NONE)
+  dmarc     AuthResultStatus @default(NONE)
+  details   Json?
+  createdAt DateTime         @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// INDICATORS & THREAT INTELLIGENCE
+// ============================================================================
+
+model Indicator {
+  id        String        @id @default(uuid())
+  type      IndicatorType
+  value     String        @unique @db.Text
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  observations ThreatIntelObservation[]
+  campaigns    CampaignIndicator[]
+
+  @@index([type, value])
+}
+
+model ThreatIntelObservation {
+  id              String        @id @default(uuid())
+  indicatorId     String
+  provider        String // e.g., "VirusTotal", "PhishTank"
+  verdict         ThreatVerdict
+  confidence      Float?
+  rawResponse     Json?
+  observationTime DateTime      @default(now())
+
+  indicator Indicator @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+
+  @@index([indicatorId])
+  @@index([provider])
+}
+
+// ============================================================================
+// NETWORK & GEOLOCATION
+// ============================================================================
+
+model GeoLocation {
+  id        String   @id @default(uuid())
+  ipAddress String   @unique
+  country   String?
+  region    String?
+  city      String?
+  latitude  Float?
+  longitude Float?
+  asn       String?
+  isp       String?
+  provider  String   @default("MaxMind")
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================================================
+// AI & RISK ENGINE
+// ============================================================================
+
+model MLInference {
+  id               String   @id @default(uuid())
+  emailId          String
+  modelIdentifier  String // e.g., "distilbert-bec-v1"
+  prediction       String // e.g., "BEC", "PHISHING"
+  confidence       Float
+  processingTimeMs Int?
+  explanation      String?  @db.Text
+  createdAt        DateTime @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+}
+
+model RiskAssessment {
+  id           String   @id @default(uuid())
+  emailId      String
+  overallScore Float // 0-100
+  riskLevel    Priority
+  version      String // Scoring engine version
+  createdAt    DateTime @default(now())
+
+  email   Email        @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  factors RiskFactor[]
+
+  @@index([emailId])
+}
+
+model RiskFactor {
+  id                String   @id @default(uuid())
+  riskAssessmentId  String
+  category          String // e.g., "AUTH_FAILURE", "MALICIOUS_URL"
+  description       String   @db.Text
+  scoreContribution Float
+  createdAt         DateTime @default(now())
+
+  riskAssessment RiskAssessment @relation(fields: [riskAssessmentId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// GRAPH / CAMPAIGN
+// ============================================================================
+
+model Campaign {
+  id          String   @id @default(uuid())
+  name        String
+  description String?  @db.Text
+  firstSeen   DateTime
+  lastSeen    DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  indicators CampaignIndicator[]
+  emails     CampaignEmail[]
+}
+
+model CampaignIndicator {
+  campaignId  String
+  indicatorId String
+
+  campaign  Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  indicator Indicator @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, indicatorId])
+}
+
+model CampaignEmail {
+  campaignId String
+  emailId    String
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  email    Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, emailId])
+}
+
+// ============================================================================
+// EVIDENCE / FORENSICS & BLOCKCHAIN
+// ============================================================================
+
+model Evidence {
+  id             String         @id @default(uuid())
+  caseId         String
+  type           EvidenceType
+  storageKey     String // Path to the actual evidence object
+  filename       String?
+  mimeType       String?
+  sizeBytes      Int?
+  sha256         String         @unique // Cryptographic fingerprint
+  status         EvidenceStatus @default(ACTIVE)
+  collectionTime DateTime       @default(now())
+  collectedById  String?
+
+  case             Case                  @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  custodyEvents    ChainOfCustodyEvent[]
+  blockchainAnchor BlockchainAnchor?
+
+  @@index([caseId])
+}
+
+model ChainOfCustodyEvent {
+  id              String        @id @default(uuid())
+  evidenceId      String
+  action          CustodyAction
+  actorId         String? // ID of the User who performed the action
+  description     String?       @db.Text
+  previousEventId String?       @unique
+  timestamp       DateTime      @default(now())
+
+  evidence Evidence             @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+  actor    User?                @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  previous ChainOfCustodyEvent? @relation("CustodyChain", fields: [previousEventId], references: [id], onDelete: Restrict)
+  next     ChainOfCustodyEvent? @relation("CustodyChain")
+
+  @@index([evidenceId])
+}
+
+model BlockchainAnchor {
+  id              String                 @id @default(uuid())
+  evidenceId      String                 @unique
+  network         String                 @default("HyperledgerFabric")
+  transactionId   String?                @unique
+  blockNumber     Int?
+  status          BlockchainAnchorStatus @default(PENDING)
+  errorDetails    String?                @db.Text
+  anchorTimestamp DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+}
+
+// ============================================================================
+// ALERTING & REPORTING
+// ============================================================================
+
+model Alert {
+  id             String        @id @default(uuid())
+  organizationId String
+  caseId         String?
+  title          String
+  message        String        @db.Text
+  severity       AlertSeverity @default(INFO)
+  isRead         Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  case         Case?        @relation(fields: [caseId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, isRead])
+}
+
+model Report {
+  id            String   @id @default(uuid())
+  caseId        String
+  title         String
+  contentHtml   String?  @db.Text
+  storageKey    String?
+  generatedById String?
+  createdAt     DateTime @default(now())
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+}
+
+// ============================================================================
+// AUDITING
+// ============================================================================
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String?
+  actorId        String?
+  action         String
+  resource       String
+  resourceId     String?
+  ipAddress      String?
+  userAgent      String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([createdAt])
+}
+
+model SystemSetting {
+  id             String   @id @default(uuid())
+  organizationId String
+  key            String
+  value          String   @db.Text
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, key])
+}
+
+// ============================================================================
+// IDEMPOTENCY
+// ============================================================================
+
+enum IdempotencyOperationStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  RECONCILIATION_REQUIRED
+}
+
+model IdempotencyOperation {
+  id              String                     @id @default(uuid())
+  organizationId  String
+  operationKey    String
+  operationType   String
+  resourceId      String?
+  status          IdempotencyOperationStatus @default(PENDING)
+  resultReference String?                    @db.Text
+  errorCode       String?
+  errorMessage    String?                    @db.Text
+  attemptCount    Int                        @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  completedAt     DateTime?
+
+  @@unique([organizationId, operationKey, resourceId])
+  @@index([organizationId, operationKey])
+}
