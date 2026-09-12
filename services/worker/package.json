@@ -16,10 +16,13 @@
     "@ciperscope/logger": "workspace:*",
     "@ciperscope/providers": "workspace:*",
     "@ciperscope/queue": "workspace:*",
+    "@ciperscope/storage": "workspace:*",
+    "@types/psl": "^1.11.0",
     "dotenv": "^16.4.5",
     "ioredis": "^5.11.1",
+    "ipaddr.js": "^2.5.0",
     "mailparser": "^3.9.26",
-    "@ciperscope/storage": "workspace:*"
+    "psl": "^1.15.0"
   },
   "devDependencies": {
     "@types/mailparser": "^3.4.6",

@@ -113,10 +113,10 @@ describe('Integration: Tenant Isolation (Real PostgreSQL)', () => {
 
   beforeAll(async () => {
     // Setup test data
-    const org = await prisma.organization.create({ data: { name: 'Tenant A', domain: 'a.com' } });
+    const org = await prisma.organization.create({ data: { name: 'Tenant A', domain: `a-${Date.now()}.com` } });
     testOrgId = org.id;
     
-    const orgB = await prisma.organization.create({ data: { name: 'Tenant B', domain: 'b.com' } });
+    const orgB = await prisma.organization.create({ data: { name: 'Tenant B', domain: `b-${Date.now()}.com` } });
     otherOrgId = orgB.id;
 
     const testCase = await prisma.case.create({

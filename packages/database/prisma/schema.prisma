@@ -339,7 +339,11 @@ model Email {
   mimeParts       MimePart[]
   attachments     EmailAttachment[]
   urls            EmailUrl[]
-  authResults     AuthenticationResult?
+  authAnalysis    EmailAuthenticationAnalysis?
+  spfVerifications SpfVerification[]
+  dkimVerifications DkimVerification[]
+  dmarcVerification DmarcVerification?
+  dnsObservations DnsObservation[]
   inferences      MLInference[]
   riskAssessments RiskAssessment[]
   campaigns       CampaignEmail[]
@@ -458,16 +462,83 @@ model EmailAddress {
 // AUTHENTICATION RESULTS
 // ============================================================================
 
-model AuthenticationResult {
+model EmailAuthenticationAnalysis {
   id        String           @id @default(uuid())
   emailId   String           @unique
+  
   spf       AuthResultStatus @default(NONE)
   dkim      AuthResultStatus @default(NONE)
   dmarc     AuthResultStatus @default(NONE)
-  details   Json?
+  
+  isConsistent Boolean       @default(false)
+  summary      String?       @db.Text
+  
   createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+}
+
+model SpfVerification {
+  id              String           @id @default(uuid())
+  emailId         String
+  result          AuthResultStatus @default(NONE)
+  domain          String?
+  evaluatedIp     String?
+  matchedMechanism String?
+  explanation     String?          @db.Text
+  lookups         Int              @default(0)
+  createdAt       DateTime         @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  
+  @@index([emailId])
+}
+
+model DkimVerification {
+  id            String           @id @default(uuid())
+  emailId       String
+  result        AuthResultStatus @default(NONE)
+  domain        String?
+  selector      String?
+  algorithm     String?
+  bodyHashResult AuthResultStatus @default(NONE)
+  explanation   String?          @db.Text
+  createdAt     DateTime         @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
+}
+
+model DmarcVerification {
+  id             String           @id @default(uuid())
+  emailId        String           @unique
+  result         AuthResultStatus @default(NONE)
+  orgDomain      String?
+  policy         String?          // p=
+  subdomainPolicy String?         // sp=
+  spfAlignment   String?          // strict, relaxed, unaligned
+  dkimAlignment  String?          // strict, relaxed, unaligned
+  explanation    String?          @db.Text
+  createdAt      DateTime         @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+}
+
+model DnsObservation {
+  id         String   @id @default(uuid())
+  emailId    String
+  queryName  String
+  recordType String   // TXT, MX, A, AAAA
+  response   String?  @db.Text
+  rcode      String?  // NOERROR, NXDOMAIN, SERVFAIL, TIMEOUT
+  durationMs Int?
+  createdAt  DateTime @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
 }
 
 // ============================================================================

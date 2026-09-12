@@ -11,6 +11,10 @@ export const EmailAnalysis = () => {
   const [headers, setHeaders] = useState<any[]>([]);
   const [hops, setHops] = useState<any[]>([]);
   const [mimeParts, setMimeParts] = useState<any[]>([]);
+  const [authAnalysis, setAuthAnalysis] = useState<any>(null);
+  const [spf, setSpf] = useState<any[]>([]);
+  const [dkim, setDkim] = useState<any[]>([]);
+  const [dmarc, setDmarc] = useState<any>(null);
   
   const organizationId = '00000000-0000-0000-0000-000000000000'; // dummy for UI
 
@@ -24,6 +28,10 @@ export const EmailAnalysis = () => {
     setHeaders([]);
     setHops([]);
     setMimeParts([]);
+    setAuthAnalysis(null);
+    setSpf([]);
+    setDkim([]);
+    setDmarc(null);
     
     try {
       const formData = new FormData();
@@ -73,6 +81,23 @@ export const EmailAnalysis = () => {
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/mime-parts`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setMimeParts(d.mimeParts || []));
+            
+            // Phase 9 Auth fetching
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/authentication`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setAuthAnalysis(d.analysis || null));
+            
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/spf`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setSpf(d.spfVerifications || []));
+            
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/dkim`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setDkim(d.dkimVerifications || []));
+            
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/dmarc`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setDmarc(d.dmarcVerification || null));
           } else if (data.analysisStatus === 'FAILED') {
             clearInterval(interval);
           }
@@ -204,8 +229,8 @@ export const EmailAnalysis = () => {
             {/* Authentication Observations */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                <h2 className="font-medium text-slate-200">Authentication Observations</h2>
-                <span className="text-xs bg-amber-500/20 text-amber-500 px-2 py-1 rounded">Unverified (Phase 8)</span>
+                <h2 className="font-medium text-slate-200">Observed Header Claims</h2>
+                <span className="text-xs bg-amber-500/20 text-amber-500 px-2 py-1 rounded">Untrusted</span>
               </div>
               <div className="p-5">
                  {headers.filter(h => h.name.toLowerCase() === 'authentication-results').map((h, i) => (
@@ -216,6 +241,80 @@ export const EmailAnalysis = () => {
                  {headers.filter(h => h.name.toLowerCase() === 'authentication-results').length === 0 && (
                    <div className="text-sm text-slate-500">No Authentication-Results headers found.</div>
                  )}
+              </div>
+            </div>
+            
+            {/* Phase 9: Independent Authentication Verification */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Independent Authentication Verification</h2>
+                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">Phase 9 DNS</span>
+              </div>
+              <div className="p-5 space-y-4">
+                 
+                 {/* Overall Auth Summary */}
+                 {authAnalysis && (
+                   <div className={`p-4 rounded-lg border ${authAnalysis.isConsistent ? 'border-emerald-900/50 bg-emerald-950/20' : 'border-rose-900/50 bg-rose-950/20'}`}>
+                     <div className="flex items-center gap-2 mb-2">
+                       {authAnalysis.isConsistent ? <CheckCircle className="w-5 h-5 text-emerald-500" /> : <XCircle className="w-5 h-5 text-rose-500" />}
+                       <h3 className="font-semibold text-slate-200">Forensic Consistency Check</h3>
+                     </div>
+                     <p className="text-sm text-slate-400">{authAnalysis.summary}</p>
+                   </div>
+                 )}
+
+                 {/* Verification Panels */}
+                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* SPF */}
+                    <div className="border border-slate-800 bg-slate-950 rounded p-4">
+                       <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">SPF</h3>
+                       {spf.length > 0 ? spf.map((s, i) => (
+                         <div key={i} className="text-xs space-y-1">
+                           <div className="flex justify-between">
+                             <span className="text-slate-500">Result</span>
+                             <span className={`font-mono font-bold ${s.result === 'PASS' ? 'text-emerald-400' : (s.result === 'NONE' ? 'text-slate-400' : 'text-rose-400')}`}>{s.result}</span>
+                           </div>
+                           <div className="flex justify-between"><span className="text-slate-500">Domain</span><span className="text-slate-300 truncate max-w-[120px]">{s.domain || '-'}</span></div>
+                           <div className="flex justify-between"><span className="text-slate-500">Evaluated IP</span><span className="text-slate-300">{s.evaluatedIp || '-'}</span></div>
+                           <div className="mt-2 text-slate-500 italic break-words">{s.explanation}</div>
+                         </div>
+                       )) : <div className="text-xs text-slate-600">No SPF data</div>}
+                    </div>
+
+                    {/* DKIM */}
+                    <div className="border border-slate-800 bg-slate-950 rounded p-4">
+                       <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">DKIM</h3>
+                       {dkim.length > 0 ? dkim.map((d, i) => (
+                         <div key={i} className="text-xs space-y-1 pb-2 mb-2 border-b border-slate-800/50 last:border-0 last:pb-0 last:mb-0">
+                           <div className="flex justify-between">
+                             <span className="text-slate-500">Result</span>
+                             <span className={`font-mono font-bold ${d.result === 'PASS' ? 'text-emerald-400' : 'text-rose-400'}`}>{d.result}</span>
+                           </div>
+                           <div className="flex justify-between"><span className="text-slate-500">Domain</span><span className="text-slate-300 truncate max-w-[120px]">{d.domain || '-'}</span></div>
+                           <div className="flex justify-between"><span className="text-slate-500">Selector</span><span className="text-slate-300 truncate max-w-[120px]">{d.selector || '-'}</span></div>
+                           <div className="mt-2 text-slate-500 italic break-words">{d.explanation}</div>
+                         </div>
+                       )) : <div className="text-xs text-slate-600">No DKIM data</div>}
+                    </div>
+
+                    {/* DMARC */}
+                    <div className="border border-slate-800 bg-slate-950 rounded p-4">
+                       <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">DMARC</h3>
+                       {dmarc ? (
+                         <div className="text-xs space-y-1">
+                           <div className="flex justify-between">
+                             <span className="text-slate-500">Result</span>
+                             <span className={`font-mono font-bold ${dmarc.result === 'PASS' ? 'text-emerald-400' : (dmarc.result === 'NONE' ? 'text-slate-400' : 'text-rose-400')}`}>{dmarc.result}</span>
+                           </div>
+                           <div className="flex justify-between"><span className="text-slate-500">Org Domain</span><span className="text-slate-300">{dmarc.orgDomain || '-'}</span></div>
+                           <div className="flex justify-between"><span className="text-slate-500">Policy</span><span className="text-slate-300">{dmarc.policy || '-'}</span></div>
+                           <div className="flex justify-between"><span className="text-slate-500">Alignment</span><span className="text-slate-300">SPF:{dmarc.spfAlignment?.charAt(0).toUpperCase()} DKIM:{dmarc.dkimAlignment?.charAt(0).toUpperCase()}</span></div>
+                           <div className="mt-2 text-slate-500 italic break-words">{dmarc.explanation}</div>
+                         </div>
+                       ) : <div className="text-xs text-slate-600">No DMARC data</div>}
+                    </div>
+                 </div>
+
               </div>
             </div>
 

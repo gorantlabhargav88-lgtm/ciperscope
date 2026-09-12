@@ -270,6 +270,10 @@ export interface EmailIngestionJobPayload extends TenantAwareJobPayload {
   source: string;
 }
 
+export interface EmailAuthenticationVerificationJobPayload extends TenantAwareJobPayload {
+  emailId: string;
+}
+
 export type ResourceValidator = (resourceId: string, organizationId: string) => Promise<boolean>;
 
 export const wrapTenantScopedProcessor = <T extends TenantAwareJobPayload, R>(

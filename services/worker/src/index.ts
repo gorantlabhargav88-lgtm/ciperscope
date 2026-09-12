@@ -1,10 +1,11 @@
 import { logger, runWithContext, generateRequestId } from '@ciperscope/logger';
-import { QueueManager, createTenantScopedWorker, IdempotencyManager, EmailIngestionJobPayload } from '@ciperscope/queue';
+import { QueueManager, createTenantScopedWorker, IdempotencyManager, EmailIngestionJobPayload, EmailAuthenticationVerificationJobPayload } from '@ciperscope/queue';
 import { prisma } from '@ciperscope/database';
 import { env } from '@ciperscope/config';
 import IORedis from 'ioredis';
 import { LocalRawEmailStore } from '@ciperscope/storage';
 import { EmailForensicParser } from './parser/EmailForensicParser';
+import { AuthenticationVerifier } from './verifier/AuthenticationVerifier';
 
 const redisUrl = env.REDIS_URL;
 
@@ -162,6 +163,22 @@ export async function start() {
 
             logger.info({ emailId: job.data.resourceId }, 'Email successfully ingested and validated');
             
+            // Dispatch Authentication Verification Phase 9
+            const authQueue = queueManager.getQueue('email-authentication');
+            await authQueue.add(
+              'verify-authentication',
+              {
+                organizationId: job.data.organizationId,
+                resourceId: job.data.resourceId,
+                jobId: job.id as string,
+                operation: 'verify-authentication',
+                emailId: job.data.resourceId,
+                requestId: job.data.requestId,
+                traceId: job.data.traceId
+              },
+              { jobId: `auth-${job.data.resourceId}` }
+            );
+
             await idempotencyManager.markCompleted(
               job.data.organizationId,
               operationKey,
@@ -202,6 +219,75 @@ export async function start() {
 
   worker.on('failed', (job, err) => {
     logger.error({ jobId: job?.id, queue: 'email-processing', err }, 'Job failed');
+  });
+
+  // Setup Authentication Verification Worker
+  const authVerifier = new AuthenticationVerifier(prisma);
+  const authWorker = createTenantScopedWorker<EmailAuthenticationVerificationJobPayload, unknown>(
+    'email-authentication',
+    idempotencyRedis,
+    async (job) => {
+      return runWithContext(
+        {
+          requestId: job.data.requestId || generateRequestId(),
+          traceId: job.data.traceId,
+          jobId: job.id as string,
+          tenantId: job.data.organizationId,
+          actorId: job.data.actorId,
+        },
+        async () => {
+          logger.info({ data: job.data }, 'Processing email authentication verification job');
+          
+          const operationKey = `auth:${job.data.operation}`;
+
+          try {
+            const acquired = await idempotencyManager.acquireLock(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              job.data.operation
+            );
+            if (!acquired) {
+              logger.info({ operationKey }, 'Skipping job: idempotency lock not acquired');
+              return { skipped: true, reason: 'idempotency' };
+            }
+          } catch (error) {
+             logger.warn({ err: error }, 'Failed to acquire idempotency lock');
+             throw error;
+          }
+
+          try {
+            await authVerifier.verifyEmail(job.data.resourceId);
+            
+            await idempotencyManager.markCompleted(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              'result-ref-success'
+            );
+            return { success: true, processedAt: new Date().toISOString() };
+          } catch (error: unknown) {
+            await idempotencyManager.markFailed(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              error instanceof Error ? error.message : 'Unknown error'
+            );
+            throw error;
+          }
+        }
+      );
+    },
+    1,
+    emailResourceValidator
+  );
+
+  authWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, queue: 'email-authentication' }, 'Auth Job completed successfully');
+  });
+
+  authWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, queue: 'email-authentication', err }, 'Auth Job failed');
   });
 
   logger.info('Workers registered and listening for jobs.');
