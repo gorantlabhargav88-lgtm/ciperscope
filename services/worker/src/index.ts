@@ -6,6 +6,8 @@ import IORedis from 'ioredis';
 import { LocalRawEmailStore } from '@ciperscope/storage';
 import { EmailForensicParser } from './parser/EmailForensicParser';
 import { AuthenticationVerifier } from './verifier/AuthenticationVerifier';
+import { ThreatAnalyzer } from './analyzer/ThreatAnalyzer';
+import { EmailThreatAnalysisJobPayload } from '@ciperscope/queue';
 
 const redisUrl = env.REDIS_URL;
 
@@ -265,6 +267,23 @@ export async function start() {
               job.data.resourceId,
               'result-ref-success'
             );
+
+            // Dispatch Threat Analysis Phase 10
+            const threatQueue = queueManager.getQueue('email-threat-analysis');
+            await threatQueue.add(
+              'threat-analysis',
+              {
+                organizationId: job.data.organizationId,
+                resourceId: job.data.resourceId,
+                jobId: job.id as string,
+                operation: 'threat-analysis',
+                emailId: job.data.resourceId,
+                requestId: job.data.requestId,
+                traceId: job.data.traceId
+              },
+              { jobId: `threat-${job.data.resourceId}` }
+            );
+
             return { success: true, processedAt: new Date().toISOString() };
           } catch (error: unknown) {
             await idempotencyManager.markFailed(
@@ -288,6 +307,75 @@ export async function start() {
 
   authWorker.on('failed', (job, err) => {
     logger.error({ jobId: job?.id, queue: 'email-authentication', err }, 'Auth Job failed');
+  });
+
+  // Setup Threat Analysis Worker
+  const threatAnalyzer = new ThreatAnalyzer(prisma, rawEmailStore);
+  const threatWorker = createTenantScopedWorker<EmailThreatAnalysisJobPayload, unknown>(
+    'email-threat-analysis',
+    idempotencyRedis,
+    async (job) => {
+      return runWithContext(
+        {
+          requestId: job.data.requestId || generateRequestId(),
+          traceId: job.data.traceId,
+          jobId: job.id as string,
+          tenantId: job.data.organizationId,
+          actorId: job.data.actorId,
+        },
+        async () => {
+          logger.info({ data: job.data }, 'Processing email threat analysis job');
+          
+          const operationKey = `threat:${job.data.operation}`;
+
+          try {
+            const acquired = await idempotencyManager.acquireLock(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              job.data.operation
+            );
+            if (!acquired) {
+              logger.info({ operationKey }, 'Skipping job: idempotency lock not acquired');
+              return { skipped: true, reason: 'idempotency' };
+            }
+          } catch (error) {
+             logger.warn({ err: error }, 'Failed to acquire idempotency lock');
+             throw error;
+          }
+
+          try {
+            await threatAnalyzer.analyzeEmail(job.data.resourceId);
+            
+            await idempotencyManager.markCompleted(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              'result-ref-success'
+            );
+            return { success: true, processedAt: new Date().toISOString() };
+          } catch (error: unknown) {
+            await idempotencyManager.markFailed(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              error instanceof Error ? error.message : 'Unknown error'
+            );
+            throw error;
+          }
+        }
+      );
+    },
+    1,
+    emailResourceValidator
+  );
+
+  threatWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, queue: 'email-threat-analysis' }, 'Threat Analysis Job completed successfully');
+  });
+
+  threatWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, queue: 'email-threat-analysis', err }, 'Threat Analysis Job failed');
   });
 
   logger.info('Workers registered and listening for jobs.');

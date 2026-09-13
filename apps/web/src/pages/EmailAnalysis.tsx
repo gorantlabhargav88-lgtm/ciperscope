@@ -16,6 +16,9 @@ export const EmailAnalysis = () => {
   const [dkim, setDkim] = useState<any[]>([]);
   const [dmarc, setDmarc] = useState<any>(null);
   
+  const [urls, setUrls] = useState<any[]>([]);
+  const [attachments, setAttachments] = useState<any[]>([]);
+  
   const organizationId = '00000000-0000-0000-0000-000000000000'; // dummy for UI
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -32,6 +35,8 @@ export const EmailAnalysis = () => {
     setSpf([]);
     setDkim([]);
     setDmarc(null);
+    setUrls([]);
+    setAttachments([]);
     
     try {
       const formData = new FormData();
@@ -98,6 +103,15 @@ export const EmailAnalysis = () => {
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/dmarc`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setDmarc(d.dmarcVerification || null));
+
+            // Phase 10
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/urls`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setUrls(d.urls || []));
+
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/attachments`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setAttachments(d.attachments || []));
           } else if (data.analysisStatus === 'FAILED') {
             clearInterval(interval);
           }
@@ -314,6 +328,93 @@ export const EmailAnalysis = () => {
                        ) : <div className="text-xs text-slate-600">No DMARC data</div>}
                     </div>
                  </div>
+
+              </div>
+            </div>
+
+            {/* Phase 10: Threat Analysis */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Phase 10: URL & Attachment Threat Analysis</h2>
+                <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-1 rounded border border-rose-500/30">Passive Scan</span>
+              </div>
+              <div className="p-5 space-y-6">
+                
+                {/* URLs */}
+                <div>
+                   <h3 className="text-sm font-medium text-slate-300 mb-3 border-b border-slate-800 pb-2">Extracted URLs ({urls.length})</h3>
+                   <div className="space-y-3">
+                     {urls.length > 0 ? urls.map((u, i) => (
+                       <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-xs flex flex-col space-y-2">
+                         <div className="flex justify-between items-start">
+                           <div className="font-mono text-slate-300 break-all pr-4">{u.url}</div>
+                           <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded flex-shrink-0">SRC: {u.source}</span>
+                         </div>
+                         {u.normalizedUrl && u.normalizedUrl !== u.url && (
+                           <div className="text-slate-500 font-mono break-all"><span className="text-slate-600 mr-2">NORMALIZED:</span>{u.normalizedUrl}</div>
+                         )}
+                         {(u.indicators?.length > 0 || u.isObfuscated) && (
+                           <div className="flex gap-2 mt-1 flex-wrap">
+                             {u.isObfuscated && <span className="text-rose-400 border border-rose-500/30 bg-rose-500/10 px-1 rounded">OBFUSCATED</span>}
+                             {u.indicators?.map((ind: string, idx: number) => (
+                               <span key={idx} className="text-amber-400 border border-amber-500/30 bg-amber-500/10 px-1 rounded">{ind}</span>
+                             ))}
+                           </div>
+                         )}
+                       </div>
+                     )) : <div className="text-xs text-slate-600">No URLs extracted</div>}
+                   </div>
+                </div>
+
+                {/* Attachments */}
+                <div>
+                   <h3 className="text-sm font-medium text-slate-300 mb-3 border-b border-slate-800 pb-2">Attachment Analysis ({attachments.length})</h3>
+                   <div className="space-y-3">
+                     {attachments.length > 0 ? attachments.map((a, i) => (
+                       <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-xs flex flex-col space-y-2">
+                         <div className="flex justify-between items-center">
+                           <div className="font-medium text-slate-200">{a.filename}</div>
+                           <div className="text-slate-500">{Math.round(a.sizeBytes / 1024)} KB</div>
+                         </div>
+                         
+                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Declared MIME</span><span className="text-slate-300">{a.mimeType}</span></div>
+                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Actual MIME</span><span className={`font-mono ${a.isMismatch ? 'text-rose-400' : 'text-slate-300'}`}>{a.actualMimeType || 'Unknown'}</span></div>
+                         </div>
+
+                         {a.isMismatch && (
+                            <div className="text-rose-400 border border-rose-500/30 bg-rose-500/10 px-2 py-1 rounded w-fit mt-1">
+                              SUSPICIOUS: File signature mismatch
+                            </div>
+                         )}
+
+                         {a.sha256 && (
+                            <div className="text-slate-500 font-mono"><span className="text-slate-600 mr-2">SHA-256:</span>{a.sha256}</div>
+                         )}
+                         {a.magicBytes && (
+                            <div className="text-slate-500 font-mono"><span className="text-slate-600 mr-2">MAGIC:</span>{a.magicBytes}</div>
+                         )}
+
+                         {a.isArchive && a.archiveMetadata && (
+                           <div className="mt-2 pt-2 border-t border-slate-800">
+                             <div className="text-slate-400 mb-1 font-medium">Archive Safety Inspection</div>
+                             <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                               <div className="flex justify-between"><span className="text-slate-500">Entries</span><span className="text-slate-300">{a.archiveMetadata.entryCount}</span></div>
+                               <div className="flex justify-between"><span className="text-slate-500">Total Uncompressed</span><span className="text-slate-300">{Math.round((a.archiveMetadata.totalUncompressedSize || 0) / 1024)} KB</span></div>
+                               <div className="flex justify-between"><span className="text-slate-500">Path Traversal</span><span className={a.archiveMetadata.hasTraversal ? 'text-rose-400' : 'text-emerald-400'}>{a.archiveMetadata.hasTraversal ? 'DETECTED' : 'None'}</span></div>
+                               <div className="flex justify-between"><span className="text-slate-500">Nested Archive</span><span className={a.archiveMetadata.hasNestedArchive ? 'text-amber-400' : 'text-emerald-400'}>{a.archiveMetadata.hasNestedArchive ? 'DETECTED (Blocked)' : 'None'}</span></div>
+                             </div>
+                             {a.archiveMetadata.error && (
+                                <div className="text-rose-400 border border-rose-500/30 bg-rose-500/10 px-2 py-1 rounded mt-2">
+                                  {a.archiveMetadata.error}
+                                </div>
+                             )}
+                           </div>
+                         )}
+                       </div>
+                     )) : <div className="text-xs text-slate-600">No attachments found</div>}
+                   </div>
+                </div>
 
               </div>
             </div>

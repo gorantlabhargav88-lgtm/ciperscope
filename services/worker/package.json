@@ -18,15 +18,19 @@
     "@ciperscope/queue": "workspace:*",
     "@ciperscope/storage": "workspace:*",
     "@types/psl": "^1.11.0",
+    "cheerio": "^1.2.0",
     "dotenv": "^16.4.5",
+    "file-type": "16.5.4",
     "ioredis": "^5.11.1",
     "ipaddr.js": "^2.5.0",
     "mailparser": "^3.9.26",
-    "psl": "^1.15.0"
+    "psl": "^1.15.0",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@types/mailparser": "^3.4.6",
     "@types/node": "^20.12.11",
+    "@types/yauzl": "^3.4.0",
     "tsx": "^4.10.1",
     "typescript": "^5.4.5",
     "vitest": "^1.6.0"

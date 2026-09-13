@@ -284,5 +284,80 @@ export default async function emailRoutes(server: FastifyInstance) {
 
     return reply.send({ dmarcVerification: verification });
   });
-}
 
+  // ==========================================
+  // Phase 10 Threat Analysis Endpoints
+  // ==========================================
+
+  server.get('/:emailId/urls', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+    
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const urls = await prisma.emailUrl.findMany({
+      where: { emailId },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    return reply.send({ urls });
+  });
+
+  server.get('/:emailId/attachments', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+    
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const attachments = await prisma.emailAttachment.findMany({
+      where: { emailId },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    return reply.send({ attachments });
+  });
+
+  server.get('/:emailId/attachments/:attachmentId', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId, attachmentId } = request.params as { emailId: string, attachmentId: string };
+    
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const attachment = await prisma.emailAttachment.findUnique({
+      where: { id: attachmentId, emailId }
+    });
+
+    if (!attachment) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Attachment not found' });
+    }
+
+    return reply.send({ attachment });
+  });
+}
