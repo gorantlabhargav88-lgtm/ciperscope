@@ -333,29 +333,31 @@ model Email {
   date           DateTime?
   ingestionSrc   String              @default("UPLOAD") // UPLOAD, GMAIL_API, etc.
   rawStorageKey  String? // Path in object storage
-  sha256         String              // Added for deduplication
+  sha256         String // Added for deduplication
   classification EmailClassification @default(UNKNOWN)
   analysisStatus AnalysisState       @default(PENDING)
   riskScore      Float?
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
-  case            Case?                 @relation(fields: [caseId], references: [id], onDelete: SetNull)
-  organization    Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  headers         EmailHeader[]
-  addresses       EmailAddress[]
-  relayHops       RelayHop[]
-  mimeParts       MimePart[]
-  attachments     EmailAttachment[]
-  urls            EmailUrl[]
-  authAnalysis    EmailAuthenticationAnalysis?
-  spfVerifications SpfVerification[]
+  case              Case?                        @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  organization      Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  headers           EmailHeader[]
+  addresses         EmailAddress[]
+  relayHops         RelayHop[]
+  mimeParts         MimePart[]
+  attachments       EmailAttachment[]
+  urls              EmailUrl[]
+  authAnalysis      EmailAuthenticationAnalysis?
+  spfVerifications  SpfVerification[]
   dkimVerifications DkimVerification[]
   dmarcVerification DmarcVerification?
-  dnsObservations DnsObservation[]
-  inferences      MLInference[]
-  riskAssessments RiskAssessment[]
-  campaigns       CampaignEmail[]
+  dnsObservations   DnsObservation[]
+  inferences        MLInference[]
+  riskAssessments   RiskAssessment[]
+  threatIndicators  ThreatIndicator[]
+  geolocationInfo   GeolocationInfo[]
+  campaigns         CampaignEmail[]
 
   @@unique([organizationId, sha256])
   @@index([organizationId])
@@ -378,16 +380,16 @@ model EmailHeader {
 }
 
 model RelayHop {
-  id             String    @id @default(uuid())
-  emailId        String
-  hopOrder       Int
+  id       String @id @default(uuid())
+  emailId  String
+  hopOrder Int
 
   // Extracted fields
-  receivingHost  String?
-  sendingHost    String?
-  fromHost       String?
-  byHost         String?
-  protocol       String?
+  receivingHost    String?
+  sendingHost      String?
+  fromHost         String?
+  byHost           String?
+  protocol         String?
   parsedConfidence Float?
 
   sourceIp       String?
@@ -402,7 +404,7 @@ model RelayHop {
 }
 
 model EmailAttachment {
-  id         String   @id @default(uuid())
+  id         String  @id @default(uuid())
   emailId    String
   filename   String
   mimeType   String
@@ -411,13 +413,13 @@ model EmailAttachment {
   storageKey String?
 
   // Phase 10 Threat Analysis fields
-  actualMimeType String?
-  isMismatch     Boolean  @default(false)
-  magicBytes     String?
-  isArchive      Boolean  @default(false)
+  actualMimeType  String?
+  isMismatch      Boolean @default(false)
+  magicBytes      String?
+  isArchive       Boolean @default(false)
   archiveMetadata Json?
 
-  createdAt  DateTime @default(now())
+  createdAt DateTime @default(now())
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 
@@ -425,14 +427,14 @@ model EmailAttachment {
 }
 
 model EmailUrl {
-  id        String   @id @default(uuid())
-  emailId   String
-  url       String   @db.Text
-  domain    String?
+  id      String  @id @default(uuid())
+  emailId String
+  url     String  @db.Text
+  domain  String?
 
   // Phase 10 Threat Analysis fields
-  normalizedUrl String? @db.Text
-  isObfuscated  Boolean @default(false)
+  normalizedUrl String?             @db.Text
+  isObfuscated  Boolean             @default(false)
   indicators    Json?
   source        UrlExtractionSource @default(TEXT)
 
@@ -447,7 +449,7 @@ model MimePart {
   id                 String   @id @default(uuid())
   emailId            String
   parentId           String?
-  partIndex          String   // e.g. "1", "1.1", "2"
+  partIndex          String // e.g. "1", "1.1", "2"
   contentType        String
   contentDisposition String?
   filename           String?
@@ -469,9 +471,9 @@ model MimePart {
 model EmailAddress {
   id          String   @id @default(uuid())
   emailId     String
-  headerName  String   // e.g. "From", "To", "Cc"
+  headerName  String // e.g. "From", "To", "Cc"
   displayName String?
-  address     String?  // Normalized email address
+  address     String? // Normalized email address
   localPart   String?
   domain      String?
   raw         String   @db.Text // Original unparsed value
@@ -487,32 +489,32 @@ model EmailAddress {
 // ============================================================================
 
 model EmailAuthenticationAnalysis {
-  id        String           @id @default(uuid())
-  emailId   String           @unique
+  id      String @id @default(uuid())
+  emailId String @unique
 
-  spf       AuthResultStatus @default(NONE)
-  dkim      AuthResultStatus @default(NONE)
-  dmarc     AuthResultStatus @default(NONE)
+  spf   AuthResultStatus @default(NONE)
+  dkim  AuthResultStatus @default(NONE)
+  dmarc AuthResultStatus @default(NONE)
 
-  isConsistent Boolean       @default(false)
-  summary      String?       @db.Text
+  isConsistent Boolean @default(false)
+  summary      String? @db.Text
 
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 }
 
 model SpfVerification {
-  id              String           @id @default(uuid())
-  emailId         String
-  result          AuthResultStatus @default(NONE)
-  domain          String?
-  evaluatedIp     String?
+  id               String           @id @default(uuid())
+  emailId          String
+  result           AuthResultStatus @default(NONE)
+  domain           String?
+  evaluatedIp      String?
   matchedMechanism String?
-  explanation     String?          @db.Text
-  lookups         Int              @default(0)
-  createdAt       DateTime         @default(now())
+  explanation      String?          @db.Text
+  lookups          Int              @default(0)
+  createdAt        DateTime         @default(now())
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 
@@ -520,15 +522,15 @@ model SpfVerification {
 }
 
 model DkimVerification {
-  id            String           @id @default(uuid())
-  emailId       String
-  result        AuthResultStatus @default(NONE)
-  domain        String?
-  selector      String?
-  algorithm     String?
+  id             String           @id @default(uuid())
+  emailId        String
+  result         AuthResultStatus @default(NONE)
+  domain         String?
+  selector       String?
+  algorithm      String?
   bodyHashResult AuthResultStatus @default(NONE)
-  explanation   String?          @db.Text
-  createdAt     DateTime         @default(now())
+  explanation    String?          @db.Text
+  createdAt      DateTime         @default(now())
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 
@@ -536,16 +538,16 @@ model DkimVerification {
 }
 
 model DmarcVerification {
-  id             String           @id @default(uuid())
-  emailId        String           @unique
-  result         AuthResultStatus @default(NONE)
-  orgDomain      String?
-  policy         String?          // p=
-  subdomainPolicy String?         // sp=
-  spfAlignment   String?          // strict, relaxed, unaligned
-  dkimAlignment  String?          // strict, relaxed, unaligned
-  explanation    String?          @db.Text
-  createdAt      DateTime         @default(now())
+  id              String           @id @default(uuid())
+  emailId         String           @unique
+  result          AuthResultStatus @default(NONE)
+  orgDomain       String?
+  policy          String? // p=
+  subdomainPolicy String? // sp=
+  spfAlignment    String? // strict, relaxed, unaligned
+  dkimAlignment   String? // strict, relaxed, unaligned
+  explanation     String?          @db.Text
+  createdAt       DateTime         @default(now())
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 }
@@ -554,9 +556,9 @@ model DnsObservation {
   id         String   @id @default(uuid())
   emailId    String
   queryName  String
-  recordType String   // TXT, MX, A, AAAA
+  recordType String // TXT, MX, A, AAAA
   response   String?  @db.Text
-  rcode      String?  // NOERROR, NXDOMAIN, SERVFAIL, TIMEOUT
+  rcode      String? // NOERROR, NXDOMAIN, SERVFAIL, TIMEOUT
   durationMs Int?
   createdAt  DateTime @default(now())
 
@@ -624,7 +626,7 @@ model MLInference {
   organizationId       String
   emailId              String
   status               String   @default("NOT_AVAILABLE") // MODEL_PREDICTION, FAILED, TIMEOUT, NOT_AVAILABLE, INSUFFICIENT_CONFIDENCE
-  prediction           String?  // e.g., "BEC", "PHISHING"
+  prediction           String? // e.g., "BEC", "PHISHING"
   modelScore           Float?
   modelName            String?
   modelVersion         String?
@@ -863,4 +865,38 @@ model IdempotencyOperation {
 
   @@unique([organizationId, operationKey, resourceId])
   @@index([organizationId, operationKey])
+}
+
+// ============================================================================
+// PHASE 14.1 ENRICHMENT
+// ============================================================================
+
+model ThreatIndicator {
+  id         String        @id @default(uuid())
+  emailId    String
+  iocType    IndicatorType
+  iocValue   String        @db.Text
+  provider   String
+  status     ThreatVerdict
+  confidence Int?
+  metadata   Json?
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@unique([emailId, iocValue, provider])
+  @@index([emailId])
+}
+
+model GeolocationInfo {
+  id        String  @id @default(uuid())
+  emailId   String
+  ipAddress String
+  country   String?
+  city      String?
+  asn       String?
+  isp       String?
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@unique([emailId, ipAddress])
 }
