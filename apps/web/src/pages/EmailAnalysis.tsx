@@ -194,6 +194,41 @@ export const EmailAnalysis = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
 
+            {/* Phase 13: Risk Assessment */}
+            {analysis.riskAssessment && (
+              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                  <h2 className="font-medium text-slate-200">Phase 13: Fusion Risk Assessment</h2>
+                  <span className={`text-xs px-2 py-1 rounded font-bold ${
+                    analysis.riskAssessment.riskLevel === 'CRITICAL' ? 'bg-rose-500/20 text-rose-500 border border-rose-500/30' :
+                    analysis.riskAssessment.riskLevel === 'HIGH' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
+                    analysis.riskAssessment.riskLevel === 'MEDIUM' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
+                    'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                  }`}>
+                    {analysis.riskAssessment.riskLevel} (Heuristic Risk Score: {analysis.riskAssessment.overallScore}/100)
+                  </span>
+                </div>
+                <div className="p-5 space-y-4">
+                  <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">Explainable Risk Factors</h3>
+                  {analysis.riskAssessment.factors?.length > 0 ? (
+                    <div className="space-y-3">
+                      {analysis.riskAssessment.factors.map((f: any, i: number) => (
+                        <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-xs flex flex-col space-y-2">
+                          <div className="flex justify-between items-center">
+                            <span className="font-mono text-amber-400 font-semibold">{f.category}</span>
+                            <span className="text-slate-500">+{f.scoreContribution} Score</span>
+                          </div>
+                          <div className="text-slate-300">{f.description}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-500">No elevated risk factors identified.</div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Header Forensics */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">

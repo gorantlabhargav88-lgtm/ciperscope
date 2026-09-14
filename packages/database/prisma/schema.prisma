@@ -655,6 +655,7 @@ model RiskAssessment {
   email   Email        @relation(fields: [emailId], references: [id], onDelete: Cascade)
   factors RiskFactor[]
 
+  @@unique([emailId, version])
   @@index([emailId])
 }
 

@@ -8,6 +8,7 @@ import { EmailForensicParser } from './parser/EmailForensicParser';
 import { AuthenticationVerifier } from './verifier/AuthenticationVerifier';
 import { ThreatAnalyzer } from './analyzer/ThreatAnalyzer';
 import { MLClassifier } from './classifier/MLClassifier';
+import { FusionEngine } from './analyzer/FusionEngine';
 import { EmailThreatAnalysisJobPayload, EmailMlClassificationJobPayload } from '@ciperscope/queue';
 import { createMetricsServer } from './metricsServer';
 
@@ -439,6 +440,10 @@ export async function start() {
 
           try {
             await mlClassifier.classifyEmail(job.data.resourceId);
+
+            // Phase 13: Fusion Engine to create Risk Assessment
+            const fusionEngine = new FusionEngine(prisma);
+            await fusionEngine.evaluate(job.data.resourceId);
 
             await idempotencyManager.markCompleted(
               job.data.organizationId,

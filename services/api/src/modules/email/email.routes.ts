@@ -113,7 +113,14 @@ export default async function emailRoutes(server: FastifyInstance) {
     }
 
     const email = await prisma.email.findUnique({
-      where: { id: emailId, organizationId }
+      where: { id: emailId, organizationId },
+      include: {
+        riskAssessments: {
+          include: { factors: true },
+          orderBy: { createdAt: 'desc' },
+          take: 1
+        }
+      }
     });
 
     if (!email) {
@@ -125,7 +132,8 @@ export default async function emailRoutes(server: FastifyInstance) {
       analysisStatus: email.analysisStatus || 'UNKNOWN',
       classification: email.classification,
       riskScore: email.riskScore,
-      createdAt: email.createdAt
+      createdAt: email.createdAt,
+      riskAssessment: email.riskAssessments[0] || null
     });
   });
 

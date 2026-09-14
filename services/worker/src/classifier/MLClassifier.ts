@@ -22,8 +22,12 @@ export class MLClassifier {
     private prisma: PrismaClient,
     private rawEmailStore: RawEmailStore,
     private mlServiceUrl: string = env.ML_SERVICE_URL || 'http://ml-worker:8000',
-    private mlServiceToken: string = env.ML_SERVICE_TOKEN || 'internal-secret-token'
-  ) {}
+    private mlServiceToken: string | undefined = env.ML_SERVICE_TOKEN
+  ) {
+    if (!this.mlServiceToken) {
+      logger.warn('ML_SERVICE_TOKEN is not configured. ML Classification will be unavailable.');
+    }
+  }
 
   public async classifyEmail(emailId: string): Promise<void> {
     logger.info({ emailId }, 'Starting ML Classification for email');
@@ -54,14 +58,16 @@ export class MLClassifier {
     const textPart = parsed.mimeParts.find(m => m.contentType.includes('text/plain'));
     const body = textPart?.filename || '';
 
-    // For simplicity, we just pass the subject, sender, replyTo.
-    const modelInputText = `SUBJECT:\n${subject}\n\nFROM:\n${sender}\n\nREPLY-TO:\n${replyTo}\n\nBODY:\n${body}`;
-
     const requestPayload = {
       requestId: `ml-${emailId}-${Date.now()}`,
       emailId: email.id,
       organizationId: email.organizationId,
-      modelInputText,
+      payload: {
+        subject,
+        sender,
+        replyTo,
+        body
+      },
       preprocessingVersion: '1.0',
       requestedModelVersion: 'latest'
     };
@@ -69,6 +75,10 @@ export class MLClassifier {
     let mlResponse: MLServiceResponse;
 
     try {
+      if (!this.mlServiceToken) {
+        throw new Error('ML_SERVICE_TOKEN is missing');
+      }
+
       // NOTE: Using native fetch
       const res = await fetch(`${this.mlServiceUrl}/api/v1/predict`, {
         method: 'POST',

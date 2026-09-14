@@ -7,15 +7,21 @@ import time
 app = FastAPI(title="CiperScope ML Classification Service", version="1.0.0")
 
 # Security configuration
-INTERNAL_AUTH_TOKEN = os.getenv("ML_SERVICE_TOKEN", "internal-secret-token")
+INTERNAL_AUTH_TOKEN = os.getenv("ML_SERVICE_TOKEN")
 
 # --- Schemas ---
+
+class EmailPayload(BaseModel):
+    subject: str
+    sender: str
+    replyTo: str
+    body: str
 
 class PredictionRequest(BaseModel):
     requestId: str
     emailId: str
     organizationId: str
-    modelInputText: str
+    payload: EmailPayload
     preprocessingVersion: str
     requestedModelVersion: str
 
@@ -34,6 +40,8 @@ class PredictionResponse(BaseModel):
 # --- Dependencies ---
 
 async def verify_internal_token(authorization: str = Header(None)):
+    if INTERNAL_AUTH_TOKEN is None:
+        raise HTTPException(status_code=500, detail="Server misconfiguration: ML_SERVICE_TOKEN is not set")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.split(" ")[1]
@@ -89,15 +97,20 @@ async def health_check():
         "model": "ready" if model_ready else "not_available"
     }
 
+import unicodedata
+
 @app.post("/api/v1/predict", response_model=PredictionResponse)
 async def predict_email(request: PredictionRequest, token: str = Depends(verify_internal_token)):
     # 1. Deterministic Preprocessing
-    # (Even with unavailable model, we enforce boundaries here)
-    # E.g. NFKC normalization, zero-width stripping
-    processed_text = request.modelInputText.strip()
+    # Construct the payload
+    raw_text = f"[SUBJECT] {request.payload.subject} [FROM] {request.payload.sender} [REPLY-TO] {request.payload.replyTo} [BODY] {request.payload.body}"
+
+    # NFKC normalization and strip
+    processed_text = unicodedata.normalize('NFKC', raw_text).strip()
 
     if len(processed_text) > 100000:
-        raise HTTPException(status_code=400, detail="Input text exceeds maximum length")
+        # Truncate rather than fail, or fail if desired. We will truncate to prevent denial of service.
+        processed_text = processed_text[:100000]
 
     # 2. Inference
     prediction_result = current_provider.predict(processed_text)
