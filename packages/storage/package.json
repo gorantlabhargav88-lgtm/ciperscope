@@ -10,8 +10,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ciperscope/logger": "workspace:*",
-    "@ciperscope/config": "workspace:*"
+    "@aws-sdk/client-s3": "^3.1131.0",
+    "@aws-sdk/s3-request-presigner": "^3.1131.0",
+    "@ciperscope/config": "workspace:*",
+    "@ciperscope/logger": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -1,5 +1,5 @@
 import { PrismaClient, UrlExtractionSource } from '@ciperscope/database';
-import { LocalRawEmailStore } from '@ciperscope/storage';
+import { RawEmailStore } from '@ciperscope/storage';
 import { UrlExtractor } from './UrlExtractor';
 import { AttachmentAnalyzer } from './AttachmentAnalyzer';
 import { logger } from '@ciperscope/logger';
@@ -18,7 +18,7 @@ type UrlCreateData = {
 export class ThreatAnalyzer {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly rawEmailStore: LocalRawEmailStore
+    private readonly rawEmailStore: RawEmailStore
   ) {}
 
   public async analyzeEmail(emailId: string): Promise<void> {

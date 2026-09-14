@@ -3,19 +3,25 @@ import { QueueManager, createTenantScopedWorker, IdempotencyManager, EmailIngest
 import { prisma } from '@ciperscope/database';
 import { env } from '@ciperscope/config';
 import IORedis from 'ioredis';
-import { LocalRawEmailStore } from '@ciperscope/storage';
+import { LocalRawEmailStore, S3RawEmailStore, RawEmailStore } from '@ciperscope/storage';
 import { EmailForensicParser } from './parser/EmailForensicParser';
 import { AuthenticationVerifier } from './verifier/AuthenticationVerifier';
 import { ThreatAnalyzer } from './analyzer/ThreatAnalyzer';
 import { MLClassifier } from './classifier/MLClassifier';
 import { EmailThreatAnalysisJobPayload, EmailMlClassificationJobPayload } from '@ciperscope/queue';
+import { createMetricsServer } from './metricsServer';
 
 const redisUrl = env.REDIS_URL;
 
 const queueManager = new QueueManager(redisUrl);
 const idempotencyRedis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 const idempotencyManager = new IdempotencyManager(idempotencyRedis, prisma);
-const rawEmailStore = new LocalRawEmailStore();
+let rawEmailStore: RawEmailStore;
+if (env.S3_BUCKET) {
+  rawEmailStore = new S3RawEmailStore(env.S3_BUCKET, env.S3_REGION || 'us-east-1', env.S3_ENDPOINT);
+} else {
+  rawEmailStore = new LocalRawEmailStore();
+}
 
 const emailResourceValidator = async (resourceId: string, organizationId: string) => {
   const email = await prisma.email.findUnique({
@@ -466,6 +472,13 @@ export async function start() {
   });
 
   logger.info('Workers registered and listening for jobs.');
+
+  // Start Metrics Server
+  const server = createMetricsServer();
+
+  const port = parseInt(env.PORT || '3001', 10);
+  await server.listen({ port, host: '0.0.0.0' });
+  logger.info(`Worker metrics server listening on port ${port}`);
 }
 
 // Graceful shutdown

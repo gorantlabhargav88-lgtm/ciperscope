@@ -1,14 +1,19 @@
 import { FastifyInstance } from 'fastify';
 import { EmailIngestionService } from './ingestion.service';
 import { prisma } from '@ciperscope/database';
-import { LocalRawEmailStore } from '@ciperscope/storage';
+import { LocalRawEmailStore, S3RawEmailStore, RawEmailStore } from '@ciperscope/storage';
 import { QueueManager, IdempotencyManager, createRedisConnection } from '@ciperscope/queue';
 import { env } from '@ciperscope/config';
 import { getRequestContext } from '@ciperscope/logger';
 
 export default async function emailRoutes(server: FastifyInstance) {
   // Setup dependencies for the route
-  const storage = new LocalRawEmailStore(); // In production, this would be dependency injected
+  let storage: RawEmailStore;
+  if (env.S3_BUCKET) {
+    storage = new S3RawEmailStore(env.S3_BUCKET, env.S3_REGION || 'us-east-1', env.S3_ENDPOINT);
+  } else {
+    storage = new LocalRawEmailStore();
+  }
   const redisConnection = createRedisConnection(env.REDIS_URL || 'redis://127.0.0.1:6379');
   const queueManager = new QueueManager(env.REDIS_URL || 'redis://127.0.0.1:6379');
   const idempotencyManager = new IdempotencyManager(redisConnection, prisma);
@@ -22,7 +27,13 @@ export default async function emailRoutes(server: FastifyInstance) {
   });
 
   server.post('/ingest', {
-    preValidation: [server.authenticate, server.requirePermission('EMAIL_INGEST')]
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_INGEST')],
+    config: {
+      rateLimit: {
+        max: 1000,
+        timeWindow: '1 minute'
+      }
+    }
   }, async (request, reply) => {
     // 1. Verify organization context (tenant isolation)
     const organizationId = request.headers['x-organization-id'] as string;

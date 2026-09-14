@@ -2,7 +2,7 @@ import { PrismaClient } from '@ciperscope/database';
 import { logger } from '@ciperscope/logger';
 import { env } from '@ciperscope/config';
 import { EmailForensicParser } from '../parser/EmailForensicParser';
-import { LocalRawEmailStore } from '@ciperscope/storage';
+import { RawEmailStore } from '@ciperscope/storage';
 
 interface MLServiceResponse {
   status: string;
@@ -20,7 +20,7 @@ interface MLServiceResponse {
 export class MLClassifier {
   constructor(
     private prisma: PrismaClient,
-    private rawEmailStore: LocalRawEmailStore,
+    private rawEmailStore: RawEmailStore,
     private mlServiceUrl: string = env.ML_SERVICE_URL || 'http://ml-worker:8000',
     private mlServiceToken: string = env.ML_SERVICE_TOKEN || 'internal-secret-token'
   ) {}

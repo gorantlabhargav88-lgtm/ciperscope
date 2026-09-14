@@ -42,7 +42,14 @@ export const loggerOptions = {
     'body',
     'emailBody',
     'text',
-    'html'
+    'html',
+    'subject',
+    'headers',
+    'senderAddress',
+    'replyTo',
+    'addresses',
+    'raw',
+    'content'
   ],
   mixin() {
     const store = requestContextStorage.getStore();

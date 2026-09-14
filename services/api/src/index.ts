@@ -9,6 +9,7 @@ import authRoutes from './modules/auth/auth.routes';
 import rbacPlugin from './plugins/rbac';
 import emailRoutes from './modules/email/email.routes';
 import fastifyMultipart from '@fastify/multipart';
+import { createRedisConnection } from '@ciperscope/queue';
 
 import { logger, loggerOptions, generateRequestId, runWithContext } from '@ciperscope/logger';
 import { env } from '@ciperscope/config';
@@ -60,9 +61,12 @@ server.register(fastifyCors, {
 server.register(fastifyMetrics, { endpoint: '/metrics' });
 
 server.register(fastifyRateLimit, {
-
   max: 100,
   timeWindow: '1 minute',
+  redis: createRedisConnection(env.REDIS_URL || 'redis://127.0.0.1:6379'),
+  keyGenerator: (request) => {
+    return request.ip;
+  }
 });
 
 // Register Auth Plugins
