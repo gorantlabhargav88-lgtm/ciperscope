@@ -278,6 +278,10 @@ export interface EmailThreatAnalysisJobPayload extends TenantAwareJobPayload {
   emailId: string;
 }
 
+export interface EmailCtiEnrichmentJobPayload extends TenantAwareJobPayload {
+  emailId: string;
+}
+
 export interface EmailMlClassificationJobPayload extends TenantAwareJobPayload {
   emailId: string;
 }

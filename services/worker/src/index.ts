@@ -9,8 +9,12 @@ import { AuthenticationVerifier } from './verifier/AuthenticationVerifier';
 import { ThreatAnalyzer } from './analyzer/ThreatAnalyzer';
 import { MLClassifier } from './classifier/MLClassifier';
 import { FusionEngine } from './analyzer/FusionEngine';
-import { EmailThreatAnalysisJobPayload, EmailMlClassificationJobPayload } from '@ciperscope/queue';
+import { EmailThreatAnalysisJobPayload, EmailCtiEnrichmentJobPayload, EmailMlClassificationJobPayload } from '@ciperscope/queue';
 import { createMetricsServer } from './metricsServer';
+import { NullCtiProvider, NullGeoProvider } from './cti/providers/NullProvider';
+import { ReliableCtiProvider } from './cti/providers/ReliableCtiProvider';
+import { ReliableGeoProvider } from './cti/providers/ReliableGeoProvider';
+import { CtiEnrichmentWorker } from './cti/CtiEnrichmentWorker';
 
 const redisUrl = env.REDIS_URL;
 
@@ -362,6 +366,95 @@ export async function start() {
               'result-ref-success'
             );
 
+            // Dispatch CTI Enrichment Phase 14.3
+            const ctiQueue = queueManager.getQueue('email-cti-enrichment');
+            await ctiQueue.add(
+              'cti-enrichment',
+              {
+                organizationId: job.data.organizationId,
+                resourceId: job.data.resourceId,
+                jobId: job.id as string,
+                operation: 'cti-enrichment',
+                emailId: job.data.resourceId,
+                requestId: job.data.requestId,
+                traceId: job.data.traceId
+              },
+              { jobId: `cti-${job.data.resourceId}` }
+            );
+
+            return { success: true, processedAt: new Date().toISOString() };
+          } catch (error: unknown) {
+            await idempotencyManager.markFailed(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              error instanceof Error ? error.message : 'Unknown error'
+            );
+            throw error;
+          }
+        }
+      );
+    },
+    1,
+    emailResourceValidator
+  );
+
+  threatWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, queue: 'email-threat-analysis' }, 'Threat Analysis Job completed successfully');
+  });
+
+  threatWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, queue: 'email-threat-analysis', err }, 'Threat Analysis Job failed');
+  });
+
+  // Setup CTI Enrichment Worker Phase 14.3
+  const ctiProvider = new ReliableCtiProvider(new NullCtiProvider(), idempotencyRedis);
+  const geoProvider = new ReliableGeoProvider(new NullGeoProvider(), idempotencyRedis);
+  const ctiWorkerLogic = new CtiEnrichmentWorker(prisma, ctiProvider, geoProvider);
+
+  const ctiWorker = createTenantScopedWorker<EmailCtiEnrichmentJobPayload, unknown>(
+    'email-cti-enrichment',
+    idempotencyRedis,
+    async (job) => {
+      return runWithContext(
+        {
+          requestId: job.data.requestId || generateRequestId(),
+          traceId: job.data.traceId,
+          jobId: job.id as string,
+          tenantId: job.data.organizationId,
+          actorId: job.data.actorId,
+        },
+        async () => {
+          logger.info({ data: job.data }, 'Processing email CTI enrichment job');
+
+          const operationKey = `cti:${job.data.operation}`;
+
+          try {
+            const acquired = await idempotencyManager.acquireLock(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              job.data.operation
+            );
+            if (!acquired) {
+              logger.info({ operationKey }, 'Skipping job: idempotency lock not acquired');
+              return { skipped: true, reason: 'idempotency' };
+            }
+          } catch (error) {
+             logger.warn({ err: error }, 'Failed to acquire idempotency lock');
+             throw error;
+          }
+
+          try {
+            await ctiWorkerLogic.processEmail(job.data.resourceId);
+
+            await idempotencyManager.markCompleted(
+              job.data.organizationId,
+              operationKey,
+              job.data.resourceId,
+              'result-ref-success'
+            );
+
             // Dispatch ML Classification Phase 11
             const mlQueue = queueManager.getQueue('email-ml-classification');
             await mlQueue.add(
@@ -395,12 +488,12 @@ export async function start() {
     emailResourceValidator
   );
 
-  threatWorker.on('completed', (job) => {
-    logger.info({ jobId: job.id, queue: 'email-threat-analysis' }, 'Threat Analysis Job completed successfully');
+  ctiWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, queue: 'email-cti-enrichment' }, 'CTI Enrichment Job completed successfully');
   });
 
-  threatWorker.on('failed', (job, err) => {
-    logger.error({ jobId: job?.id, queue: 'email-threat-analysis', err }, 'Threat Analysis Job failed');
+  ctiWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, queue: 'email-cti-enrichment', err }, 'CTI Enrichment Job failed');
   });
 
   // Setup ML Classification Worker
