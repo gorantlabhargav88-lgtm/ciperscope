@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { FusionEngine } from '../FusionEngine';
-import { PrismaClient, AuthResultStatus } from '@ciperscope/database';
+import { PrismaClient, AuthResultStatus, ThreatVerdict } from '@ciperscope/database';
 
 // Mock logger to avoid noisy test output
 vi.mock('@ciperscope/logger', () => ({
@@ -23,7 +23,9 @@ describe('FusionEngine', () => {
       authAnalysis: null,
       urls: [],
       attachments: [],
-      inferences: []
+      inferences: [],
+      threatIndicators: [],
+      geolocationInfo: []
     };
 
     prismaMock = {
@@ -151,6 +153,151 @@ describe('FusionEngine', () => {
     expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { emailId_version: { emailId: 'email-1', version: '1.0' } }
+      })
+    );
+  });
+
+  // --- Phase 14.4 CTI Integration Tests ---
+
+  it('adds +50 score and THREAT_INTELLIGENCE factor for MALICIOUS CTI', async () => {
+    mockEmail.threatIndicators = [
+      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' }
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          overallScore: 50,
+          factors: expect.objectContaining({
+            create: expect.arrayContaining([
+              expect.objectContaining({ category: 'THREAT_INTELLIGENCE', scoreContribution: 50 })
+            ])
+          })
+        })
+      })
+    );
+  });
+
+  it('contributes exactly +50 for multiple MALICIOUS indicators, without artificial fan-out inflation', async () => {
+    mockEmail.threatIndicators = [
+      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' },
+      { status: ThreatVerdict.MALICIOUS, iocValue: 'worse.com', provider: 'Mock' }
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ overallScore: 50 })
+      })
+    );
+  });
+
+  it('adds +20 score and factor for SUSPICIOUS CTI when no MALICIOUS indicators exist', async () => {
+    mockEmail.threatIndicators = [
+      { status: ThreatVerdict.SUSPICIOUS, iocValue: 'sus.com', provider: 'Mock' }
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          overallScore: 20,
+          factors: expect.objectContaining({
+            create: expect.arrayContaining([
+              expect.objectContaining({ category: 'THREAT_INTELLIGENCE', scoreContribution: 20 })
+            ])
+          })
+        })
+      })
+    );
+  });
+
+  it('MALICIOUS takes precedence over SUSPICIOUS for CTI scoring', async () => {
+    mockEmail.threatIndicators = [
+      { status: ThreatVerdict.SUSPICIOUS, iocValue: 'sus.com', provider: 'Mock' },
+      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' }
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ overallScore: 50 })
+      })
+    );
+  });
+
+  it('contributes +0 for CLEAN indicators and creates no threat-intelligence factor', async () => {
+    mockEmail.threatIndicators = [
+      { status: ThreatVerdict.CLEAN, iocValue: 'good.com', provider: 'Mock' }
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ overallScore: 0 })
+      })
+    );
+  });
+
+  it('contributes +0 for UNKNOWN/missing indicators and creates no threat-intelligence factor', async () => {
+    mockEmail.threatIndicators = [
+      { status: ThreatVerdict.UNKNOWN, iocValue: 'unknown.com', provider: 'Mock' }
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ overallScore: 0 })
+      })
+    );
+  });
+
+  it('safely updates risk score for MALICIOUS CTI without fabricating ML classification', async () => {
+    // Known ML prediction
+    mockEmail.inferences = [{
+      status: 'MODEL_PREDICTION',
+      prediction: 'LEGITIMATE',
+      modelScore: 0.1
+    }];
+    mockEmail.threatIndicators = [
+      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' }
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    // Email update should preserve the ML prediction of LEGITIMATE but update riskScore to 50
+    expect(prismaMock.email.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ classification: 'LEGITIMATE', riskScore: 50 })
+      })
+    );
+  });
+
+  it('bounds the maximum risk score at 100 even with severe CTI', async () => {
+    mockEmail.authAnalysis = {
+      spf: AuthResultStatus.FAIL,
+      dkim: AuthResultStatus.FAIL
+    }; // +40
+    mockEmail.urls = [
+      { indicators: ['OBFUSCATED'] }
+    ]; // +40
+    mockEmail.threatIndicators = [
+      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' }
+    ]; // +50
+
+    await fusionEngine.evaluate('email-1');
+
+    // 40 + 40 + 50 = 130, but should be bounded to 100
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ overallScore: 100, riskLevel: 'CRITICAL' })
       })
     );
   });

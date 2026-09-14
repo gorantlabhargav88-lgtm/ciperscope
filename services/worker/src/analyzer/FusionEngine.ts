@@ -1,4 +1,4 @@
-import { PrismaClient, AuthResultStatus, EmailClassification } from '@ciperscope/database';
+import { PrismaClient, AuthResultStatus, EmailClassification, ThreatVerdict } from '@ciperscope/database';
 import { logger } from '@ciperscope/logger';
 
 export class FusionEngine {
@@ -13,6 +13,8 @@ export class FusionEngine {
         authAnalysis: true,
         urls: true,
         attachments: true,
+        threatIndicators: true,
+        geolocationInfo: true,
         inferences: {
           orderBy: { createdAt: 'desc' },
           take: 1
@@ -77,6 +79,28 @@ export class FusionEngine {
         description: 'Email contains suspicious or obfuscated URLs.',
         scoreContribution: 40
       });
+    }
+
+    // 4. Evaluate CTI Threat Intelligence
+    if (email.threatIndicators && email.threatIndicators.length > 0) {
+      const hasMalicious = email.threatIndicators.some(i => i.status === ThreatVerdict.MALICIOUS);
+      const hasSuspicious = email.threatIndicators.some(i => i.status === ThreatVerdict.SUSPICIOUS);
+
+      if (hasMalicious) {
+        score += 50;
+        factors.push({
+          category: 'THREAT_INTELLIGENCE',
+          description: 'Known malicious threat intelligence indicator detected.',
+          scoreContribution: 50
+        });
+      } else if (hasSuspicious) {
+        score += 20;
+        factors.push({
+          category: 'THREAT_INTELLIGENCE',
+          description: 'Suspicious threat intelligence indicator detected.',
+          scoreContribution: 20
+        });
+      }
     }
 
     // Default to a 0-100 bound
