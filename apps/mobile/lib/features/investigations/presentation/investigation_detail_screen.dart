@@ -49,8 +49,39 @@ class _EmailAnalysisTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: Text('Email Analysis Foundation - Awaiting Phase 7', style: TextStyle(color: AppTheme.textMuted)),
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Email Analysis Foundation', style: TextStyle(color: AppTheme.textMuted)),
+          const SizedBox(height: 24),
+          const Text('AI / NLP Analysis', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            decoration: BoxDecoration(
+              color: AppTheme.primaryBlue,
+              borderRadius: BorderRadius.circular(8.0),
+              border: Border.all(color: const Color(0xFF1E293B)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: const [
+                    Text('Status', style: TextStyle(color: AppTheme.textMuted)),
+                    Text('MODEL NOT AVAILABLE', style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text('Message: No verified classification model is currently configured.', style: TextStyle(color: AppTheme.textMuted, fontStyle: FontStyle.italic)),
+              ],
+            ),
+          )
+        ],
+      ),
     );
   }
 }

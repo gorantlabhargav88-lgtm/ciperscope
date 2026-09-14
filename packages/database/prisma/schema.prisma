@@ -144,6 +144,7 @@ model Organization {
   systemConfig SystemSetting[]
   Role         Role[]
   APIKey       APIKey[]
+  mlInferences MLInference[]
 }
 
 model User {
@@ -380,7 +381,7 @@ model RelayHop {
   id             String    @id @default(uuid())
   emailId        String
   hopOrder       Int
-  
+
   // Extracted fields
   receivingHost  String?
   sendingHost    String?
@@ -388,7 +389,7 @@ model RelayHop {
   byHost         String?
   protocol       String?
   parsedConfidence Float?
-  
+
   sourceIp       String?
   hostname       String?
   timestamp      DateTime?
@@ -408,7 +409,7 @@ model EmailAttachment {
   sizeBytes  Int
   sha256     String?
   storageKey String?
-  
+
   // Phase 10 Threat Analysis fields
   actualMimeType String?
   isMismatch     Boolean  @default(false)
@@ -428,7 +429,7 @@ model EmailUrl {
   emailId   String
   url       String   @db.Text
   domain    String?
-  
+
   // Phase 10 Threat Analysis fields
   normalizedUrl String? @db.Text
   isObfuscated  Boolean @default(false)
@@ -488,14 +489,14 @@ model EmailAddress {
 model EmailAuthenticationAnalysis {
   id        String           @id @default(uuid())
   emailId   String           @unique
-  
+
   spf       AuthResultStatus @default(NONE)
   dkim      AuthResultStatus @default(NONE)
   dmarc     AuthResultStatus @default(NONE)
-  
+
   isConsistent Boolean       @default(false)
   summary      String?       @db.Text
-  
+
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt
 
@@ -514,7 +515,7 @@ model SpfVerification {
   createdAt       DateTime         @default(now())
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
-  
+
   @@index([emailId])
 }
 
@@ -619,17 +620,27 @@ model GeoLocation {
 // ============================================================================
 
 model MLInference {
-  id               String   @id @default(uuid())
-  emailId          String
-  modelIdentifier  String // e.g., "distilbert-bec-v1"
-  prediction       String // e.g., "BEC", "PHISHING"
-  confidence       Float
-  processingTimeMs Int?
-  explanation      String?  @db.Text
-  createdAt        DateTime @default(now())
+  id                   String   @id @default(uuid())
+  organizationId       String
+  emailId              String
+  status               String   @default("NOT_AVAILABLE") // MODEL_PREDICTION, FAILED, TIMEOUT, NOT_AVAILABLE, INSUFFICIENT_CONFIDENCE
+  prediction           String?  // e.g., "BEC", "PHISHING"
+  modelScore           Float?
+  modelName            String?
+  modelVersion         String?
+  artifactSha256       String?
+  tokenizerVersion     String?
+  preprocessingVersion String?
+  labelMappingVersion  String?
+  serviceVersion       String?
+  processingTimeMs     Int?
+  explanation          String?  @db.Text
+  createdAt            DateTime @default(now()) // inference timestamp
 
-  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  email        Email        @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
+  @@index([organizationId])
   @@index([emailId])
 }
 

@@ -12,7 +12,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   const redisConnection = createRedisConnection(env.REDIS_URL || 'redis://127.0.0.1:6379');
   const queueManager = new QueueManager(env.REDIS_URL || 'redis://127.0.0.1:6379');
   const idempotencyManager = new IdempotencyManager(redisConnection, prisma);
-  
+
   const ingestionService = new EmailIngestionService(prisma, storage, idempotencyManager, queueManager);
 
   // Close connections when Fastify closes
@@ -76,10 +76,10 @@ export default async function emailRoutes(server: FastifyInstance) {
       if (error.message.includes('Concurrent ingestion detected')) {
          return reply.status(409).send({ error: 'Conflict', message: error.message });
       }
-      if (error.message === 'File size limit reached' || 
-          err instanceof server.multipartErrors.FilesLimitError || 
-          err instanceof server.multipartErrors.FieldsLimitError || 
-          err instanceof server.multipartErrors.PartsLimitError || 
+      if (error.message === 'File size limit reached' ||
+          err instanceof server.multipartErrors.FilesLimitError ||
+          err instanceof server.multipartErrors.FieldsLimitError ||
+          err instanceof server.multipartErrors.PartsLimitError ||
           err instanceof server.multipartErrors.RequestFileTooLargeError) {
           return reply.status(413).send({ error: 'Payload Too Large', message: 'Upload limits exceeded' });
       }
@@ -96,7 +96,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -123,7 +123,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -147,7 +147,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -171,7 +171,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -200,7 +200,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -222,7 +222,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -245,7 +245,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -268,7 +268,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -294,7 +294,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -317,7 +317,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId } = request.params as { emailId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -340,7 +340,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
     const { emailId, attachmentId } = request.params as { emailId: string, attachmentId: string };
-    
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
@@ -359,5 +359,35 @@ export default async function emailRoutes(server: FastifyInstance) {
     }
 
     return reply.send({ attachment });
+  });
+
+  server.get('/:emailId/ai-analysis', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const prediction = await prisma.mLInference.findFirst({
+      where: { emailId, organizationId },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!prediction) {
+      return reply.send({
+        status: 'NOT_AVAILABLE',
+        prediction: { status: 'NOT_AVAILABLE', message: 'No verified CiperScope ML model artifact is currently configured.' }
+      });
+    }
+
+    return reply.send({ prediction });
   });
 }

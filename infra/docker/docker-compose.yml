@@ -33,6 +33,20 @@ services:
       timeout: 5s
       retries: 5
 
+  # ML Inference Service (Phase 11)
+  ml-worker:
+    build:
+      context: ../../services/ml-worker
+    container_name: ciperscope_ml_worker
+    environment:
+      - ML_SERVICE_TOKEN=internal-secret-token
+    # No ports exposed to host. Only accessible via internal Docker network.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
 volumes:
   postgres_data:
   redis_data:

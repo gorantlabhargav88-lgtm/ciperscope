@@ -15,10 +15,10 @@ export const EmailAnalysis = () => {
   const [spf, setSpf] = useState<any[]>([]);
   const [dkim, setDkim] = useState<any[]>([]);
   const [dmarc, setDmarc] = useState<any>(null);
-  
+
   const [urls, setUrls] = useState<any[]>([]);
   const [attachments, setAttachments] = useState<any[]>([]);
-  
+
   const organizationId = '00000000-0000-0000-0000-000000000000'; // dummy for UI
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -37,11 +37,11 @@ export const EmailAnalysis = () => {
     setDmarc(null);
     setUrls([]);
     setAttachments([]);
-    
+
     try {
       const formData = new FormData();
       formData.append('file', file);
-      
+
       const res = await fetch('http://localhost:3000/api/v1/emails/ingest', {
         method: 'POST',
         headers: {
@@ -71,35 +71,35 @@ export const EmailAnalysis = () => {
 
           if (data.analysisStatus === 'COMPLETED') {
             clearInterval(interval);
-            
+
             // Fetch headers
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/headers`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setHeaders(d.headers || []));
-            
+
             // Fetch hops
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/received-hops`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setHops(d.hops || []));
-            
+
             // Fetch mime
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/mime-parts`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setMimeParts(d.mimeParts || []));
-            
+
             // Phase 9 Auth fetching
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/authentication`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setAuthAnalysis(d.analysis || null));
-            
+
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/spf`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setSpf(d.spfVerifications || []));
-            
+
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/dkim`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setDkim(d.dkimVerifications || []));
-            
+
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/dmarc`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setDmarc(d.dmarcVerification || null));
@@ -112,6 +112,12 @@ export const EmailAnalysis = () => {
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/attachments`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setAttachments(d.attachments || []));
+
+            // Phase 11
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/ai-analysis`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setAnalysis((prev: any) => ({...prev, mlInference: d.prediction || {status: 'NOT_AVAILABLE'}})));
+
           } else if (data.analysisStatus === 'FAILED') {
             clearInterval(interval);
           }
@@ -131,7 +137,7 @@ export const EmailAnalysis = () => {
   return (
     <div className="space-y-6 pb-20">
       <DemoModeBanner />
-      
+
       <div className="flex justify-between items-start">
         <div>
           <h1 className="text-2xl font-semibold text-slate-100 flex items-center">
@@ -142,14 +148,14 @@ export const EmailAnalysis = () => {
         </div>
         <div className="flex items-center space-x-4">
           <div className="flex flex-col items-end">
-            <input 
-               type="file" 
-               ref={fileInputRef} 
-               className="hidden" 
-               accept=".eml" 
-               onChange={handleFileUpload} 
+            <input
+               type="file"
+               ref={fileInputRef}
+               className="hidden"
+               accept=".eml"
+               onChange={handleFileUpload}
             />
-            <button 
+            <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
               className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center transition-colors disabled:opacity-50"
@@ -187,7 +193,7 @@ export const EmailAnalysis = () => {
       {analysis?.analysisStatus === 'COMPLETED' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
-            
+
             {/* Header Forensics */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
@@ -207,7 +213,7 @@ export const EmailAnalysis = () => {
 
                   <div className="text-sm text-slate-400">Date</div>
                   <div className="md:col-span-3 text-sm text-slate-200">{getHeader('date') || 'N/A'}</div>
-                  
+
                   <div className="text-sm text-slate-400">Message-ID</div>
                   <div className="md:col-span-3 text-sm text-slate-400 font-mono break-all">{getHeader('message-id') || 'N/A'}</div>
                 </div>
@@ -239,7 +245,7 @@ export const EmailAnalysis = () => {
                 </div>
               </div>
             </div>
-            
+
             {/* Authentication Observations */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
@@ -257,7 +263,7 @@ export const EmailAnalysis = () => {
                  )}
               </div>
             </div>
-            
+
             {/* Phase 9: Independent Authentication Verification */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
@@ -265,7 +271,7 @@ export const EmailAnalysis = () => {
                 <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">Phase 9 DNS</span>
               </div>
               <div className="p-5 space-y-4">
-                 
+
                  {/* Overall Auth Summary */}
                  {authAnalysis && (
                    <div className={`p-4 rounded-lg border ${authAnalysis.isConsistent ? 'border-emerald-900/50 bg-emerald-950/20' : 'border-rose-900/50 bg-rose-950/20'}`}>
@@ -339,7 +345,7 @@ export const EmailAnalysis = () => {
                 <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-1 rounded border border-rose-500/30">Passive Scan</span>
               </div>
               <div className="p-5 space-y-6">
-                
+
                 {/* URLs */}
                 <div>
                    <h3 className="text-sm font-medium text-slate-300 mb-3 border-b border-slate-800 pb-2">Extracted URLs ({urls.length})</h3>
@@ -376,7 +382,7 @@ export const EmailAnalysis = () => {
                            <div className="font-medium text-slate-200">{a.filename}</div>
                            <div className="text-slate-500">{Math.round(a.sizeBytes / 1024)} KB</div>
                          </div>
-                         
+
                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
                             <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Declared MIME</span><span className="text-slate-300">{a.mimeType}</span></div>
                             <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Actual MIME</span><span className={`font-mono ${a.isMismatch ? 'text-rose-400' : 'text-slate-300'}`}>{a.actualMimeType || 'Unknown'}</span></div>
@@ -416,6 +422,58 @@ export const EmailAnalysis = () => {
                    </div>
                 </div>
 
+              </div>
+            </div>
+
+            {/* Phase 11: AI/NLP Threat Classification */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mt-6">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Phase 11: AI / NLP ANALYSIS</h2>
+                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">ML Inference</span>
+              </div>
+              <div className="p-5 space-y-4">
+                {!analysis.mlInference || analysis.mlInference.status === 'NOT_AVAILABLE' ? (
+                  <div className="bg-slate-950 border border-slate-800 rounded p-4 text-sm flex flex-col space-y-2">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-slate-400 font-medium">Status</span>
+                      <span className="text-amber-400 font-mono">MODEL NOT AVAILABLE</span>
+                    </div>
+                    <div className="text-slate-500 italic">
+                      Message: No verified classification model is currently configured.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-slate-950 border border-slate-800 rounded p-4 text-sm flex flex-col space-y-2">
+                    <div className="flex justify-between items-center border-b border-slate-800/50 pb-2 mb-2">
+                      <span className="text-slate-400 font-medium">Classification</span>
+                      <span className={`font-bold ${analysis.mlInference.prediction === 'PHISHING' || analysis.mlInference.prediction === 'BEC' ? 'text-rose-400' : 'text-emerald-400'}`}>{analysis.mlInference.prediction || 'UNKNOWN'}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">Model Score</span>
+                      <span className="text-slate-200 font-mono">{analysis.mlInference.modelScore}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">Model</span>
+                      <span className="text-slate-300">{analysis.mlInference.modelName}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">Version</span>
+                      <span className="text-slate-300">{analysis.mlInference.modelVersion}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">Artifact SHA-256</span>
+                      <span className="text-slate-300 font-mono text-xs">{analysis.mlInference.artifactSha256}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500">Status</span>
+                      <span className="text-slate-300">{analysis.mlInference.status}</span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="text-xs text-slate-500 text-center mt-4">
+                  Automated model assessment. Not independent confirmation.
+                </div>
               </div>
             </div>
 

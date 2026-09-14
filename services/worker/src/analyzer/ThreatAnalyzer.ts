@@ -38,8 +38,8 @@ export class ThreatAnalyzer {
     logger.info({ emailId }, 'Starting Phase 10 Threat Analysis');
 
     const urlsToCreate: UrlCreateData[] = [];
-    
-    // We only process if we have a rawStorageKey to fetch attachments from, 
+
+    // We only process if we have a rawStorageKey to fetch attachments from,
     // unless MimeParts already contain inline text we can parse.
     // For now, let's assume we can fetch the full raw email to extract the text and attachments.
     // Wait, EmailForensicParser doesn't save the parsed text directly in DB, it only saves MimePart metadata.
@@ -47,7 +47,7 @@ export class ThreatAnalyzer {
     // To do it efficiently and safely, since mailparser streams, we can re-parse the raw stream to get text/html content
     // OR we could have saved it. Let's just re-parse the raw email using simpleParser to get the text and html bodies,
     // and process attachments.
-    
+
     if (!email.rawStorageKey) {
        logger.warn({ emailId }, 'No rawStorageKey found for email, cannot perform threat analysis');
        return;
@@ -107,22 +107,23 @@ export class ThreatAnalyzer {
 
     // 3. Analyze Attachments
     const attachmentUpdates: { id: string; data: Record<string, unknown> }[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const newAttachments: any[] = [];
-    
+
     if (parsed.attachments && parsed.attachments.length > 0) {
       for (const att of parsed.attachments) {
          // Create a readable stream from the attachment content (buffer)
          const attStream = Readable.from(att.content);
-         
+
          const ext = att.filename ? att.filename.split('.').pop() : undefined;
          const declaredMime = att.contentType || 'application/octet-stream';
-         
+
          try {
             const analysis = await AttachmentAnalyzer.analyze(attStream, declaredMime, ext);
-            
+
             // Try to match with existing MimePart or EmailAttachment from Phase 7/8
             const existingAtt = email.attachments.find(a => a.filename === att.filename && a.sizeBytes === att.size);
-            
+
             if (existingAtt) {
                attachmentUpdates.push({
                   id: existingAtt.id,
@@ -149,8 +150,8 @@ export class ThreatAnalyzer {
                   archiveMetadata: analysis.archiveMetadata ? JSON.parse(JSON.stringify(analysis.archiveMetadata)) : null
                });
             }
-         } catch (e) {
-            logger.error({ err: e, filename: att.filename }, 'Failed to analyze attachment');
+         } catch (err: unknown) {
+            logger.error({ err, filename: att.filename }, 'Failed to analyze attachment');
          }
       }
     }
