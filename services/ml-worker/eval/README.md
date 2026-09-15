@@ -35,13 +35,17 @@ Must be exactly 64-character lowercase hexadecimal string (SHA-256).
 - `THRESHOLD_CALIBRATION`: The dataset MUST include `timestamp`, `campaign_hash`, and `sender_domain_hash` to enable rigorous upstream separation control. `url_domain_hash` is OPTIONAL (to support legitimate URL-free records), but if supplied, it must strictly match the hash format.
 - `FINAL_VALIDATION`: The dataset MUST include `timestamp`, `campaign_hash`, and `sender_domain_hash` to establish robust independence from the calibration dataset. `url_domain_hash` is OPTIONAL.
 
-**F. Privacy Boundary**
-The ML evaluator purposefully does not ingest raw Campaign IDs, Thread IDs, Recipient IDs, or raw extracted URLs. Upstream pipelines must compute and provide cryptographic hashes for correlation. While these hashes act as correlation identifiers and may be considered sensitive structurally, they prevent the ML evaluator from stockpiling unnecessarily raw deanonymizing fields.
+**G. Cross-Dataset Leakage Controls**
+When validating a `THRESHOLD_CALIBRATION` split against a `FINAL_VALIDATION` split, the evaluator natively computes exact strict separation across the following dimensions:
+- **Campaign Separation**: Intersection of `campaign_hash` values between datasets must be empty.
+- **Sender-Domain Separation**: Intersection of `sender_domain_hash` values between datasets must be empty.
+- **URL-Domain Separation**: For records where `url_domain_hash` exists, intersection between datasets must be empty. URL-free records correctly bypass this correlation without triggering a false positive.
+- **Strict Temporal Separation**: `max(calibration timestamp) < min(final-validation timestamp)` is strictly enforced. The calibration dataset's latest event must strictly pre-date the validation dataset's earliest event.
 
-**G. Important Limitations**
+**H. Important Limitations**
 - Dataset-level `coverage_period` does not establish record-level temporal independence.
-- Presence of campaign/domain hashes enables correlation checks but does not itself prove dataset independence.
 - URL-free records may legitimately omit `url_domain_hash`. The absence of `url_domain_hash` means the evaluator cannot perform URL-domain correlation for that record. It does NOT mean the record is URL-independent, campaign-independent, or automatically safe for holdout evaluation.
+- These controls establish separation only for the metadata dimensions actually represented. They do not prove semantic campaign independence, detect semantic near duplicates, or establish complete real-world independence of datasets. Concentration reporting and semantic near-duplicate detection remain future work.
 
 ### 2. Evaluator Usage
 

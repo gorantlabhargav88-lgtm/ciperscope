@@ -302,5 +302,102 @@ class TestDatasetValidation(unittest.TestCase):
         r["url_domain_hash"] = 123
         self.assertFalse(validate_data([r], meta))
 
+    # SEPARATION LEAKAGE TESTS
+    def get_leakage_record(self, idx: str, ts: str, camp: str, sender: str, url: str = None) -> Dict[str, Any]:
+        r = self.get_valid_record()
+        r["id"] = idx
+        r["body"] = f"Body {idx}"
+        r["timestamp"] = ts
+        r["campaign_hash"] = camp
+        r["sender_domain_hash"] = sender
+        if url is not None:
+            r["url_domain_hash"] = url
+        return r
+
+    def get_cal_meta(self) -> Dict[str, Any]:
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        return meta
+
+    def get_val_meta(self) -> Dict[str, Any]:
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "FINAL_VALIDATION"
+        return meta
+
+    def test_campaign_overlap_rejected(self):
+        cal = [self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64)]
+        val = [self.get_leakage_record("2", "2023-01-02T00:00:00Z", "a"*64, "c"*64)]
+        self.assertFalse(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_non_overlapping_campaigns_pass(self):
+        cal = [self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64)]
+        val = [self.get_leakage_record("2", "2023-01-02T00:00:00Z", "b"*64, "c"*64)]
+        self.assertTrue(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_sender_domain_overlap_rejected(self):
+        cal = [self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64)]
+        val = [self.get_leakage_record("2", "2023-01-02T00:00:00Z", "c"*64, "b"*64)]
+        self.assertFalse(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_url_domain_overlap_rejected(self):
+        cal = [self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64, "c"*64)]
+        val = [self.get_leakage_record("2", "2023-01-02T00:00:00Z", "d"*64, "e"*64, "c"*64)]
+        self.assertFalse(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_missing_url_domain_hash_not_treated_as_shared(self):
+        cal = [self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64)]
+        val = [self.get_leakage_record("2", "2023-01-02T00:00:00Z", "c"*64, "d"*64)]
+        self.assertTrue(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_mixed_url_records(self):
+        cal = [self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64, "c"*64)]
+        val = [self.get_leakage_record("2", "2023-01-02T00:00:00Z", "d"*64, "e"*64)]
+        self.assertTrue(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_equal_timestamps_rejected(self):
+        cal = [self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64)]
+        val = [self.get_leakage_record("2", "2023-01-01T00:00:00Z", "c"*64, "d"*64)]
+        self.assertFalse(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_future_to_past_leakage_rejected(self):
+        cal = [self.get_leakage_record("1", "2023-01-02T00:00:00Z", "a"*64, "b"*64)]
+        val = [self.get_leakage_record("2", "2023-01-01T00:00:00Z", "c"*64, "d"*64)]
+        self.assertFalse(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_multiple_record_temporal_overlap_rejected(self):
+        cal = [
+            self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64),
+            self.get_leakage_record("2", "2023-01-03T00:00:00Z", "e"*64, "f"*64)
+        ]
+        val = [
+            self.get_leakage_record("3", "2023-01-02T00:00:00Z", "c"*64, "d"*64),
+            self.get_leakage_record("4", "2023-01-04T00:00:00Z", "g"*64, "h"*64)
+        ]
+        # cal max is 01-03, val min is 01-02 -> overlap
+        self.assertFalse(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_multiple_record_temporal_pass(self):
+        cal = [
+            self.get_leakage_record("1", "2023-01-01T00:00:00Z", "a"*64, "b"*64),
+            self.get_leakage_record("2", "2023-01-02T00:00:00Z", "e"*64, "f"*64)
+        ]
+        val = [
+            self.get_leakage_record("3", "2023-01-03T00:00:00Z", "c"*64, "d"*64),
+            self.get_leakage_record("4", "2023-01-04T00:00:00Z", "g"*64, "h"*64)
+        ]
+        self.assertTrue(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_fractional_timestamps(self):
+        cal = [self.get_leakage_record("1", "2023-01-01T00:00:00.123Z", "a"*64, "b"*64)]
+        val = [self.get_leakage_record("2", "2023-01-01T00:00:00.123Z", "c"*64, "d"*64)]
+        self.assertFalse(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+        val[0]["timestamp"] = "2023-01-01T00:00:00.124Z"
+        self.assertTrue(validate_separation(cal, self.get_cal_meta(), val, self.get_val_meta()))
+
+    def test_engineering_regression_without_leakage_data_accepted(self):
+        # Already tested by test_engineering_regression_rejected/test_missing_leakage_metadata_accepted_for_engineering
+        pass
+
 if __name__ == '__main__':
     unittest.main()

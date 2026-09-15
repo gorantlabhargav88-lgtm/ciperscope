@@ -186,6 +186,40 @@ def validate_separation(cal_records: List[Dict[str, Any]], cal_meta: Dict[str, A
         print(f"Error: Datasets overlap with {len(overlap)} identical record IDs.")
         return False
 
+    cal_campaigns = {r["campaign_hash"] for r in cal_records if "campaign_hash" in r}
+    val_campaigns = {r["campaign_hash"] for r in val_records if "campaign_hash" in r}
+    if cal_campaigns.intersection(val_campaigns):
+        print("Error: Calibration and Validation datasets have overlapping campaign_hash.")
+        return False
+
+    cal_senders = {r["sender_domain_hash"] for r in cal_records if "sender_domain_hash" in r}
+    val_senders = {r["sender_domain_hash"] for r in val_records if "sender_domain_hash" in r}
+    if cal_senders.intersection(val_senders):
+        print("Error: Calibration and Validation datasets have overlapping sender_domain_hash.")
+        return False
+
+    cal_urls = {r["url_domain_hash"] for r in cal_records if "url_domain_hash" in r}
+    val_urls = {r["url_domain_hash"] for r in val_records if "url_domain_hash" in r}
+    if cal_urls.intersection(val_urls):
+        print("Error: Calibration and Validation datasets have overlapping url_domain_hash.")
+        return False
+
+    def parse_timestamp(ts: str) -> datetime:
+        if '.' in ts:
+            return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ")
+        else:
+            return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
+
+    cal_timestamps = [parse_timestamp(r["timestamp"]) for r in cal_records if "timestamp" in r]
+    val_timestamps = [parse_timestamp(r["timestamp"]) for r in val_records if "timestamp" in r]
+
+    if cal_timestamps and val_timestamps:
+        cal_max = max(cal_timestamps)
+        val_min = min(val_timestamps)
+        if cal_max >= val_min:
+            print("Error: Temporal leakage detected. Calibration max timestamp must be strictly less than validation min timestamp.")
+            return False
+
     print("Separation validation passed.")
     return True
 
