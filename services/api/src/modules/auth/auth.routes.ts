@@ -6,17 +6,19 @@ import { multiRateLimit } from '../../middleware/rateLimiter';
 const LoginSchema = {
   type: 'object',
   required: ['email', 'password'],
+  additionalProperties: false,
   properties: {
-    email: { type: 'string', format: 'email' },
-    password: { type: 'string', minLength: 8 },
+    email: { type: 'string', format: 'email', maxLength: 255 },
+    password: { type: 'string', minLength: 8, maxLength: 1024 },
   },
 };
 
 const RefreshSchema = {
   type: 'object',
   required: ['refreshToken'],
+  additionalProperties: false,
   properties: {
-    refreshToken: { type: 'string' },
+    refreshToken: { type: 'string', maxLength: 1024 },
   },
 };
 

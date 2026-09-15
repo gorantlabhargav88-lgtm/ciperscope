@@ -1,8 +1,9 @@
 import { FastifyRequest, FastifyReply, FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
 import { verifyPassword, generateOpaqueToken, hashPassword } from '../../utils/crypto';
+import { logAuditEvent } from '../../utils/audit';
 import '@fastify/jwt'; // Ensure types are augmented
-import '../plugins/rbac'; // Ensure our custom types are loaded
+import '../../plugins/rbac'; // Ensure our custom types are loaded
 import { env } from '@ciperscope/config';
 
 export const loginHandler = (fastify: FastifyInstance) => async (request: FastifyRequest, reply: FastifyReply) => {
@@ -17,19 +18,18 @@ export const loginHandler = (fastify: FastifyInstance) => async (request: Fastif
   });
 
   if (!user || !user.isActive) {
-    // Optionally create a failed login audit log here (leaving out email to avoid PII leak in logs)
     return genericFailure();
   }
 
   const isValid = await verifyPassword(user.passwordHash, password);
   if (!isValid) {
-    await prisma.auditLog.create({
-      data: {
-        actorId: user.id,
-        action: 'LOGIN_FAILURE',
-        resource: 'Auth',
-        metadata: { ip: request.ip, reason: 'Invalid password' }
-      }
+    await logAuditEvent({
+      action: 'AUTH_LOGIN',
+      resource: 'Auth',
+      status: 'FAILURE',
+      actorId: user.id,
+      req: request,
+      metadata: { reason: 'Invalid password' }
     });
     return genericFailure();
   }
@@ -60,13 +60,13 @@ export const loginHandler = (fastify: FastifyInstance) => async (request: Fastif
   const orgIds = user.memberships.map(m => m.organizationId);
   const accessToken = fastify.jwt.sign({ sub: user.id, orgs: orgIds, sid: session.id }, { expiresIn: '15m' });
 
-  await prisma.auditLog.create({
-    data: {
-      actorId: user.id,
-      action: 'LOGIN_SUCCESS',
-      resource: 'Auth',
-      metadata: { ip: request.ip, sessionId: session.id }
-    }
+  await logAuditEvent({
+    action: 'AUTH_LOGIN',
+    resource: 'Auth',
+    status: 'SUCCESS',
+    actorId: user.id,
+    req: request,
+    metadata: { sessionId: session.id }
   });
 
   // Update last login
@@ -101,12 +101,6 @@ export const refreshHandler = (fastify: FastifyInstance) => async (request: Fast
   const { refreshToken } = request.body as Record<string, string>;
   if (!refreshToken) return reply.code(400).send({ error: 'Bad Request', message: 'Missing refresh token' });
 
-  // In a real robust implementation, we would query by a token ID prefix, but for this architecture 
-  // we can iterate over valid active tokens for the session (if session ID was included),
-  // or we query the latest refresh token. Since we only have the raw token, we must search.
-  // Optimization: Send `sessionId:refreshToken` to avoid full table scans.
-  
-  // For the sake of the demo, assume the client sends `{sessionId}:{rawToken}` in the `refreshToken` field.
   const parts = refreshToken.split(':');
   if (parts.length !== 2) return reply.code(400).send({ error: 'Bad Request', message: 'Invalid token format' });
   const [sessionId, rawToken] = parts;
@@ -131,8 +125,12 @@ export const refreshHandler = (fastify: FastifyInstance) => async (request: Fast
   if (!matchedTokenId) {
     // Security Event: Token Reuse or Invalid Token Attempt
     await prisma.session.update({ where: { id: sessionId }, data: { isValid: false, revokedAt: new Date() } });
-    await prisma.auditLog.create({
-      data: { action: 'REFRESH_TOKEN_REUSE_OR_INVALID', resource: 'Auth', metadata: { sessionId, ip: request.ip } }
+    await logAuditEvent({
+      action: 'AUTH_REFRESH',
+      resource: 'Auth',
+      status: 'FAILURE',
+      req: request,
+      metadata: { sessionId, reason: 'Token reuse or invalid' }
     });
     return reply.code(401).send({ error: 'Unauthorized', message: 'Invalid token' });
   }
@@ -156,6 +154,15 @@ export const refreshHandler = (fastify: FastifyInstance) => async (request: Fast
   const orgIds = session.user.memberships.map(m => m.organizationId);
   const accessToken = fastify.jwt.sign({ sub: session.user.id, orgs: orgIds, sid: session.id }, { expiresIn: '15m' });
 
+  await logAuditEvent({
+    action: 'AUTH_REFRESH',
+    resource: 'Auth',
+    status: 'SUCCESS',
+    actorId: session.user.id,
+    req: request,
+    metadata: { sessionId }
+  });
+
   reply.send({ accessToken, refreshToken: `${sessionId}:${newRawRefresh}` });
 };
 
@@ -167,8 +174,13 @@ export const logoutHandler = async (request: FastifyRequest, reply: FastifyReply
     data: { isValid: false, revokedAt: new Date() }
   });
 
-  await prisma.auditLog.create({
-    data: { actorId: request.user.sub, action: 'LOGOUT', resource: 'Auth', metadata: { sessionId } }
+  await logAuditEvent({
+    action: 'AUTH_LOGOUT',
+    resource: 'Auth',
+    status: 'SUCCESS',
+    actorId: request.user.sub,
+    req: request,
+    metadata: { sessionId }
   });
 
   reply.clearCookie('accessToken').send({ message: 'Logged out successfully' });

@@ -1,6 +1,8 @@
 import fp from 'fastify-plugin';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '@ciperscope/database';
+import { logAuditEvent } from '../utils/audit';
+import { uuidSchema } from '../utils/validation';
 
 import '@fastify/jwt';
 
@@ -56,6 +58,12 @@ export default fp(async (fastify: FastifyInstance) => {
         return;
       }
 
+      const orgIdValidation = uuidSchema.safeParse(orgId);
+      if (!orgIdValidation.success) {
+        reply.code(400).send({ error: 'Bad Request', message: 'Malformed x-organization-id header' });
+        return;
+      }
+
       if (!request.user.orgs.includes(orgId)) {
         reply.code(403).send({ error: 'Forbidden', message: 'Tenant isolation violation' });
         return;
@@ -91,14 +99,13 @@ export default fp(async (fastify: FastifyInstance) => {
 
       if (!hasPermission) {
         // Create audit log for denied action
-        await prisma.auditLog.create({
-          data: {
-            organizationId: orgId,
-            actorId: userId,
-            action: 'PERMISSION_DENIED',
-            resource: action,
-            metadata: { ip: request.ip }
-          }
+        await logAuditEvent({
+          action: 'AUTHZ_DENIED',
+          resource: action,
+          status: 'DENIED',
+          organizationId: orgId,
+          actorId: userId,
+          req: request
         });
         reply.code(403).send({ error: 'Forbidden', message: `Missing required permission: ${action}` });
         return;

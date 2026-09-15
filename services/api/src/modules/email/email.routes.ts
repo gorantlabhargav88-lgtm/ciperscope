@@ -6,6 +6,8 @@ import { QueueManager, IdempotencyManager, createRedisConnection } from '@cipers
 import { env } from '@ciperscope/config';
 import { getRequestContext } from '@ciperscope/logger';
 import { multiRateLimit } from '../../middleware/rateLimiter';
+import { logAuditEvent } from '../../utils/audit';
+import { fastifyEmailParamsSchema, fastifyAttachmentParamsSchema } from '../../utils/validation';
 
 export default async function emailRoutes(server: FastifyInstance) {
   // Setup dependencies for the route
@@ -60,6 +62,8 @@ export default async function emailRoutes(server: FastifyInstance) {
     const data = await request.file({
       limits: {
         fileSize: 30 * 1024 * 1024, // 30 MB limit
+        files: 1,
+        fields: 0, // No extra metadata fields expected
       }
     });
 
@@ -83,11 +87,28 @@ export default async function emailRoutes(server: FastifyInstance) {
       });
 
       if (result.duplicate) {
+        await logAuditEvent({
+          action: 'EMAIL_INGESTED',
+          resource: 'Email',
+          resourceId: result.emailId,
+          status: 'SUCCESS',
+          req: request,
+          metadata: { duplicate: true }
+        });
         return reply.status(200).send({
           message: 'Duplicate email detected',
           ...result
         });
       }
+
+      await logAuditEvent({
+        action: 'EMAIL_INGESTED',
+        resource: 'Email',
+        resourceId: result.emailId,
+        status: 'SUCCESS',
+        req: request,
+        metadata: { duplicate: false }
+      });
 
       return reply.status(202).send({
         message: 'Email ingested and queued for processing',
@@ -117,6 +138,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   // ==========================================
 
   server.get('/:emailId/analysis', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -141,9 +163,18 @@ export default async function emailRoutes(server: FastifyInstance) {
       return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
     }
 
+    await logAuditEvent({
+      action: 'EMAIL_ANALYSIS_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({
       id: email.id,
       analysisStatus: email.analysisStatus || 'UNKNOWN',
+
       classification: email.classification,
       riskScore: email.riskScore,
       createdAt: email.createdAt,
@@ -152,6 +183,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   });
 
   server.get('/:emailId/headers', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -172,10 +204,19 @@ export default async function emailRoutes(server: FastifyInstance) {
       orderBy: { index: 'asc' }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_HEADERS_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ headers });
   });
 
   server.get('/:emailId/received-hops', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -196,10 +237,19 @@ export default async function emailRoutes(server: FastifyInstance) {
       orderBy: { hopOrder: 'asc' }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_RECEIVED_HOPS_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ hops });
   });
 
   server.get('/:emailId/mime-parts', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -221,6 +271,14 @@ export default async function emailRoutes(server: FastifyInstance) {
       orderBy: { partIndex: 'asc' }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_MIME_PARTS_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ mimeParts: parts });
   });
 
@@ -229,6 +287,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   // ==========================================
 
   server.get('/:emailId/authentication', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -247,10 +306,19 @@ export default async function emailRoutes(server: FastifyInstance) {
       where: { emailId }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_AUTH_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ analysis });
   });
 
   server.get('/:emailId/spf', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -270,10 +338,19 @@ export default async function emailRoutes(server: FastifyInstance) {
       orderBy: { createdAt: 'desc' }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_SPF_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ spfVerifications: verifications });
   });
 
   server.get('/:emailId/dkim', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -293,10 +370,19 @@ export default async function emailRoutes(server: FastifyInstance) {
       orderBy: { createdAt: 'desc' }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_DKIM_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ dkimVerifications: verifications });
   });
 
   server.get('/:emailId/dmarc', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -315,6 +401,14 @@ export default async function emailRoutes(server: FastifyInstance) {
       where: { emailId }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_DMARC_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ dmarcVerification: verification });
   });
 
@@ -323,6 +417,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   // ==========================================
 
   server.get('/:emailId/urls', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -346,6 +441,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   });
 
   server.get('/:emailId/attachments', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -365,10 +461,19 @@ export default async function emailRoutes(server: FastifyInstance) {
       orderBy: { createdAt: 'desc' }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_ATTACHMENT_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ attachments });
   });
 
   server.get('/:emailId/attachments/:attachmentId', {
+    schema: { params: fastifyAttachmentParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -391,10 +496,19 @@ export default async function emailRoutes(server: FastifyInstance) {
       return reply.status(404).send({ error: 'Not Found', message: 'Attachment not found' });
     }
 
+    await logAuditEvent({
+      action: 'EMAIL_ATTACHMENT_VIEWED',
+      resource: 'Attachment',
+      resourceId: attachment.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ attachment });
   });
 
   server.get('/:emailId/ai-analysis', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -421,6 +535,14 @@ export default async function emailRoutes(server: FastifyInstance) {
       });
     }
 
+    await logAuditEvent({
+      action: 'EMAIL_AI_ANALYSIS_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ prediction });
   });
 
@@ -429,6 +551,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   // ==========================================
 
   server.get('/:emailId/threat-indicators', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -455,10 +578,19 @@ export default async function emailRoutes(server: FastifyInstance) {
       }
     });
 
+    await logAuditEvent({
+      action: 'EMAIL_THREAT_INDICATORS_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
     return reply.send({ threatIndicators: indicators });
   });
 
   server.get('/:emailId/geolocation', {
+    schema: { params: fastifyEmailParamsSchema },
     preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
   }, async (request, reply) => {
     const organizationId = request.headers['x-organization-id'] as string;
@@ -483,6 +615,14 @@ export default async function emailRoutes(server: FastifyInstance) {
         asn: true,
         isp: true
       }
+    });
+
+    await logAuditEvent({
+      action: 'EMAIL_GEOLOCATION_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
     });
 
     return reply.send({ geolocation });
