@@ -4,7 +4,7 @@ import os
 from typing import Dict, Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'eval'))
-from validate_dataset import validate_metadata, validate_data
+from validate_dataset import validate_metadata, validate_data, compute_fingerprint, validate_separation
 
 class TestDatasetValidation(unittest.TestCase):
     def get_valid_metadata(self) -> Dict[str, Any]:
@@ -100,6 +100,83 @@ class TestDatasetValidation(unittest.TestCase):
         r = self.get_valid_record()
         r["body"] = "Here is my password: 'password123'"
         self.assertFalse(validate_data([r]))
+
+    # SEPARATION TESTS
+    def test_deterministic_fingerprint(self):
+        r1 = self.get_valid_record()
+        r2 = self.get_valid_record()
+        r2["id"] = "2"
+        f1 = compute_fingerprint([r1, r2])
+        f2 = compute_fingerprint([r1, r2])
+        self.assertEqual(f1, f2)
+
+    def test_canonicalization_formatting_independence(self):
+        r1 = self.get_valid_record()
+        # The fingerprint function extracts fields and re-serializes,
+        # so adding an extra ignored field or changing key order in the dict shouldn't matter.
+        r1_mod = self.get_valid_record()
+        r1_mod["extra"] = "ignored"
+        self.assertEqual(compute_fingerprint([r1]), compute_fingerprint([r1_mod]))
+
+    def test_record_order_behavior(self):
+        r1 = self.get_valid_record()
+        r2 = self.get_valid_record()
+        r2["id"] = "2"
+        self.assertNotEqual(compute_fingerprint([r1, r2]), compute_fingerprint([r2, r1]))
+
+    def test_different_datasets_different_fingerprints(self):
+        r1 = self.get_valid_record()
+        r2 = self.get_valid_record()
+        r2["id"] = "2"
+        self.assertNotEqual(compute_fingerprint([r1]), compute_fingerprint([r2]))
+
+    def test_identical_calibration_final_rejected(self):
+        cal_meta = self.get_valid_metadata()
+        cal_meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        val_meta = self.get_valid_metadata()
+        val_meta["intended_purpose"] = "FINAL_VALIDATION"
+
+        cal_data = [self.get_valid_record()]
+        val_data = [self.get_valid_record()]
+
+        self.assertFalse(validate_separation(cal_data, cal_meta, val_data, val_meta))
+
+    def test_overlapping_record_ids_rejected(self):
+        cal_meta = self.get_valid_metadata()
+        cal_meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        val_meta = self.get_valid_metadata()
+        val_meta["intended_purpose"] = "FINAL_VALIDATION"
+
+        cal_data = [self.get_valid_record()]
+        val_data = [self.get_valid_record()]
+        val_data[0]["body"] = "Different body to pass fingerprint test but ID overlaps"
+
+        self.assertFalse(validate_separation(cal_data, cal_meta, val_data, val_meta))
+
+    def test_disjoint_calibration_final_accepted(self):
+        cal_meta = self.get_valid_metadata()
+        cal_meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        val_meta = self.get_valid_metadata()
+        val_meta["intended_purpose"] = "FINAL_VALIDATION"
+
+        cal_data = [self.get_valid_record()]
+        val_data = [self.get_valid_record()]
+        val_data[0]["id"] = "2"
+        val_data[0]["body"] = "Completely different"
+
+        self.assertTrue(validate_separation(cal_data, cal_meta, val_data, val_meta))
+
+    def test_engineering_regression_rejected(self):
+        cal_meta = self.get_valid_metadata()
+        cal_meta["intended_purpose"] = "ENGINEERING_REGRESSION"
+        val_meta = self.get_valid_metadata()
+        val_meta["intended_purpose"] = "FINAL_VALIDATION"
+
+        cal_data = [self.get_valid_record()]
+        val_data = [self.get_valid_record()]
+        val_data[0]["id"] = "2"
+
+        self.assertFalse(validate_separation(cal_data, cal_meta, val_data, val_meta))
 
 if __name__ == '__main__':
     unittest.main()
