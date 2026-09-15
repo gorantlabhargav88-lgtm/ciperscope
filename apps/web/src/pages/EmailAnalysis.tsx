@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { DemoModeBanner } from '../components/DemoModeBanner';
 import { useAuth } from '../features/auth/AuthContext';
+import { ForensicTimeline } from '../components/ForensicTimeline';
 
 export const EmailAnalysis = () => {
   const [uploading, setUploading] = useState(false);
@@ -246,6 +247,17 @@ export const EmailAnalysis = () => {
                 </div>
               </div>
             )}
+
+            {/* Phase 15: Analyst Investigation Timeline */}
+            <ForensicTimeline
+              analysis={analysis}
+              headers={headers}
+              spf={spf}
+              dkim={dkim}
+              dmarc={dmarc}
+              urls={urls}
+              mlInference={analysis.mlInference}
+            />
 
             {/* Header Forensics */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
