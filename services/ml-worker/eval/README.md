@@ -110,3 +110,155 @@ To quantify threshold variance across small or noisy test sets, metric point est
 
 ### E. Distinction Between Computed Metrics and Production Threshold Validation
 Computing Brier score, ECE, or confidence intervals does not by itself calibrate the model or establish a production threshold. An empirically observed high F1 or low ECE on calibration evidence is strictly a "metric computed". Authoritative implementation into FusionEngine requires business-level acceptance, and no programmatic mechanism exists to circumvent manual validation.
+
+## Calibration Data Acquisition & Preparation Plan
+
+### Current Status
+**CURRENT STATUS: NO AUTHORIZED CALIBRATION DATASET AVAILABLE.**
+The existing `samples.json` is synthetic engineering-regression data. It MUST NOT be used as production threshold-calibration evidence.
+Therefore:
+- no production threshold selection
+- no threshold replacement
+- no production performance claim
+- no calibration conclusion
+
+The existing 0.40 and 0.85 values remain engineering references only.
+
+### Future Dataset Schema
+Authorized calibration datasets must contain exactly these required fields:
+- `id`
+- `label` (Allowed labels are exactly `LEGITIMATE` or `PHISHING_OR_SPAM`)
+- `subject`
+- `sender`
+- `replyTo`
+- `body`
+
+No new required fields will be added.
+
+### Metadata Requirements
+Authorized records must provide:
+- `timestamp`: UTC ISO-8601 ending in Z
+- `campaign_hash`: 64-character lowercase SHA-256 representation
+- `sender_domain_hash`: 64-character lowercase SHA-256 representation
+- `url_domain_hash` (Optional): 64-character lowercase SHA-256 representation. Do NOT create fake URL hashes for URL-free records.
+
+Do NOT store raw campaign/domain identifiers in the evaluation metadata when the existing contract expects hashes.
+
+Required calibration metadata:
+- `authorized_for_ml_evaluation`
+- `privacy_review_status`
+- `provenance_verified`
+- `authorization_evidence_id`
+- `intended_purpose`
+- `labeling_method`
+- `timestamp`
+- `campaign_hash`
+- `sender_domain_hash`
+- `semantic_candidate_review_status`
+
+Optional metadata:
+- `url_domain_hash`
+- `labeling_evidence_id`
+
+### Authorization Requirements
+The future dataset must come from an explicitly authorized source. Required external evidence should establish:
+- permission to use the data for ML evaluation
+- privacy/security approval
+- provenance
+- labeling/ground-truth process
+
+The evaluator's metadata fields are NOT independent proof. Do not invent an authorization provider or organization.
+
+### Ground-Truth Requirements
+Every record requires an externally established label (`LEGITIMATE` or `PHISHING_OR_SPAM`).
+Evaluator predictions MUST NOT be used to create ground-truth labels.
+BEC is NOT a native class. If BEC examples are included, they must follow the existing binary mapping contract and must not be presented as native BEC detection.
+
+### Representativeness Requirements
+When obtaining the dataset, consider:
+- relevant email population
+- realistic legitimate traffic
+- realistic phishing/spam traffic
+- modern examples
+- temporal diversity
+- appropriate organizational context
+- realistic sender/domain distribution
+- realistic campaign distribution
+
+**IMPORTANT:** Do NOT invent numerical percentages or minimum sample sizes. Representativeness must be justified externally.
+
+### Calibration/Holdout Separation
+The required separation is:
+`CALIBRATION DATASET` -> choose/freeze threshold -> `FINAL VALIDATION DATASET` -> estimate unseen performance
+
+The final validation dataset MUST NOT influence threshold selection.
+Maintain strict temporal ordering: `max(calibration.timestamp) < min(final_validation.timestamp)`
+Also preserve:
+- ID separation
+- fingerprint separation
+- campaign separation
+- sender-domain separation
+- URL-domain separation where available
+
+### Semantic Candidate Review
+The existing lexical Jaccard detector is a **LEXICAL NEAR-DUPLICATE CANDIDATE DETECTOR**, NOT true semantic understanding.
+Any cross-dataset candidates require external/human review.
+Do NOT turn candidate detection into automatic rejection.
+Do NOT choose or claim an evidence-backed similarity threshold yet.
+
+### Privacy Requirements
+Future operational requirements include:
+- access-controlled dataset storage
+- restricted evaluation environment
+- minimum necessary personnel access
+- retention/deletion policy
+- no raw email content in evaluation reports
+- no raw content in logs
+- no raw hashes in reports
+- controlled handling of the original dataset
+
+Do NOT implement infrastructure controls in this phase.
+
+### Expected Calibration Evidence
+The evaluator should eventually produce:
+- threshold sweep
+- TP/FP/TN/FN
+- Precision
+- Recall
+- F1
+- FPR
+- FNR
+- PR-AUC
+- score distributions
+- bootstrap confidence intervals
+- threshold uncertainty
+- Brier score
+- ECE
+- reliability data
+- prevalence
+- concentration statistics
+- temporal statistics
+- optional FP/FN cost analysis
+
+Do NOT choose a production threshold now.
+
+### Model-Version Requirements
+Future calibration evidence must be tied to:
+- Model: `spotproject/spot-distilbert-phishing`
+- Revision: `fc409441b8bfe0bada834c464ee1b88f162a534d`
+
+A model revision change requires separate calibration evidence.
+
+### Reproducibility Requirements
+A future calibration run should preserve:
+- dataset fingerprint
+- dataset purpose
+- model ID
+- model revision
+- evaluator Git commit
+- threshold sweep configuration
+- bootstrap seed
+- bootstrap resample count
+- confidence interval level
+
+Do not modify evaluator code.
