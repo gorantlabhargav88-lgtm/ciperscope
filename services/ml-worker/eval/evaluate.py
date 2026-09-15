@@ -3,21 +3,31 @@ import os
 import unicodedata
 import argparse
 import hashlib
+import random
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from validate_dataset import compute_fingerprint
 
-def calc_metrics(y_true, y_pred):
+def calc_metrics(y_true, y_pred, safe_undefined=False):
     tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
     fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
     tn = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 0)
     fn = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 0)
 
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
-    fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+    def safe_div(num, den):
+        if den > 0:
+            return num / den
+        return None if safe_undefined else 0.0
+
+    precision = safe_div(tp, tp + fp)
+    recall = safe_div(tp, tp + fn)
+
+    f1 = None if safe_undefined else 0.0
+    if precision is not None and recall is not None and (precision + recall) > 0:
+        f1 = 2 * (precision * recall) / (precision + recall)
+
+    fpr = safe_div(fp, fp + tn)
+    fnr = safe_div(fn, fn + tp)
 
     return {
         "tp": tp, "fp": fp, "tn": tn, "fn": fn,
@@ -51,6 +61,104 @@ def calculate_pr_auc(y_true, y_scores):
     for i in range(1, len(precision_list)):
         auc += (recall_list[i] - recall_list[i-1]) * (precision_list[i] + precision_list[i-1]) / 2
     return auc
+
+def compute_score_distribution(scores):
+    if not scores:
+        return {}
+    s = sorted(scores)
+    n = len(s)
+    mean_val = sum(s) / n
+    std_val = (sum((x - mean_val)**2 for x in s) / n) ** 0.5 if n > 1 else 0.0
+
+    def quantile(q):
+        idx = (n - 1) * q
+        low = int(idx)
+        high = min(low + 1, n - 1)
+        weight = idx - low
+        return s[low] * (1.0 - weight) + s[high] * weight
+
+    return {
+        "count": n,
+        "min": s[0],
+        "max": s[-1],
+        "mean": mean_val,
+        "median": quantile(0.5),
+        "std": std_val,
+        "p25": quantile(0.25),
+        "p75": quantile(0.75),
+        "p90": quantile(0.90),
+        "p99": quantile(0.99)
+    }
+
+def bootstrap_metrics(y_true, y_pred, n_resamples=1000, seed=42, ci_level=0.95):
+    if not y_true:
+        return {}
+    random.seed(seed)
+    n = len(y_true)
+    metrics_list = {'precision': [], 'recall': [], 'f1': [], 'fpr': [], 'fnr': []}
+
+    for _ in range(n_resamples):
+        indices = [random.randint(0, n - 1) for _ in range(n)]
+        y_t = [y_true[i] for i in indices]
+        y_p = [y_pred[i] for i in indices]
+
+        m = calc_metrics(y_t, y_p, safe_undefined=True)
+        for k in metrics_list:
+            if m[k] is not None:
+                metrics_list[k].append(m[k])
+
+    ci_results = {}
+    lower_p = (1.0 - ci_level) / 2.0
+    upper_p = 1.0 - lower_p
+
+    for k, v in metrics_list.items():
+        if len(v) < 2:
+            ci_results[k] = None
+        else:
+            sv = sorted(v)
+            lower_idx = int((len(v) - 1) * lower_p)
+            upper_idx = int((len(v) - 1) * upper_p)
+            ci_results[k] = (sv[lower_idx], sv[upper_idx])
+
+    return ci_results
+
+def compute_calibration_metrics(y_true, y_scores, n_bins=10):
+    if not y_true:
+        return {"brier": 0.0, "ece": 0.0, "reliability": []}
+
+    n = len(y_true)
+    brier = sum((s - t)**2 for s, t in zip(y_scores, y_true)) / n
+
+    # ECE and Reliability
+    bins = [{"lower": i / n_bins, "upper": (i + 1) / n_bins, "count": 0, "sum_t": 0.0, "sum_s": 0.0} for i in range(n_bins)]
+
+    for s, t in zip(y_scores, y_true):
+        bin_idx = int(s * n_bins)
+        if bin_idx == n_bins:
+            bin_idx = n_bins - 1
+        b = bins[bin_idx]
+        b["count"] += 1
+        b["sum_t"] += t
+        b["sum_s"] += s
+
+    ece = 0.0
+    reliability = []
+
+    for b in bins:
+        if b["count"] > 0:
+            empirical_rate = b["sum_t"] / b["count"]
+            mean_prob = b["sum_s"] / b["count"]
+            weight = b["count"] / n
+            ece += weight * abs(empirical_rate - mean_prob)
+            reliability.append({
+                "lower": b["lower"],
+                "upper": b["upper"],
+                "count": b["count"],
+                "mean_prob": mean_prob,
+                "empirical_rate": empirical_rate
+            })
+
+    return {"brier": brier, "ece": ece, "reliability": reliability}
 
 def run_evaluation():
     parser = argparse.ArgumentParser(description="Offline Evaluation & Calibration")
@@ -163,6 +271,25 @@ def run_evaluation():
     print(f"Revision: {revision}")
     print(f"PR-AUC: {pr_auc:.4f}")
 
+    # 2. Score Distribution
+    dist = compute_score_distribution(y_scores)
+    if dist:
+        print(f"\n--- SCORE DISTRIBUTION ---")
+        print(f"Count: {dist['count']}")
+        print(f"Mean: {dist['mean']:.4f} | Median: {dist['median']:.4f} | StdDev: {dist['std']:.4f}")
+        print(f"Min: {dist['min']:.4f} | Max: {dist['max']:.4f}")
+        print(f"Quantiles -> P25: {dist['p25']:.4f} | P75: {dist['p75']:.4f} | P90: {dist['p90']:.4f} | P99: {dist['p99']:.4f}")
+
+    # 3. Calibration Metrics
+    calib = compute_calibration_metrics(y_true, y_scores)
+    print(f"\n--- PROBABILITY CALIBRATION METRICS ---")
+    print(f"Brier Score: {calib['brier']:.4f}")
+    print(f"Expected Calibration Error (ECE): {calib['ece']:.4f}")
+    print(f"Reliability Diagram Data (10 bins):")
+    for r in calib['reliability']:
+        print(f"  Bin [{r['lower']:.1f}-{r['upper']:.1f}): Count={r['count']}, MeanProb={r['mean_prob']:.4f}, EmpRate={r['empirical_rate']:.4f}")
+    print("\nNote: Computing Brier score, ECE, or confidence intervals does not by itself calibrate the model or establish a production threshold.")
+
     # Threshold analysis
     print(f"\n--- THRESHOLD ANALYSIS ---")
     if args.fp_cost is not None and args.fn_cost is not None:
@@ -204,6 +331,26 @@ def run_evaluation():
         # We only print interesting thresholds to save space unless it's a prod or optimal threshold, or every 0.1
         if t in [0.40, 0.85] or t == best_f1_t or int(t*100) % 10 == 0:
             print(f"{t:<13.2f} | {t_type:<19} | {m['tp']:<4} | {m['fp']:<4} | {m['tn']:<4} | {m['fn']:<4} | {m['precision']:<6.4f} | {m['recall']:<6.4f} | {m['f1']:<6.4f} | {m['fpr']:<6.4f} | {m['fnr']:<6.4f}{cost_str}")
+
+    # Bootstrap Confidence Intervals for Key Thresholds
+    print("\n--- BOOTSTRAP UNCERTAINTY (95% CI, 1000 resamples) ---")
+    for t in [0.40, 0.85, best_f1_t]:
+        if t not in [0.40, 0.85]:
+            print(f"\nMETRIC-OPTIMAL THRESHOLD: {t}")
+        else:
+            print(f"\nPRODUCTION REFERENCE THRESHOLD: {t}")
+
+        y_pred = [1 if s > t else 0 for s in y_scores]
+        ci = bootstrap_metrics(y_true, y_pred, n_resamples=1000, seed=42, ci_level=0.95)
+        m = threshold_metrics[t]
+        if ci:
+            for metric_key, label in [('f1', 'F1'), ('precision', 'Precision'), ('recall', 'Recall'), ('fpr', 'FPR'), ('fnr', 'FNR')]:
+                if ci[metric_key] is not None:
+                    print(f"{label:<10}: {m[metric_key]:.4f} [95% CI: {ci[metric_key][0]:.4f} - {ci[metric_key][1]:.4f}]")
+                else:
+                    print(f"{label:<10}: {m[metric_key]:.4f} [95% CI: UNAVAILABLE]")
+        else:
+            print("Confidence Intervals unavailable (empty dataset).")
 
     # Production Confusion Matrices
     print("\n--- CONFUSION MATRICES AT PROD THRESHOLDS ---")

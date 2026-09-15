@@ -47,3 +47,26 @@ To prevent evaluation leakage, Calibration and Final Validation datasets are str
 
 **Limitations of Separation Mechanism:**
 The fingerprint and ID overlap controls strictly identify *exact duplication*. They DO NOT replace human provenance/privacy review, nor do they natively detect semantic near-duplicates, campaign leakage, or temporal contamination.
+
+## Statistical Evidence Tooling
+The evaluation toolkit incorporates a rigorous offline statistical evidence layer designed for advanced dataset analysis.
+
+### A. Operational Threshold Selection
+The evaluator sweeps across strict `score > threshold` probability boundaries (0.00 to 1.00 in 0.01 increments) and calculates the deterministic precision, recall, F1, FPR, and FNR to dynamically identify a metric-optimal candidate threshold. It does NOT automatically select or replace production threshold parameters.
+
+### B. Score Distribution Reporting
+The evaluator produces aggregate summary statistics across all prediction scores.
+- **Standard Deviation Convention:** The reported standard deviation uses the **population** formula (dividing by N, not N-1).
+
+### C. Probability Calibration Metrics
+The statistical layer implements basic non-parametric calibration measurement:
+- **Brier Score:** Evaluates mean squared error of probability predictions against actual labels.
+- **Expected Calibration Error (ECE):** A 10-bin equal-width discretization method to measure deviation between empirical positive rates and mean predicted probabilities.
+- **Reliability Data:** Deterministic output of lower bound, upper bound, bin counts, and empirical rates across the 10 defined probability distribution bins.
+
+### D. Bootstrap Uncertainty Estimation
+To quantify threshold variance across small or noisy test sets, metric point estimates are paired with statistical uncertainty bounds via random resampling with replacement.
+- **Bootstrap parameters:** Deterministic random seed (`seed=42`), 1000 resamples (`n_resamples=1000`), generating 95% interval boundaries (`ci_level=0.95`).
+
+### E. Distinction Between Computed Metrics and Production Threshold Validation
+Computing Brier score, ECE, or confidence intervals does not by itself calibrate the model or establish a production threshold. An empirically observed high F1 or low ECE on calibration evidence is strictly a "metric computed". Authoritative implementation into FusionEngine requires business-level acceptance, and no programmatic mechanism exists to circumvent manual validation.
