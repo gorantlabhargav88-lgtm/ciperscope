@@ -78,14 +78,15 @@ export class MLClassifier {
         throw new Error('ML_SERVICE_TOKEN is missing');
       }
 
-      // NOTE: Using native fetch
+      // NOTE: Using native fetch with 30-second timeout
       const res = await fetch(`${this.mlServiceUrl}/api/v1/predict`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.mlServiceToken}`
         },
-        body: JSON.stringify(requestPayload)
+        body: JSON.stringify(requestPayload),
+        signal: AbortSignal.timeout(30000)
       });
 
       if (!res.ok) {

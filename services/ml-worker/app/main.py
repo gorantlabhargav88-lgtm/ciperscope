@@ -3,8 +3,42 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import os
 import time
+import logging
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi.concurrency import run_in_threadpool
 
-app = FastAPI(title="CiperScope ML Classification Service", version="1.0.0")
+# --- Global State ---
+# We define current_provider at the top so the lifespan can reference it.
+current_provider = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global current_provider
+    # Initialize to Unavailable
+    current_provider = UnavailableModelProvider()
+
+    def load_model():
+        global current_provider
+        try:
+            logging.info("Starting background model initialization...")
+            provider = DistilBertModelProvider()
+            if provider.is_ready:
+                current_provider = provider
+                logging.info("Model initialized successfully.")
+            else:
+                logging.error("Model provider failed to initialize properly.")
+        except Exception as e:
+            logging.error(f"Error initializing model: {e}")
+
+    # Kick off in threadpool to not block lifespan/startup
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, load_model)
+
+    yield
+    # No specific shutdown actions required
+
+app = FastAPI(title="CiperScope ML Classification Service", version="1.0.0", lifespan=lifespan)
 
 # Security configuration
 INTERNAL_AUTH_TOKEN = os.getenv("ML_SERVICE_TOKEN")
@@ -74,8 +108,6 @@ class UnavailableModelProvider(ModelProvider):
             "tokenizerVersion": None,
             "preprocessingVersion": "1.0",
         }
-
-import logging
 
 try:
     import torch
@@ -183,10 +215,6 @@ class DistilBertModelProvider(ModelProvider):
             "preprocessingVersion": "1.0",
         }
 
-# --- Global State ---
-
-current_provider: ModelProvider = DistilBertModelProvider()
-
 # --- Endpoints ---
 
 @app.get("/health")
@@ -215,7 +243,7 @@ async def predict_email(request: PredictionRequest, token: str = Depends(verify_
         processed_text = processed_text[:100000]
 
     # 2. Inference
-    prediction_result = current_provider.predict(processed_text)
+    prediction_result = await run_in_threadpool(current_provider.predict, processed_text)
     metadata = current_provider.get_metadata()
 
     # 3. Assemble Response

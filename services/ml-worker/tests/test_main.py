@@ -5,7 +5,7 @@ import time
 from unittest.mock import patch, MagicMock
 import torch
 
-client = TestClient(app)
+# TestClient is created locally to trigger lifespan
 
 valid_payload = {
     "requestId": "req-1",
@@ -49,8 +49,15 @@ def mock_transformers():
         yield mock_tokenizer, mock_model
 
 def test_health_service_startup():
-    response = client.get("/health")
-    assert response.status_code == 200
+    with patch("app.main.current_provider", MagicMock(get_metadata=lambda: {"modelName": None})):
+        with TestClient(app) as client:
+            response = client.get("/health")
+            assert response.status_code == 200
+            assert response.json() == {"service": "healthy", "model": "not_available"}
+
+def test_module_import_does_not_block():
+    import app.main
+    assert isinstance(app.main.current_provider, app.main.UnavailableModelProvider) or app.main.current_provider is None
 
 def test_prediction_contract_validation(mock_transformers):
     # Test with DistilBertModelProvider
@@ -58,7 +65,8 @@ def test_prediction_contract_validation(mock_transformers):
     assert provider.is_ready is True
 
     with patch("app.main.current_provider", provider):
-        response = client.post("/api/v1/predict", json=valid_payload, headers=get_headers())
+        with TestClient(app) as client:
+            response = client.post("/api/v1/predict", json=valid_payload, headers=get_headers())
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "MODEL_PREDICTION"
@@ -181,5 +189,6 @@ def test_malformed_request():
         "preprocessingVersion": "1.0",
         "requestedModelVersion": "latest"
     }
-    response = client.post("/api/v1/predict", json=bad_payload, headers=get_headers())
+    with TestClient(app) as client:
+        response = client.post("/api/v1/predict", json=bad_payload, headers=get_headers())
     assert response.status_code == 422
