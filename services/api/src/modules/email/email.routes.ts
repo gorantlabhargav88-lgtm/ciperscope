@@ -71,6 +71,10 @@ export default async function emailRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Bad Request', message: 'No file uploaded' });
     }
 
+    if (data.file.destroyed) {
+      return reply.status(413).send({ error: 'Payload Too Large', message: 'Upload limits exceeded' });
+    }
+
     data.file.on('limit', () => {
       data.file.destroy(new Error('File size limit reached'));
     });
@@ -122,11 +126,12 @@ export default async function emailRoutes(server: FastifyInstance) {
       if (error.message.includes('Concurrent ingestion detected')) {
          return reply.status(409).send({ error: 'Conflict', message: error.message });
       }
+      const errCode = (error as any).code;
       if (error.message === 'File size limit reached' ||
-          err instanceof server.multipartErrors.FilesLimitError ||
-          err instanceof server.multipartErrors.FieldsLimitError ||
-          err instanceof server.multipartErrors.PartsLimitError ||
-          err instanceof server.multipartErrors.RequestFileTooLargeError) {
+          errCode === 'FST_FILES_LIMIT' ||
+          errCode === 'FST_FIELDS_LIMIT' ||
+          errCode === 'FST_PARTS_LIMIT' ||
+          errCode === 'FST_REQ_FILE_TOO_LARGE') {
           return reply.status(413).send({ error: 'Payload Too Large', message: 'Upload limits exceeded' });
       }
       throw err;
