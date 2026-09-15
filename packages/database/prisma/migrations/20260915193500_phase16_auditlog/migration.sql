@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "AuditLog" ADD COLUMN     "status" TEXT NOT NULL DEFAULT 'SUCCESS';

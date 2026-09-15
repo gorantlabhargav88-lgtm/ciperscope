@@ -814,6 +814,7 @@ model AuditLog {
   resourceId     String?
   ipAddress      String?
   userAgent      String?
+  status         String   @default("SUCCESS")
   metadata       Json?
   createdAt      DateTime @default(now())
 
