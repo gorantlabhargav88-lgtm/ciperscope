@@ -254,6 +254,9 @@ def compute_and_print_concentration(samples):
     url_stats = compute_hash_concentration(samples, "url_domain_hash")
     print_hash_concentration(url_stats, "URL-domain concentration", is_url=True)
 
+    sender_raw_stats = compute_hash_concentration(samples, "sender")
+    print_hash_concentration(sender_raw_stats, "Sender (raw email) concentration")
+
     temp_stats = compute_temporal_distribution(samples)
     print_temporal_distribution(temp_stats)
 
@@ -368,6 +371,11 @@ def run_evaluation():
     print(f"Positive (PHISHING_OR_SPAM): {pos_count} ({pos_prev:.4f})")
     print(f"Negative (LEGITIMATE):       {neg_count} ({neg_prev:.4f})")
 
+    print("\nWARNING: Class distribution counts do NOT prove representativeness.")
+    print("Representativeness requires external domain knowledge and cannot be proven")
+    print("from the evaluator alone. Do NOT assume this dataset represents future")
+    print("production prevalence or ground-truth correctness.")
+
     compute_and_print_concentration(samples)
 
     model_id = "spotproject/spot-distilbert-phishing"
@@ -424,9 +432,23 @@ def run_evaluation():
     # Overall Metrics (at generic 0.5 threshold for PR-AUC base)
     pr_auc = calculate_pr_auc(y_true, y_scores)
     print(f"\n--- OVERALL METRICS ---")
-    print(f"Model ID: {model_id}")
-    print(f"Revision: {revision}")
     print(f"PR-AUC: {pr_auc:.4f}")
+
+    print(f"\n--- REPRODUCIBILITY METADATA ---")
+    print(f"Model ID: {model_id}")
+    print(f"Model Revision: {revision}")
+
+    try:
+        import subprocess
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], stderr=subprocess.DEVNULL).decode('utf-8').strip()
+        print(f"Evaluator Commit: {commit}")
+    except Exception:
+        print("Evaluator Commit: UNAVAILABLE")
+
+    print("Threshold Sweep Configuration: [0.0, 1.0] step 0.01")
+    print("Bootstrap Seed: 42")
+    print("Bootstrap Resample Count: 1000")
+    print("Confidence Interval Level: 0.95")
 
     # 2. Score Distribution
     dist = compute_score_distribution(y_scores)

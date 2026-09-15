@@ -23,6 +23,11 @@ To support rigorous data separation, the following record-level metadata may be 
 - `sender_domain_hash`: (string) SHA-256 hash.
 - `url_domain_hash`: (string) SHA-256 hash.
 
+**C. Required Evidence Metadata**
+- `labeling_method`: (string) e.g., "Manual", "Heuristic". External reference to the labeling process.
+- `authorization_evidence_id`: (string) Required for Calibration/Validation. Reference to external evidence of authorization.
+- `semantic_candidate_review_status`: (string) e.g., "NOT_REVIEWED". Required for Calibration/Validation. Advisory review status.
+
 **C. Exact Timestamp Format**
 Must be UTC ISO-8601.
 Formats accepted: `YYYY-MM-DDTHH:MM:SSZ` or with fractional seconds `YYYY-MM-DDTHH:MM:SS.[0-9]+Z`.
@@ -30,10 +35,10 @@ Formats accepted: `YYYY-MM-DDTHH:MM:SSZ` or with fractional seconds `YYYY-MM-DDT
 **D. Exact Hash Format**
 Must be exactly 64-character lowercase hexadecimal string (SHA-256).
 
-**E. Purpose-Specific Requirements**
-- `ENGINEERING_REGRESSION`: Only the existing core fields are required. Leakage metadata is strictly optional.
-- `THRESHOLD_CALIBRATION`: The dataset MUST include `timestamp`, `campaign_hash`, and `sender_domain_hash` to enable rigorous upstream separation control. `url_domain_hash` is OPTIONAL (to support legitimate URL-free records), but if supplied, it must strictly match the hash format.
-- `FINAL_VALIDATION`: The dataset MUST include `timestamp`, `campaign_hash`, and `sender_domain_hash` to establish robust independence from the calibration dataset. `url_domain_hash` is OPTIONAL.
+**F. Purpose-Specific Requirements**
+- `ENGINEERING_REGRESSION`: Only the existing core fields are required. Leakage metadata is strictly optional. `authorization_evidence_id` and `semantic_candidate_review_status` are optional.
+- `THRESHOLD_CALIBRATION`: The dataset MUST include `timestamp`, `campaign_hash`, and `sender_domain_hash` to enable rigorous upstream separation control. `url_domain_hash` is OPTIONAL (to support legitimate URL-free records), but if supplied, it must strictly match the hash format. MUST include `authorization_evidence_id` and `semantic_candidate_review_status`.
+- `FINAL_VALIDATION`: The dataset MUST include `timestamp`, `campaign_hash`, and `sender_domain_hash` to establish robust independence from the calibration dataset. `url_domain_hash` is OPTIONAL. MUST include `authorization_evidence_id` and `semantic_candidate_review_status`.
 
 **G. Cross-Dataset Leakage Controls**
 When validating a `THRESHOLD_CALIBRATION` split against a `FINAL_VALIDATION` split, the evaluator natively computes exact strict separation across the following dimensions:
@@ -46,6 +51,10 @@ When validating a `THRESHOLD_CALIBRATION` split against a `FINAL_VALIDATION` spl
 - Dataset-level `coverage_period` does not establish record-level temporal independence.
 - URL-free records may legitimately omit `url_domain_hash`. The absence of `url_domain_hash` means the evaluator cannot perform URL-domain correlation for that record. It does NOT mean the record is URL-independent, campaign-independent, or automatically safe for holdout evaluation.
 - These controls establish separation only for the metadata dimensions actually represented. They do not prove semantic campaign independence, detect semantic near duplicates, or establish complete real-world independence of datasets. Concentration reporting and semantic near-duplicate detection remain future work.
+
+**I. Representativeness Warnings**
+- The evaluator natively provides *descriptive* class and temporal distribution statistics, but these do NOT prove that the dataset is representative of real-world or future production threat landscapes.
+- Ensuring true representativeness requires human-in-the-loop domain expertise and cannot be established by the evaluator alone.
 
 ### 2. Evaluator Usage
 

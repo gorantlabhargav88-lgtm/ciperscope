@@ -45,12 +45,22 @@ def validate_metadata(meta: Dict[str, Any]) -> bool:
         "license_terms", "label_methodology", "sanitization_status",
         "deduplication_status", "authorization_status", "known_limitations",
         "intended_purpose", "authorized_for_ml_evaluation",
-        "privacy_review_status", "data_owner", "provenance_verified"
+        "privacy_review_status", "data_owner", "provenance_verified",
+        "labeling_method"
     ]
 
     for key in required_keys:
         if key not in meta:
             print(f"Error: Metadata missing required key: {key}")
+            return False
+
+    if not isinstance(meta.get("labeling_method"), str) or not meta.get("labeling_method").strip():
+        print("Error: labeling_method must be a non-empty string.")
+        return False
+
+    if "labeling_evidence_id" in meta:
+        if not isinstance(meta.get("labeling_evidence_id"), str):
+            print("Error: labeling_evidence_id must be a string.")
             return False
 
     if meta.get("authorized_for_ml_evaluation") is not True:
@@ -69,6 +79,30 @@ def validate_metadata(meta: Dict[str, Any]) -> bool:
     if meta.get("intended_purpose") not in valid_purposes:
         print(f"Error: Invalid intended purpose. Must be one of: {valid_purposes}")
         return False
+
+    purpose = meta.get("intended_purpose")
+    if purpose in ["THRESHOLD_CALIBRATION", "FINAL_VALIDATION"]:
+        if "authorization_evidence_id" not in meta:
+            print(f"Error: authorization_evidence_id is required for purpose {purpose}.")
+            return False
+        if not isinstance(meta["authorization_evidence_id"], str) or not meta["authorization_evidence_id"].strip():
+            print("Error: authorization_evidence_id must be a non-empty string.")
+            return False
+
+        if "semantic_candidate_review_status" not in meta:
+            print(f"Error: semantic_candidate_review_status is required for purpose {purpose}.")
+            return False
+
+    valid_semantic_statuses = ["NOT_REVIEWED", "REVIEWED_NO_LEAKAGE", "REVIEWED_POTENTIAL_LEAKAGE"]
+    if "semantic_candidate_review_status" in meta:
+        if meta["semantic_candidate_review_status"] not in valid_semantic_statuses:
+            print(f"Error: Invalid semantic_candidate_review_status. Must be one of: {valid_semantic_statuses}")
+            return False
+
+    if "authorization_evidence_id" in meta:
+        if not isinstance(meta["authorization_evidence_id"], str) or not meta["authorization_evidence_id"].strip():
+            print("Error: authorization_evidence_id must be a non-empty string.")
+            return False
 
     print("Metadata validation passed.")
     return True

@@ -23,7 +23,10 @@ class TestDatasetValidation(unittest.TestCase):
             "authorized_for_ml_evaluation": True,
             "privacy_review_status": "APPROVED",
             "data_owner": "Security Team",
-            "provenance_verified": True
+            "provenance_verified": True,
+            "labeling_method": "Manual",
+            "authorization_evidence_id": "auth-1234",
+            "semantic_candidate_review_status": "NOT_REVIEWED"
         }
 
     def get_valid_record(self) -> Dict[str, Any]:
@@ -64,6 +67,38 @@ class TestDatasetValidation(unittest.TestCase):
         meta = self.get_valid_metadata()
         meta["provenance_verified"] = False
         self.assertFalse(validate_metadata(meta))
+
+    def test_missing_labeling_method(self):
+        meta = self.get_valid_metadata()
+        del meta["labeling_method"]
+        self.assertFalse(validate_metadata(meta))
+
+    def test_missing_auth_evidence_for_calibration(self):
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        del meta["authorization_evidence_id"]
+        self.assertFalse(validate_metadata(meta))
+
+    def test_invalid_semantic_review_status(self):
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        meta["semantic_candidate_review_status"] = "UNKNOWN_STATUS"
+        self.assertFalse(validate_metadata(meta))
+
+    def test_missing_semantic_review_status_for_calibration(self):
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        del meta["semantic_candidate_review_status"]
+        self.assertFalse(validate_metadata(meta))
+
+    def test_engineering_regression_allows_missing_auth_evidence(self):
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "ENGINEERING_REGRESSION"
+        if "authorization_evidence_id" in meta:
+            del meta["authorization_evidence_id"]
+        if "semantic_candidate_review_status" in meta:
+            del meta["semantic_candidate_review_status"]
+        self.assertTrue(validate_metadata(meta))
 
     # DATA TESTS
     def test_valid_schema(self):
