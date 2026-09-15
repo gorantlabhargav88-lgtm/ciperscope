@@ -75,15 +75,117 @@ class UnavailableModelProvider(ModelProvider):
             "preprocessingVersion": "1.0",
         }
 
-# Future: DistilBertModelProvider
-# To be implemented when a vetted SAFETENSORS fine-tuned model artifact is provided.
-# Will enforce no trust_remote_code, strictly safetensors, deterministic preprocessing.
+import logging
+
+try:
+    import torch
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+
+class DistilBertModelProvider(ModelProvider):
+    def __init__(self):
+        self.model_name = "spotproject/spot-distilbert-phishing"
+        self.revision = "fc409441b8bfe0bada834c464ee1b88f162a534d"
+        self.is_ready = False
+
+        self.label_mapping = {
+            0: "LEGITIMATE",
+            1: "PHISHING_OR_SPAM"
+        }
+
+        if not TRANSFORMERS_AVAILABLE:
+            logging.error("Transformers or torch is not installed.")
+            return
+
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                revision=self.revision,
+                trust_remote_code=False
+            )
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                self.model_name,
+                revision=self.revision,
+                use_safetensors=True,
+                trust_remote_code=False
+            )
+
+            # Validation
+            if self.model.config.architectures and "DistilBertForSequenceClassification" not in self.model.config.architectures:
+                raise ValueError(f"Expected DistilBertForSequenceClassification, got {self.model.config.architectures}")
+
+            if self.model.config.num_labels != 2:
+                raise ValueError(f"Expected exactly 2 labels, got {self.model.config.num_labels}")
+
+            self.model.eval()
+            self.is_ready = True
+
+        except Exception as e:
+            logging.error(f"Failed to load DistilBertModelProvider: {e}")
+            self.is_ready = False
+
+    def predict(self, text: str) -> dict:
+        if not self.is_ready:
+            return {
+                "status": "NOT_AVAILABLE",
+                "predictedLabel": None,
+                "modelScore": None,
+            }
+
+        try:
+            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+
+            logits = outputs.logits
+            if logits.shape[-1] != 2:
+                raise ValueError(f"Unexpected logits shape: {logits.shape}")
+
+            probs = torch.softmax(logits, dim=-1)[0]
+
+            score = float(probs[1].item())
+            if not (0.0 <= score <= 1.0):
+                raise ValueError(f"Score out of bounds: {score}")
+
+            predicted_class = int(probs.argmax(dim=-1).item())
+            predicted_label = self.label_mapping.get(predicted_class, "UNKNOWN")
+
+            return {
+                "status": "MODEL_PREDICTION",
+                "predictedLabel": predicted_label,
+                "modelScore": score,
+            }
+        except Exception as e:
+            logging.error(f"Prediction failed: {e}")
+            return {
+                "status": "FAILED",
+                "predictedLabel": None,
+                "modelScore": None,
+            }
+
+    def get_metadata(self) -> dict:
+        if not self.is_ready:
+            return {
+                "modelName": None,
+                "modelVersion": None,
+                "artifactSha256": None,
+                "tokenizerVersion": None,
+                "preprocessingVersion": "1.0",
+            }
+
+        return {
+            "modelName": self.model_name,
+            "modelVersion": self.revision,
+            "artifactSha256": self.revision,
+            "tokenizerVersion": getattr(self.tokenizer, "name_or_path", self.model_name),
+            "preprocessingVersion": "1.0",
+        }
 
 # --- Global State ---
 
-# By default, because no verified model exists, use UnavailableModelProvider.
-# This prevents fabrication of PHISHING/BENIGN labels.
-current_provider: ModelProvider = UnavailableModelProvider()
+current_provider: ModelProvider = DistilBertModelProvider()
 
 # --- Endpoints ---
 
