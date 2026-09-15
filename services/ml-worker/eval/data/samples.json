@@ -1,0 +1,162 @@
+[
+  {
+    "id": "sample-001",
+    "label": "LEGITIMATE",
+    "subject": "Q3 Quarterly Review Meeting",
+    "sender": "boss@company.com",
+    "replyTo": "boss@company.com",
+    "body": "Hi team, please find the agenda for our Q3 review meeting attached. Let me know if you have any questions."
+  },
+  {
+    "id": "sample-002",
+    "label": "LEGITIMATE",
+    "subject": "Lunch today?",
+    "sender": "colleague@company.com",
+    "replyTo": "colleague@company.com",
+    "body": "Hey, are you free for lunch today around 12:30?"
+  },
+  {
+    "id": "sample-003",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "URGENT: Your account has been suspended",
+    "sender": "security@paypal-support-update.com",
+    "replyTo": "no-reply@paypal-support-update.com",
+    "body": "Dear customer, your account has been temporarily suspended due to suspicious activity. Please click the link below to verify your identity."
+  },
+  {
+    "id": "sample-004",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "Claim your $1000 Amazon Gift Card Now!",
+    "sender": "promotions@amazn-rewards.net",
+    "replyTo": "promotions@amazn-rewards.net",
+    "body": "Congratulations! You have been selected to win a $1000 gift card. Click here to claim your prize before it expires in 24 hours."
+  },
+  {
+    "id": "sample-005",
+    "label": "LEGITIMATE",
+    "subject": "Project Alpha Status Update",
+    "sender": "pm@company.com",
+    "replyTo": "pm@company.com",
+    "body": "The project is currently on track. All milestones for this week have been completed."
+  },
+  {
+    "id": "sample-006",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "Invoice Overdue - Please Pay Immediately",
+    "sender": "billing@fake-invoice-service.com",
+    "replyTo": "billing@fake-invoice-service.com",
+    "body": "Your invoice #99482 is overdue. Please download the attached PDF for payment instructions. Failure to pay will result in service termination."
+  },
+  {
+    "id": "sample-007",
+    "label": "LEGITIMATE",
+    "subject": "Software License Renewal",
+    "sender": "it-support@company.com",
+    "replyTo": "it-support@company.com",
+    "body": "This is a reminder that your software license will expire in 30 days. Please reach out to IT if you need a renewal."
+  },
+  {
+    "id": "sample-008",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "IT Helpdesk: Mandatory Security Update",
+    "sender": "admin@it-helpdesk-portal.com",
+    "replyTo": "admin@it-helpdesk-portal.com",
+    "body": "All employees must install the latest security update. Click here to download the executable. Mandatory compliance required."
+  },
+  {
+    "id": "sample-009",
+    "label": "LEGITIMATE",
+    "subject": "Happy Birthday!",
+    "sender": "hr@company.com",
+    "replyTo": "hr@company.com",
+    "body": "Wishing you a very happy birthday from the HR team! We hope you have a great day."
+  },
+  {
+    "id": "sample-010",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "You have a new voicemail",
+    "sender": "pbx@voice-mail-system.com",
+    "replyTo": "pbx@voice-mail-system.com",
+    "body": "You have 1 new voice message. Length: 0:45. Click here to listen to the message."
+  },
+  {
+    "id": "sample-011",
+    "label": "LEGITIMATE",
+    "subject": "Code Review Request",
+    "sender": "dev@company.com",
+    "replyTo": "dev@company.com",
+    "body": "Can you please review my pull request for the new authentication feature? Link is in the Jira ticket."
+  },
+  {
+    "id": "sample-012",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "Important Notice: Document Shared With You",
+    "sender": "drive-share@doc-share-cloud.com",
+    "replyTo": "drive-share@doc-share-cloud.com",
+    "body": "A document has been shared with you on OneDrive. Click the link to view the document and sign in with your Microsoft credentials."
+  },
+  {
+    "id": "sample-013",
+    "label": "LEGITIMATE",
+    "subject": "Weekly Newsletter",
+    "sender": "newsletter@industry-news.com",
+    "replyTo": "newsletter@industry-news.com",
+    "body": "Here are the top 5 news stories in the tech industry this week. Read more on our website."
+  },
+  {
+    "id": "sample-014",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "Final Warning: Email Account Deactivation",
+    "sender": "admin@webmail-admin-center.com",
+    "replyTo": "admin@webmail-admin-center.com",
+    "body": "Your email quota is full. You will not be able to send or receive messages. Click here to increase your quota."
+  },
+  {
+    "id": "sample-015",
+    "label": "LEGITIMATE",
+    "subject": "Out of Office",
+    "sender": "vacationing-colleague@company.com",
+    "replyTo": "vacationing-colleague@company.com",
+    "body": "I will be out of the office from Monday to Friday next week. Please contact the support team for urgent issues."
+  },
+  {
+    "id": "sample-016",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "Receipt for your recent purchase",
+    "sender": "orders@appple-store-receipts.com",
+    "replyTo": "orders@appple-store-receipts.com",
+    "body": "Thank you for your purchase of the iPhone 15 Pro Max. Amount: $1,199.00. If you did not make this purchase, click here to cancel."
+  },
+  {
+    "id": "sample-017",
+    "label": "LEGITIMATE",
+    "subject": "Team Building Event Details",
+    "sender": "events@company.com",
+    "replyTo": "events@company.com",
+    "body": "Just a reminder that our team building event is this Friday at 3 PM. See you all there!"
+  },
+  {
+    "id": "sample-018",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "Wire Transfer Confirmation Request",
+    "sender": "ceo@c0mpany.com",
+    "replyTo": "ceo-personal@gmail.com",
+    "body": "Are you at your desk? I need you to process an urgent wire transfer for a new acquisition. I am in a meeting and cannot take calls."
+  },
+  {
+    "id": "sample-019",
+    "label": "LEGITIMATE",
+    "subject": "Welcome to the team!",
+    "sender": "manager@company.com",
+    "replyTo": "manager@company.com",
+    "body": "Hi, I just wanted to officially welcome you to the team. Let me know if you need anything as you get settled in."
+  },
+  {
+    "id": "sample-020",
+    "label": "PHISHING_OR_SPAM",
+    "subject": "Your Netflix membership is about to be canceled",
+    "sender": "support@netflix-billing-update.com",
+    "replyTo": "support@netflix-billing-update.com",
+    "body": "We were unable to process your last payment. Please update your billing information immediately to avoid service interruption."
+  }
+]
