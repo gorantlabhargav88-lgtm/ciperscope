@@ -9,6 +9,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from validate_dataset import compute_fingerprint
 from collections import Counter
 from datetime import datetime
+import re
 def calc_metrics(y_true, y_pred, safe_undefined=False):
     tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
     fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
@@ -255,6 +256,64 @@ def compute_and_print_concentration(samples):
 
     temp_stats = compute_temporal_distribution(samples)
     print_temporal_distribution(temp_stats)
+
+def normalize_text_to_tokens(text: str) -> set:
+    if not text:
+        return set()
+    text = unicodedata.normalize('NFKC', text)
+    # Remove punctuation, lowercase, split on whitespace, returning unique tokens
+    text = re.sub(r'[^\w\s]', '', text.lower())
+    return set(text.split())
+
+def jaccard_similarity(set1: set, set2: set) -> float:
+    # If both sets are empty, return 0.0 to prevent false 100% matches
+    if not set1 and not set2:
+        return 0.0
+    # If one is empty, return 0.0
+    if not set1 or not set2:
+        return 0.0
+
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    return intersection / union
+
+def get_record_tokens(record: dict) -> set:
+    subject = record.get("subject", "")
+    body = record.get("body", "")
+    combined = f"{subject} {body}"
+    return normalize_text_to_tokens(combined)
+
+def find_semantic_candidates(calibration_samples: list, validation_samples: list, threshold: float):
+    if not (0.0 <= threshold <= 1.0):
+        raise ValueError("Threshold must be between 0.0 and 1.0")
+
+    candidates = []
+
+    # Pre-tokenize to avoid repeated work, keeping only set semantics.
+    # Token frequency is not represented because we only want a high-level
+    # structural lexical overlap (set semantics) rather than term frequency weighting,
+    # which avoids issues with repeated spam keywords inflating similarity.
+    calib_tokens = [(s["id"], get_record_tokens(s)) for s in calibration_samples]
+    valid_tokens = [(s["id"], get_record_tokens(s)) for s in validation_samples]
+
+    for c_id, c_toks in calib_tokens:
+        for v_id, v_toks in valid_tokens:
+            sim = jaccard_similarity(c_toks, v_toks)
+            if sim >= threshold:
+                candidates.append({
+                    "calibration_id": c_id,
+                    "validation_id": v_id,
+                    "similarity": sim
+                })
+
+    # Deterministic sort: similarity descending, then calib_id asc, valid_id asc
+    candidates.sort(key=lambda x: (-x["similarity"], x["calibration_id"], x["validation_id"]))
+
+    return {
+        "candidate_count": len(candidates),
+        "threshold": threshold,
+        "candidates": candidates
+    }
 
 def run_evaluation():
     parser = argparse.ArgumentParser(description="Offline Evaluation & Calibration")

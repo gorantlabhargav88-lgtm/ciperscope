@@ -378,5 +378,170 @@ class TestConcentrationMetrics(unittest.TestCase):
         self.assertNotIn("secret_camp_hash", stats["top_groups"][0].values())
         self.assertNotIn("hash", stats["top_groups"][0].keys())
 
+class TestSemanticCandidateDetection(unittest.TestCase):
+    def setUp(self):
+        from evaluate import (
+            normalize_text_to_tokens,
+            jaccard_similarity,
+            find_semantic_candidates
+        )
+        self.normalize = normalize_text_to_tokens
+        self.jaccard = jaccard_similarity
+        self.find_candidates = find_semantic_candidates
+
+    def test_identical_subject_body(self):
+        t1 = self.normalize("Hello world")
+        t2 = self.normalize("Hello world")
+        self.assertEqual(self.jaccard(t1, t2), 1.0)
+
+    def test_unrelated_messages(self):
+        t1 = self.normalize("Your invoice is ready")
+        t2 = self.normalize("Check out our new products")
+        self.assertEqual(self.jaccard(t1, t2), 0.0)
+
+    def test_whitespace_normalization(self):
+        t1 = self.normalize("Hello    world\n\t!")
+        t2 = self.normalize("Hello world!")
+        self.assertEqual(self.jaccard(t1, t2), 1.0)
+
+    def test_capitalization_normalization(self):
+        t1 = self.normalize("HELLO World")
+        t2 = self.normalize("hello world")
+        self.assertEqual(self.jaccard(t1, t2), 1.0)
+
+    def test_punctuation_normalization(self):
+        t1 = self.normalize("Hello, world!")
+        t2 = self.normalize("Hello world")
+        self.assertEqual(self.jaccard(t1, t2), 1.0)
+
+    def test_one_word_modification(self):
+        t1 = self.normalize("Your account is locked") # your, account, is, locked (4)
+        t2 = self.normalize("Your profile is locked") # your, profile, is, locked (4)
+        # Intersection: your, is, locked (3)
+        # Union: your, account, profile, is, locked (5)
+        self.assertEqual(self.jaccard(t1, t2), 3/5)
+
+    def test_url_token_substitution(self):
+        t1 = self.normalize("Click here http://example.com")
+        t2 = self.normalize("Click here http://other.com")
+        self.assertEqual(self.jaccard(t1, t2), 2/4)
+
+    def test_empty_vs_empty(self):
+        t1 = self.normalize("")
+        t2 = self.normalize("")
+        self.assertEqual(self.jaccard(t1, t2), 0.0)
+
+    def test_empty_vs_non_empty(self):
+        t1 = self.normalize("")
+        t2 = self.normalize("Hello")
+        self.assertEqual(self.jaccard(t1, t2), 0.0)
+
+    def test_one_token_inputs(self):
+        t1 = self.normalize("A")
+        t2 = self.normalize("a")
+        self.assertEqual(self.jaccard(t1, t2), 1.0)
+
+    def test_deterministic_repeated_calculation(self):
+        t1 = self.normalize("Test message one")
+        t2 = self.normalize("Test message two")
+        val1 = self.jaccard(t1, t2)
+        val2 = self.jaccard(t1, t2)
+        self.assertEqual(val1, val2)
+
+    def test_calibration_vs_validation_bipartite(self):
+        calib = [
+            {"id": "c1", "subject": "Alert", "body": "Your account is locked"}
+        ]
+        valid = [
+            {"id": "v1", "subject": "Notice", "body": "Please reset your password"},
+            {"id": "v2", "subject": "Alert", "body": "Your account is locked"}
+        ]
+        res = self.find_candidates(calib, valid, threshold=0.5)
+        self.assertEqual(res["candidate_count"], 1)
+        self.assertEqual(res["candidates"][0]["calibration_id"], "c1")
+        self.assertEqual(res["candidates"][0]["validation_id"], "v2")
+
+    def test_threshold_behavior(self):
+        calib = [{"id": "c1", "subject": "A B", "body": "C D"}] # a,b,c,d
+        valid = [{"id": "v1", "subject": "A B", "body": "C E"}] # a,b,c,e
+        # sim = 3/5 = 0.6
+        res_high = self.find_candidates(calib, valid, threshold=0.8)
+        self.assertEqual(res_high["candidate_count"], 0)
+
+        res_low = self.find_candidates(calib, valid, threshold=0.5)
+        self.assertEqual(res_low["candidate_count"], 1)
+
+    def test_threshold_zero(self):
+        calib = [{"id": "c1", "subject": "A", "body": "B"}]
+        valid = [{"id": "v1", "subject": "C", "body": "D"}]
+        res = self.find_candidates(calib, valid, threshold=0.0)
+        # Even totally unrelated will match threshold 0.0 because 0.0 >= 0.0
+        self.assertEqual(res["candidate_count"], 1)
+
+    def test_threshold_one(self):
+        calib = [{"id": "c1", "subject": "A", "body": "B"}]
+        valid = [{"id": "v1", "subject": "A", "body": "B"}]
+        res = self.find_candidates(calib, valid, threshold=1.0)
+        self.assertEqual(res["candidate_count"], 1)
+
+    def test_invalid_thresholds(self):
+        with self.assertRaises(ValueError):
+            self.find_candidates([], [], -0.1)
+        with self.assertRaises(ValueError):
+            self.find_candidates([], [], 1.1)
+
+    def test_candidate_output_privacy(self):
+        calib = [{"id": "c1", "subject": "Secret", "body": "Msg", "sender": "x@x.com", "replyTo": "y"}]
+        valid = [{"id": "v1", "subject": "Secret", "body": "Msg", "sender": "z@x.com", "replyTo": "z"}]
+        res = self.find_candidates(calib, valid, threshold=1.0)
+        cand = res["candidates"][0]
+        keys = list(cand.keys())
+        self.assertCountEqual(keys, ["calibration_id", "validation_id", "similarity"])
+        self.assertNotIn("subject", cand)
+        self.assertNotIn("body", cand)
+        self.assertNotIn("sender", cand)
+        self.assertNotIn("replyTo", cand)
+
+    def test_deterministic_candidate_ordering(self):
+        # Create identical records so all have sim=1.0
+        calib = [
+            {"id": "c2", "subject": "A", "body": "B"},
+            {"id": "c1", "subject": "A", "body": "B"}
+        ]
+        valid = [
+            {"id": "v2", "subject": "A", "body": "B"},
+            {"id": "v1", "subject": "A", "body": "B"}
+        ]
+        res = self.find_candidates(calib, valid, threshold=1.0)
+        # Should be sorted: similarity desc (all 1.0), calib_id asc, valid_id asc
+        cands = res["candidates"]
+        self.assertEqual(cands[0]["calibration_id"], "c1")
+        self.assertEqual(cands[0]["validation_id"], "v1")
+
+        self.assertEqual(cands[1]["calibration_id"], "c1")
+        self.assertEqual(cands[1]["validation_id"], "v2")
+
+        self.assertEqual(cands[2]["calibration_id"], "c2")
+        self.assertEqual(cands[2]["validation_id"], "v1")
+
+        self.assertEqual(cands[3]["calibration_id"], "c2")
+        self.assertEqual(cands[3]["validation_id"], "v2")
+
+    def test_no_automatic_dataset_rejection(self):
+        # find_semantic_candidates merely returns a dictionary,
+        # it does not raise an exception for candidates found.
+        calib = [{"id": "c1", "subject": "A", "body": "B"}]
+        valid = [{"id": "v1", "subject": "A", "body": "B"}]
+        res = self.find_candidates(calib, valid, threshold=1.0)
+        self.assertEqual(res["candidate_count"], 1)
+        # We assert it returns cleanly rather than throwing dataset validation errors
+
+    def test_repeated_execution_produces_identical_output(self):
+        calib = [{"id": "c1", "subject": "A B C", "body": "D E"}]
+        valid = [{"id": "v1", "subject": "A B", "body": "D F"}]
+        res1 = self.find_candidates(calib, valid, threshold=0.5)
+        res2 = self.find_candidates(calib, valid, threshold=0.5)
+        self.assertEqual(res1, res2)
+
 if __name__ == '__main__':
     unittest.main()
