@@ -409,4 +409,68 @@ export default async function emailRoutes(server: FastifyInstance) {
 
     return reply.send({ prediction });
   });
+
+  // ==========================================
+  // Phase 14.5 Forensic Intelligence Endpoints
+  // ==========================================
+
+  server.get('/:emailId/threat-indicators', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const indicators = await prisma.threatIndicator.findMany({
+      where: { emailId },
+      select: {
+        id: true,
+        iocType: true,
+        iocValue: true,
+        provider: true,
+        status: true,
+        confidence: true
+      }
+    });
+
+    return reply.send({ threatIndicators: indicators });
+  });
+
+  server.get('/:emailId/geolocation', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const geolocation = await prisma.geolocationInfo.findMany({
+      where: { emailId },
+      select: {
+        id: true,
+        ipAddress: true,
+        country: true,
+        city: true,
+        asn: true,
+        isp: true
+      }
+    });
+
+    return reply.send({ geolocation });
+  });
 }

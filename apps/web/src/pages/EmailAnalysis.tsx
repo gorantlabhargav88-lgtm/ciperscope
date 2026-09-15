@@ -18,6 +18,8 @@ export const EmailAnalysis = () => {
 
   const [urls, setUrls] = useState<any[]>([]);
   const [attachments, setAttachments] = useState<any[]>([]);
+  const [threatIndicators, setThreatIndicators] = useState<any[]>([]);
+  const [geolocation, setGeolocation] = useState<any[]>([]);
 
   const organizationId = '00000000-0000-0000-0000-000000000000'; // dummy for UI
 
@@ -37,6 +39,8 @@ export const EmailAnalysis = () => {
     setDmarc(null);
     setUrls([]);
     setAttachments([]);
+    setThreatIndicators([]);
+    setGeolocation([]);
 
     try {
       const formData = new FormData();
@@ -117,6 +121,15 @@ export const EmailAnalysis = () => {
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/ai-analysis`, {
               headers: { 'x-organization-id': organizationId }
             }).then(r => r.json()).then(d => setAnalysis((prev: any) => ({...prev, mlInference: d.prediction || {status: 'NOT_AVAILABLE'}})));
+
+            // Phase 14.5
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/threat-indicators`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setThreatIndicators(d.threatIndicators || []));
+
+            fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/geolocation`, {
+              headers: { 'x-organization-id': organizationId }
+            }).then(r => r.json()).then(d => setGeolocation(d.geolocation || []));
 
           } else if (data.analysisStatus === 'FAILED') {
             clearInterval(interval);
@@ -509,6 +522,64 @@ export const EmailAnalysis = () => {
                 <div className="text-xs text-slate-500 text-center mt-4">
                   Automated model assessment. Not independent confirmation.
                 </div>
+              </div>
+            </div>
+
+            {/* Phase 14.5: Forensic Threat Intelligence */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mt-6">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Forensic Threat Intelligence</h2>
+                <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-1 rounded border border-rose-500/30">External CTI</span>
+              </div>
+              <div className="p-5">
+                 {threatIndicators.length > 0 ? (
+                   <div className="space-y-3">
+                     {threatIndicators.map((ti: any, i: number) => (
+                       <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-sm flex flex-col space-y-2">
+                         <div className="flex justify-between items-center border-b border-slate-800/50 pb-2 mb-1">
+                           <span className="font-mono text-slate-300 break-all">{ti.iocValue}</span>
+                           <span className={`text-xs px-2 py-1 rounded font-bold ${ti.status === 'MALICIOUS' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : (ti.status === 'SUSPICIOUS' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-slate-800 text-slate-400')}`}>{ti.status}</span>
+                         </div>
+                         <div className="grid grid-cols-2 gap-2 text-xs">
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Type</span><span className="text-slate-300">{ti.iocType}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Provider</span><span className="text-slate-300">{ti.provider}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Confidence</span><span className="text-slate-300">{ti.confidence ? `${ti.confidence}%` : 'N/A'}</span></div>
+                         </div>
+                       </div>
+                     ))}
+                   </div>
+                 ) : (
+                   <div className="text-sm text-slate-500 text-center py-2">No Threat Intelligence indicators found</div>
+                 )}
+              </div>
+            </div>
+
+            {/* Phase 14.5: Network Geolocation */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mt-6">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Network Geolocation</h2>
+                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">GEO</span>
+              </div>
+              <div className="p-5">
+                 {geolocation.length > 0 ? (
+                   <div className="space-y-3">
+                     {geolocation.map((geo: any, i: number) => (
+                       <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-sm flex flex-col space-y-2">
+                         <div className="flex justify-between items-center border-b border-slate-800/50 pb-2 mb-1">
+                           <span className="font-mono text-slate-300">{geo.ipAddress}</span>
+                         </div>
+                         <div className="grid grid-cols-2 gap-2 text-xs">
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Country</span><span className="text-slate-300">{geo.country || 'Unknown'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">City</span><span className="text-slate-300">{geo.city || 'Unknown'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">ASN</span><span className="text-slate-300">{geo.asn || 'Unknown'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">ISP</span><span className="text-slate-300 truncate pl-2" title={geo.isp}>{geo.isp || 'Unknown'}</span></div>
+                         </div>
+                       </div>
+                     ))}
+                   </div>
+                 ) : (
+                   <div className="text-sm text-slate-500 text-center py-2">No Geolocation data available</div>
+                 )}
               </div>
             </div>
 
