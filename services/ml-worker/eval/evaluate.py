@@ -7,7 +7,8 @@ import random
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from validate_dataset import compute_fingerprint
-
+from collections import Counter
+from datetime import datetime
 def calc_metrics(y_true, y_pred, safe_undefined=False):
     tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
     fp = sum(1 for t, p in zip(y_true, y_pred) if t == 0 and p == 1)
@@ -160,6 +161,101 @@ def compute_calibration_metrics(y_true, y_scores, n_bins=10):
 
     return {"brier": brier, "ece": ece, "reliability": reliability}
 
+def parse_timestamp(ts: str) -> datetime:
+    if '.' in ts:
+        return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ")
+    else:
+        return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
+
+def compute_hash_concentration(samples, key):
+    counts = Counter(s[key] for s in samples if key in s)
+    records_with_metadata = sum(counts.values())
+    records_without_metadata = len(samples) - records_with_metadata
+    unique_groups = len(counts)
+
+    if records_with_metadata == 0:
+        return {
+            "unique_groups": 0,
+            "records_with_metadata": 0,
+            "records_without_metadata": records_without_metadata,
+            "top_groups": []
+        }
+
+    # Sort deterministically: descending count, then ascending hash (to break ties)
+    sorted_groups = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+    top_3 = sorted_groups[:3]
+
+    top_groups = []
+    for rank, (h, c) in enumerate(top_3, 1):
+        percentage = (c / records_with_metadata) * 100
+        top_groups.append({
+            "rank": rank,
+            "count": c,
+            "percentage": percentage,
+            # We explicitly do NOT include the hash here to ensure it's not printed
+        })
+
+    return {
+        "unique_groups": unique_groups,
+        "records_with_metadata": records_with_metadata,
+        "records_without_metadata": records_without_metadata,
+        "top_groups": top_groups
+    }
+
+def print_hash_concentration(stats, title, is_url=False):
+    print(f"{title}:")
+    print(f"  unique_groups: {stats['unique_groups']}")
+    print(f"  records_with_metadata: {stats['records_with_metadata']}")
+    if is_url:
+        print(f"  records_without_metadata: {stats['records_without_metadata']}")
+
+    if stats['records_with_metadata'] > 0:
+        print("  top_groups:")
+        for g in stats['top_groups']:
+            print(f"    rank={g['rank']} count={g['count']} percentage={g['percentage']:.2f}")
+
+def compute_temporal_distribution(samples):
+    timestamps = [parse_timestamp(s["timestamp"]) for s in samples if "timestamp" in s]
+    if not timestamps:
+        return None
+
+    earliest = min(timestamps)
+    latest = max(timestamps)
+    span = latest - earliest
+    return {
+        "earliest": earliest,
+        "latest": latest,
+        "span": span
+    }
+
+def print_temporal_distribution(stats):
+    print("Temporal distribution:")
+    if not stats:
+        print("  metadata: UNAVAILABLE")
+        return
+
+    print(f"  earliest: {stats['earliest'].isoformat() + 'Z'}")
+    print(f"  latest: {stats['latest'].isoformat() + 'Z'}")
+    print(f"  span: {stats['span']}")
+
+def compute_and_print_concentration(samples):
+    print(f"\n--- CONCENTRATION STATISTICS ---")
+    if not samples:
+        print("Dataset is empty.")
+        return
+
+    camp_stats = compute_hash_concentration(samples, "campaign_hash")
+    print_hash_concentration(camp_stats, "Campaign concentration")
+
+    sender_stats = compute_hash_concentration(samples, "sender_domain_hash")
+    print_hash_concentration(sender_stats, "Sender-domain concentration")
+
+    url_stats = compute_hash_concentration(samples, "url_domain_hash")
+    print_hash_concentration(url_stats, "URL-domain concentration", is_url=True)
+
+    temp_stats = compute_temporal_distribution(samples)
+    print_temporal_distribution(temp_stats)
+
 def run_evaluation():
     parser = argparse.ArgumentParser(description="Offline Evaluation & Calibration")
     parser.add_argument("--data", type=str, default=os.path.join(os.path.dirname(__file__), 'data', 'samples.json'), help="Path to evaluation dataset")
@@ -212,6 +308,8 @@ def run_evaluation():
     print(f"Total: {total_samples}")
     print(f"Positive (PHISHING_OR_SPAM): {pos_count} ({pos_prev:.4f})")
     print(f"Negative (LEGITIMATE):       {neg_count} ({neg_prev:.4f})")
+
+    compute_and_print_concentration(samples)
 
     model_id = "spotproject/spot-distilbert-phishing"
     revision = "fc409441b8bfe0bada834c464ee1b88f162a534d"

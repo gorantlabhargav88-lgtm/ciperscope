@@ -252,5 +252,131 @@ class TestCalibrationMetrics(unittest.TestCase):
         self.assertEqual(rel[0]["empirical_rate"], 1.0)
         self.assertEqual(rel[0]["mean_prob"], 1.0)
 
+class TestConcentrationMetrics(unittest.TestCase):
+    def setUp(self):
+        from evaluate import compute_hash_concentration, compute_temporal_distribution
+        self.compute_hash_concentration = compute_hash_concentration
+        self.compute_temporal_distribution = compute_temporal_distribution
+
+    def get_sample(self, id_val, camp, sender, url=None, ts=None):
+        s = {"id": id_val, "campaign_hash": camp, "sender_domain_hash": sender}
+        if url is not None:
+            s["url_domain_hash"] = url
+        if ts is not None:
+            s["timestamp"] = ts
+        return s
+
+    def test_campaign_concentration(self):
+        samples = [
+            self.get_sample("1", "c1", "s1"),
+            self.get_sample("2", "c1", "s2"),
+            self.get_sample("3", "c2", "s3"),
+        ]
+        stats = self.compute_hash_concentration(samples, "campaign_hash")
+        self.assertEqual(stats["unique_groups"], 2)
+        self.assertEqual(stats["records_with_metadata"], 3)
+        self.assertEqual(len(stats["top_groups"]), 2)
+        self.assertEqual(stats["top_groups"][0]["count"], 2)
+        self.assertAlmostEqual(stats["top_groups"][0]["percentage"], 66.666, places=2)
+        self.assertEqual(stats["top_groups"][1]["count"], 1)
+
+    def test_campaign_all_in_one(self):
+        samples = [self.get_sample(str(i), "c1", "s1") for i in range(5)]
+        stats = self.compute_hash_concentration(samples, "campaign_hash")
+        self.assertEqual(stats["unique_groups"], 1)
+        self.assertEqual(stats["top_groups"][0]["percentage"], 100.0)
+
+    def test_every_record_unique(self):
+        samples = [self.get_sample(str(i), f"c{i}", f"s{i}") for i in range(5)]
+        stats = self.compute_hash_concentration(samples, "campaign_hash")
+        self.assertEqual(stats["unique_groups"], 5)
+        self.assertEqual(stats["top_groups"][0]["percentage"], 20.0)
+
+    def test_sender_domain_concentration(self):
+        samples = [
+            self.get_sample("1", "c1", "s1"),
+            self.get_sample("2", "c1", "s1"),
+            self.get_sample("3", "c2", "s2"),
+        ]
+        stats = self.compute_hash_concentration(samples, "sender_domain_hash")
+        self.assertEqual(stats["unique_groups"], 2)
+        self.assertEqual(stats["top_groups"][0]["count"], 2)
+        self.assertEqual(stats["top_groups"][0]["percentage"], 66.66666666666666)
+
+    def test_ties_deterministic(self):
+        # c1, c2, c3 all have 2. c2 should come before c3 in string sort if count same,
+        # but the hash itself is what breaks the tie: c1, c2, c3 ascending.
+        samples = [
+            self.get_sample("1", "c3", "s1"), self.get_sample("2", "c3", "s1"),
+            self.get_sample("3", "c1", "s1"), self.get_sample("4", "c1", "s1"),
+            self.get_sample("5", "c2", "s1"), self.get_sample("6", "c2", "s1"),
+        ]
+        stats = self.compute_hash_concentration(samples, "campaign_hash")
+        # counts are 2, 2, 2. Sort by hash asc -> c1, c2, c3
+        self.assertEqual(stats["top_groups"][0]["count"], 2)
+        # Note: the test just checks the count ordering is stable.
+        self.assertEqual(len(stats["top_groups"]), 3)
+
+    def test_url_domain_concentration_mixed(self):
+        samples = [
+            self.get_sample("1", "c1", "s1", url="u1"),
+            self.get_sample("2", "c1", "s1", url="u1"),
+            self.get_sample("3", "c1", "s1", url="u2"),
+            self.get_sample("4", "c1", "s1"), # url free
+            self.get_sample("5", "c1", "s1"), # url free
+        ]
+        stats = self.compute_hash_concentration(samples, "url_domain_hash")
+        self.assertEqual(stats["unique_groups"], 2)
+        self.assertEqual(stats["records_with_metadata"], 3)
+        self.assertEqual(stats["records_without_metadata"], 2)
+        self.assertEqual(stats["top_groups"][0]["percentage"], 66.66666666666666) # 2 out of 3
+
+    def test_url_all_free(self):
+        samples = [self.get_sample(str(i), "c1", "s1") for i in range(5)]
+        stats = self.compute_hash_concentration(samples, "url_domain_hash")
+        self.assertEqual(stats["unique_groups"], 0)
+        self.assertEqual(stats["records_with_metadata"], 0)
+        self.assertEqual(stats["records_without_metadata"], 5)
+
+    def test_temporal_distribution(self):
+        samples = [
+            self.get_sample("1", "c1", "s1", ts="2023-01-01T10:00:00Z"),
+            self.get_sample("2", "c1", "s1", ts="2023-01-02T10:00:00Z"),
+            self.get_sample("3", "c1", "s1", ts="2023-01-05T10:00:00Z"),
+        ]
+        stats = self.compute_temporal_distribution(samples)
+        self.assertEqual(stats["earliest"].day, 1)
+        self.assertEqual(stats["latest"].day, 5)
+        self.assertEqual(stats["span"].days, 4)
+
+    def test_single_timestamp_record(self):
+        samples = [self.get_sample("1", "c1", "s1", ts="2023-01-01T10:00:00Z")]
+        stats = self.compute_temporal_distribution(samples)
+        self.assertEqual(stats["span"].days, 0)
+        self.assertEqual(stats["span"].seconds, 0)
+
+    def test_missing_timestamp_metadata(self):
+        samples = [self.get_sample("1", "c1", "s1")]
+        stats = self.compute_temporal_distribution(samples)
+        self.assertIsNone(stats)
+
+    def test_robustness_empty_dataset(self):
+        self.assertEqual(self.compute_hash_concentration([], "campaign_hash")["unique_groups"], 0)
+        self.assertIsNone(self.compute_temporal_distribution([]))
+
+    def test_missing_metadata(self):
+        # ENGINEERING_REGRESSION might not have hashes
+        s = {"id": "1", "label": "LEGITIMATE"}
+        c_stats = self.compute_hash_concentration([s], "campaign_hash")
+        self.assertEqual(c_stats["records_with_metadata"], 0)
+        self.assertEqual(c_stats["records_without_metadata"], 1)
+
+    def test_privacy_no_hash_exposed(self):
+        # We ensure top_groups dict doesn't contain the raw hash
+        samples = [self.get_sample("1", "secret_camp_hash", "s1")]
+        stats = self.compute_hash_concentration(samples, "campaign_hash")
+        self.assertNotIn("secret_camp_hash", stats["top_groups"][0].values())
+        self.assertNotIn("hash", stats["top_groups"][0].keys())
+
 if __name__ == '__main__':
     unittest.main()
