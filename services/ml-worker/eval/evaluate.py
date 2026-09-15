@@ -1,8 +1,11 @@
 import json
 import os
 import unicodedata
+import argparse
+import hashlib
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from validate_dataset import compute_fingerprint
 
 def calc_metrics(y_true, y_pred):
     tp = sum(1 for t, p in zip(y_true, y_pred) if t == 1 and p == 1)
@@ -50,7 +53,13 @@ def calculate_pr_auc(y_true, y_scores):
     return auc
 
 def run_evaluation():
-    data_path = os.path.join(os.path.dirname(__file__), 'data', 'samples.json')
+    parser = argparse.ArgumentParser(description="Offline Evaluation & Calibration")
+    parser.add_argument("--data", type=str, default=os.path.join(os.path.dirname(__file__), 'data', 'samples.json'), help="Path to evaluation dataset")
+    parser.add_argument("--fp-cost", type=float, default=None, help="Explicit False Positive business cost")
+    parser.add_argument("--fn-cost", type=float, default=None, help="Explicit False Negative business cost")
+    args = parser.parse_args()
+
+    data_path = args.data
     if not os.path.exists(data_path):
         print(f"Error: {data_path} not found.")
         return
@@ -58,11 +67,43 @@ def run_evaluation():
     with open(data_path, 'r', encoding='utf-8') as f:
         samples = json.load(f)
 
-    print(f"Dataset Size: {len(samples)}")
-    class_counts = {"LEGITIMATE": 0, "PHISHING_OR_SPAM": 0}
-    for s in samples:
-        class_counts[s["label"]] += 1
-    print(f"Class Counts: {class_counts}")
+    # 1. Dataset Identity & Prevalence Reporting
+    total_samples = len(samples)
+    print(f"\n--- DATASET IDENTITY ---")
+    print(f"File: {data_path}")
+    print(f"Dataset Size: {total_samples}")
+
+    # Try to load metadata if present alongside the file
+    meta_path = data_path.replace('.json', '_meta.json')
+    purpose = "UNKNOWN"
+    if os.path.exists(meta_path):
+        with open(meta_path, 'r', encoding='utf-8') as mf:
+            meta = json.load(mf)
+            purpose = meta.get("intended_purpose", "UNKNOWN")
+
+    print(f"Intended Purpose: {purpose}")
+
+    if purpose == "ENGINEERING_REGRESSION":
+        print("WARNING: This is an engineering regression set, NOT calibration evidence.")
+    elif purpose not in ["THRESHOLD_CALIBRATION", "FINAL_VALIDATION"]:
+        print("WARNING: Dataset lacks explicit authorization metadata. Results cannot be used as calibration/final-validation evidence.")
+
+    fingerprint = compute_fingerprint(samples)
+    print(f"Canonical Fingerprint (SHA-256): {fingerprint}")
+
+    if total_samples == 0:
+        print("Dataset is empty.")
+        return
+
+    pos_count = sum(1 for s in samples if s["label"] == "PHISHING_OR_SPAM")
+    neg_count = sum(1 for s in samples if s["label"] == "LEGITIMATE")
+    pos_prev = pos_count / total_samples
+    neg_prev = neg_count / total_samples
+
+    print(f"\n--- LABEL DISTRIBUTION ---")
+    print(f"Total: {total_samples}")
+    print(f"Positive (PHISHING_OR_SPAM): {pos_count} ({pos_prev:.4f})")
+    print(f"Negative (LEGITIMATE):       {neg_count} ({neg_prev:.4f})")
 
     model_id = "spotproject/spot-distilbert-phishing"
     revision = "fc409441b8bfe0bada834c464ee1b88f162a534d"
@@ -124,24 +165,51 @@ def run_evaluation():
 
     # Threshold analysis
     print(f"\n--- THRESHOLD ANALYSIS ---")
-    print(f"{'Threshold':<10} | {'Prec':<6} | {'Rec':<6} | {'F1':<6} | {'FPR':<6} | {'FNR':<6}")
-    print("-" * 55)
+    if args.fp_cost is not None and args.fn_cost is not None:
+        print(f"BUSINESS COST OPTIMIZATION: AVAILABLE (FP Cost: {args.fp_cost}, FN Cost: {args.fn_cost})")
+        cost_header = " | Cost"
+    else:
+        print("BUSINESS COST OPTIMIZATION: UNAVAILABLE (Costs not supplied)")
+        cost_header = ""
+
+    print(f"{'Threshold':<13} | {'Type':<19} | {'TP':<4} | {'FP':<4} | {'TN':<4} | {'FN':<4} | {'Prec':<6} | {'Rec':<6} | {'F1':<6} | {'FPR':<6} | {'FNR':<6}{cost_header}")
+    print("-" * (108 + len(cost_header)))
 
     thresholds_to_test = [i/100.0 for i in range(101)]
+    best_f1 = -1
+    best_f1_t = 0
+
+    threshold_metrics = {}
     for t in thresholds_to_test:
         y_pred = [1 if s > t else 0 for s in y_scores]
         m = calc_metrics(y_true, y_pred)
-        if t in [0.40, 0.85]:  # highlight production thresholds
-            print(f"> {t:<8.2f} | {m['precision']:<6.4f} | {m['recall']:<6.4f} | {m['f1']:<6.4f} | {m['fpr']:<6.4f} | {m['fnr']:<6.4f} <--- PROD THRESHOLD")
-        elif int(t*100) % 10 == 0:
-            print(f"{t:<10.2f} | {m['precision']:<6.4f} | {m['recall']:<6.4f} | {m['f1']:<6.4f} | {m['fpr']:<6.4f} | {m['fnr']:<6.4f}")
+        threshold_metrics[t] = m
+        if m['f1'] > best_f1:
+            best_f1 = m['f1']
+            best_f1_t = t
+
+    for t in thresholds_to_test:
+        m = threshold_metrics[t]
+        t_type = "CANDIDATE THRESHOLD"
+        if t in [0.40, 0.85]:
+            t_type = "PRODUCTION REFERENCE"
+        elif t == best_f1_t:
+            t_type = "METRIC-OPTIMAL (F1)"
+
+        cost_str = ""
+        if args.fp_cost is not None and args.fn_cost is not None:
+            total_cost = (m['fp'] * args.fp_cost) + (m['fn'] * args.fn_cost)
+            cost_str = f" | {total_cost:<.2f}"
+
+        # We only print interesting thresholds to save space unless it's a prod or optimal threshold, or every 0.1
+        if t in [0.40, 0.85] or t == best_f1_t or int(t*100) % 10 == 0:
+            print(f"{t:<13.2f} | {t_type:<19} | {m['tp']:<4} | {m['fp']:<4} | {m['tn']:<4} | {m['fn']:<4} | {m['precision']:<6.4f} | {m['recall']:<6.4f} | {m['f1']:<6.4f} | {m['fpr']:<6.4f} | {m['fnr']:<6.4f}{cost_str}")
 
     # Production Confusion Matrices
     print("\n--- CONFUSION MATRICES AT PROD THRESHOLDS ---")
     for t in [0.40, 0.85]:
-        y_pred = [1 if s > t else 0 for s in y_scores]
-        m = calc_metrics(y_true, y_pred)
-        print(f"Threshold: {t}")
+        m = threshold_metrics[t]
+        print(f"PRODUCTION REFERENCE THRESHOLD: {t}")
         print(f"TP: {m['tp']}, FP: {m['fp']}, TN: {m['tn']}, FN: {m['fn']}\n")
 
 if __name__ == "__main__":
