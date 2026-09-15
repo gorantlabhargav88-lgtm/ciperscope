@@ -5,6 +5,7 @@ import { LocalRawEmailStore, S3RawEmailStore, RawEmailStore } from '@ciperscope/
 import { QueueManager, IdempotencyManager, createRedisConnection } from '@ciperscope/queue';
 import { env } from '@ciperscope/config';
 import { getRequestContext } from '@ciperscope/logger';
+import { multiRateLimit } from '../../middleware/rateLimiter';
 
 export default async function emailRoutes(server: FastifyInstance) {
   // Setup dependencies for the route
@@ -28,18 +29,31 @@ export default async function emailRoutes(server: FastifyInstance) {
 
   server.post('/ingest', {
     preValidation: [server.authenticate, server.requirePermission('EMAIL_INGEST')],
-    config: {
-      rateLimit: {
-        max: 1000,
-        timeWindow: '1 minute'
+    preHandler: multiRateLimit([
+      // IP limit: 100/minute to prevent generic DDoS (Fail open if Redis is down because core business logic depends on it)
+      (req) => ({ key: `rl:ingest:ip:${req.ip}`, max: 100, windowSec: 60, failOpen: true, errorMessage: 'Too many ingestions from this IP' }),
+      // User limit: 50/minute (Fail open)
+      (req) => ({ key: `rl:ingest:user:${req.user?.sub}`, max: 50, windowSec: 60, failOpen: true, errorMessage: 'Too many ingestions for this user' }),
+      // Org limit: 200/minute (Fail open). We must extract org ID safely.
+      (req) => {
+        const orgId = req.headers['x-organization-id'] as string;
+        if (!orgId) return null; // We'll reject missing orgId inside the route handler
+        return { key: `rl:ingest:org:${orgId}`, max: 200, windowSec: 60, failOpen: true, errorMessage: 'Organization ingestion limit reached' };
       }
-    }
+    ]),
   }, async (request, reply) => {
-    // 1. Verify organization context (tenant isolation)
+    // 1. Verify organization context (tenant isolation) securely from authenticated claims
     const organizationId = request.headers['x-organization-id'] as string;
     const userId = request.user?.sub;
+
     if (!organizationId) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    // Ensure the user actually belongs to this organization (RBAC/Spoofing protection)
+    const allowedOrgs = request.user?.orgs || [];
+    if (!allowedOrgs.includes(organizationId)) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User not authorized for this organization' });
     }
 
     // 2. Validate Multipart

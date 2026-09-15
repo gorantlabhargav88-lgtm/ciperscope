@@ -17,6 +17,8 @@ import { env } from '@ciperscope/config';
 const server: FastifyInstance = Fastify({
   logger: loggerOptions,
   genReqId: () => generateRequestId(),
+  // Prevent X-Forwarded-For spoofing by only trusting explicitly configured proxies
+  trustProxy: env.TRUST_PROXY ? env.TRUST_PROXY.split(',') : false,
 });
 
 // Setup Request Context
