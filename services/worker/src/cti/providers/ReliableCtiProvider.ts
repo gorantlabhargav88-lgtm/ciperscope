@@ -38,8 +38,8 @@ export class ReliableCtiProvider implements ICtiProvider {
     if (!ctiResult.status || !Object.values(ThreatVerdict).includes(ctiResult.status as ThreatVerdict)) {
       throw new Error(`Malformed provider response: invalid status ${ctiResult.status}`);
     }
-    if (!ctiResult.providerName || typeof ctiResult.providerName !== 'string') {
-      throw new Error('Malformed provider response: missing or invalid providerName');
+    if (!ctiResult.providerName || typeof ctiResult.providerName !== 'string' || ctiResult.providerName.length > 255) {
+      throw new Error('Malformed provider response: missing, invalid, or oversized providerName');
     }
     if (ctiResult.confidence !== undefined) {
       if (typeof ctiResult.confidence !== 'number' || isNaN(ctiResult.confidence) || ctiResult.confidence < 0 || ctiResult.confidence > 100) {
@@ -49,6 +49,9 @@ export class ReliableCtiProvider implements ICtiProvider {
     if (ctiResult.metadata !== undefined) {
       if (typeof ctiResult.metadata !== 'object' || ctiResult.metadata === null || Array.isArray(ctiResult.metadata)) {
         throw new Error('Malformed provider response: invalid metadata');
+      }
+      if (JSON.stringify(ctiResult.metadata).length > 4096) {
+        throw new Error('Malformed provider response: metadata exceeds maximum permitted size of 4096 bytes');
       }
     }
 

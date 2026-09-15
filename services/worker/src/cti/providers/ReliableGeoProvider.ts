@@ -34,20 +34,20 @@ export class ReliableGeoProvider implements IGeoProvider {
     }
     const geoResult = result as Partial<GeoLocationResult>;
 
-    if (!geoResult.providerName || typeof geoResult.providerName !== 'string') {
-      throw new Error('Malformed provider response: missing or invalid providerName');
+    if (!geoResult.providerName || typeof geoResult.providerName !== 'string' || geoResult.providerName.length > 255) {
+      throw new Error('Malformed provider response: missing, invalid, or oversized providerName');
     }
-    if (geoResult.country !== undefined && typeof geoResult.country !== 'string') {
-      throw new Error('Malformed provider response: invalid country type');
+    if (geoResult.country !== undefined && (typeof geoResult.country !== 'string' || geoResult.country.length > 255)) {
+      throw new Error('Malformed provider response: invalid or oversized country');
     }
-    if (geoResult.city !== undefined && typeof geoResult.city !== 'string') {
-      throw new Error('Malformed provider response: invalid city type');
+    if (geoResult.city !== undefined && (typeof geoResult.city !== 'string' || geoResult.city.length > 255)) {
+      throw new Error('Malformed provider response: invalid or oversized city');
     }
-    if (geoResult.asn !== undefined && typeof geoResult.asn !== 'string') {
-      throw new Error('Malformed provider response: invalid asn type');
+    if (geoResult.asn !== undefined && (typeof geoResult.asn !== 'string' || geoResult.asn.length > 255)) {
+      throw new Error('Malformed provider response: invalid or oversized asn');
     }
-    if (geoResult.isp !== undefined && typeof geoResult.isp !== 'string') {
-      throw new Error('Malformed provider response: invalid isp type');
+    if (geoResult.isp !== undefined && (typeof geoResult.isp !== 'string' || geoResult.isp.length > 255)) {
+      throw new Error('Malformed provider response: invalid or oversized isp');
     }
 
     return geoResult as GeoLocationResult;

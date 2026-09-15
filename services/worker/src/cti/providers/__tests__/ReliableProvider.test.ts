@@ -158,7 +158,23 @@ describe('ReliableCtiProvider', () => {
     await vi.runAllTimersAsync();
     const resultName = await promiseName;
     expect(resultName.status).toBe(ThreatVerdict.UNKNOWN);
-    expect(resultName.metadata?.reliableFallbackReason).toContain('missing or invalid providerName');
+    expect(resultName.metadata?.reliableFallbackReason).toContain('missing, invalid, or oversized providerName');
+    expect(mockRedis.set).not.toHaveBeenCalled();
+
+    mockProvider.lookupResult = { status: ThreatVerdict.MALICIOUS, providerName: 'a'.repeat(256) } as unknown as CtiResult; // Oversized providerName
+    const promiseOversizedName = reliableProvider.lookup(testIoc);
+    await vi.runAllTimersAsync();
+    const resultOversizedName = await promiseOversizedName;
+    expect(resultOversizedName.status).toBe(ThreatVerdict.UNKNOWN);
+    expect(resultOversizedName.metadata?.reliableFallbackReason).toContain('oversized providerName');
+    expect(mockRedis.set).not.toHaveBeenCalled();
+
+    mockProvider.lookupResult = { status: ThreatVerdict.MALICIOUS, providerName: 'Valid', metadata: { data: 'a'.repeat(5000) } } as unknown as CtiResult; // Oversized metadata
+    const promiseOversizedMeta = reliableProvider.lookup(testIoc);
+    await vi.runAllTimersAsync();
+    const resultOversizedMeta = await promiseOversizedMeta;
+    expect(resultOversizedMeta.status).toBe(ThreatVerdict.UNKNOWN);
+    expect(resultOversizedMeta.metadata?.reliableFallbackReason).toContain('exceeds maximum permitted size');
     expect(mockRedis.set).not.toHaveBeenCalled();
   });
 
@@ -264,6 +280,22 @@ describe('ReliableGeoProvider', () => {
     await vi.runAllTimersAsync();
     const resultStatus = await promiseStatus;
     expect(resultStatus).toBeNull();
+    expect(mockRedis.set).not.toHaveBeenCalled();
+
+    // Oversized providerName
+    mockGeoProvider.lookupResult = { providerName: 'a'.repeat(256), country: 'US' } as unknown as GeoLocationResult;
+    const promiseOversizedName = reliableGeoProvider.lookup('1.2.3.4');
+    await vi.runAllTimersAsync();
+    const resultOversizedName = await promiseOversizedName;
+    expect(resultOversizedName).toBeNull();
+    expect(mockRedis.set).not.toHaveBeenCalled();
+
+    // Oversized country
+    mockGeoProvider.lookupResult = { providerName: 'Mock', country: 'a'.repeat(256) } as unknown as GeoLocationResult;
+    const promiseOversizedCountry = reliableGeoProvider.lookup('1.2.3.4');
+    await vi.runAllTimersAsync();
+    const resultOversizedCountry = await promiseOversizedCountry;
+    expect(resultOversizedCountry).toBeNull();
     expect(mockRedis.set).not.toHaveBeenCalled();
 
     mockGeoProvider.lookupResult = 'stringResult' as unknown as GeoLocationResult;
