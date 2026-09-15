@@ -54,6 +54,7 @@ async function main() {
   const email = await prisma.email.create({
     data: {
       caseId: demoCase.id,
+      organizationId: devOrg.id,
       messageId: '<20260910123456.XYZ@attacker.example.com>',
       subject: 'URGENT: Outstanding Invoice Payment',
       senderAddress: 'ceo-impersonator@lookalike-domain.com',
@@ -63,6 +64,7 @@ async function main() {
       classification: 'BEC',
       riskScore: 89.5,
       rawStorageKey: 's3://ciperscope-dev/emails/demo-1.eml',
+      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     },
   });
 

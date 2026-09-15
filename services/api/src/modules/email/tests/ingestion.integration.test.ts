@@ -18,8 +18,8 @@ describe('Email Ingestion API (Integration)', () => {
     server.register(fastifyMultipart);
     
     // Mock Authentication and Authorization for tests
-    server.decorate('authenticate', async (request: { user: { sub: string } }) => {
-      request.user = { sub: testUserId };
+    server.decorate('authenticate', async (request: { user: { sub: string, orgs: string[] } }) => {
+      request.user = { sub: testUserId, orgs: [testOrgId] };
     });
     server.decorate('requirePermission', () => {
       return async (request: { headers: Record<string, string> }) => {

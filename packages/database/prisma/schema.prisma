@@ -161,6 +161,8 @@ model User {
   memberships   OrganizationMember[]
   sessions      Session[]
   custodyEvents ChainOfCustodyEvent[]
+  createdCases  Case[] @relation("CaseCreator")
+  assignedCases Case[] @relation("CaseAssignee")
 }
 
 model OrganizationMember {
@@ -280,11 +282,16 @@ model Case {
   severity       Priority   @default(LOW)
   priority       Priority   @default(LOW)
   status         CaseStatus @default(OPEN)
+  assignedUserId String?
+  creatorId      String?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
+  resolvedAt     DateTime?
 
   organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  emails         Email[]
+  creator        User?           @relation("CaseCreator", fields: [creatorId], references: [id], onDelete: SetNull)
+  assignedUser   User?           @relation("CaseAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  emails         Email[]         @relation("CaseEmails")
   evidence       Evidence[]
   reports        Report[]
   alerts         Alert[]
@@ -292,6 +299,11 @@ model Case {
 
   @@index([organizationId])
   @@index([status, priority])
+  @@index([organizationId, assignedUserId])
+  @@index([organizationId, status])
+  @@index([organizationId, priority])
+  @@index([organizationId, createdAt])
+  @@unique([id, organizationId])
 }
 
 model Investigation {
@@ -340,7 +352,7 @@ model Email {
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
-  case              Case?                        @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  case              Case?                        @relation("CaseEmails", fields: [caseId], references: [id], onDelete: SetNull)
   organization      Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   headers           EmailHeader[]
   addresses         EmailAddress[]
