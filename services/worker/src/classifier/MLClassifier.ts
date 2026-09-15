@@ -50,13 +50,12 @@ export class MLClassifier {
     const replyTo = email.addresses.find(a => a.headerName.toLowerCase() === 'reply-to')?.address || '';
 
     // Getting text from raw store to be perfectly deterministic and not rely on parsed DB if not needed.
-    // However, Phase 10 extracted text might be better. Let's just use the LocalRawEmailStore and parse simple text.
     const rawStream = await this.rawEmailStore.get(email.rawStorageKey!);
     const parsed = await EmailForensicParser.parse(rawStream);
 
-    // Find a text part
-    const textPart = parsed.mimeParts.find(m => m.contentType.includes('text/plain'));
-    const body = textPart?.filename || '';
+    // Use extracted safe ML body text
+    const body = parsed.mlBody;
+
 
     const requestPayload = {
       requestId: `ml-${emailId}-${Date.now()}`,

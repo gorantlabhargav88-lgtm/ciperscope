@@ -29,6 +29,7 @@ export interface ParsedEmailForensics {
     sizeBytes?: number;
     isAttachment: boolean;
   }>;
+  mlBody: string;
 }
 
 export class EmailForensicParser {
@@ -208,7 +209,8 @@ export class EmailForensicParser {
       headers,
       addresses,
       relayHops,
-      mimeParts
+      mimeParts,
+      mlBody: parsed.text || ''
     };
   }
 }
