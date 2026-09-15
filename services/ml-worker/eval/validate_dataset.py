@@ -4,6 +4,7 @@ import sys
 import argparse
 import hashlib
 from typing import Dict, Any, List
+from datetime import datetime
 
 SECRET_PATTERNS = [
     r"(?i)bearer\s+[a-z0-9\-\._~+/]+=*",
@@ -18,6 +19,25 @@ def check_secrets(text: str) -> bool:
         if re.search(pattern, text):
             return True
     return False
+
+def validate_timestamp(ts: Any) -> bool:
+    if not isinstance(ts, str):
+        return False
+    if not re.match(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$', ts):
+        return False
+    try:
+        if '.' in ts:
+            datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ")
+        else:
+            datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
+        return True
+    except ValueError:
+        return False
+
+def validate_hash(h: Any) -> bool:
+    if not isinstance(h, str):
+        return False
+    return bool(re.match(r'^[a-f0-9]{64}$', h))
 
 def validate_metadata(meta: Dict[str, Any]) -> bool:
     required_keys = [
@@ -53,13 +73,17 @@ def validate_metadata(meta: Dict[str, Any]) -> bool:
     print("Metadata validation passed.")
     return True
 
-def validate_data(records: List[Dict[str, Any]]) -> bool:
+def validate_data(records: List[Dict[str, Any]], meta: Dict[str, Any] = None) -> bool:
     if not isinstance(records, list):
         print("Error: Data must be a JSON array of records.")
         return False
 
     required_fields = ["id", "label", "subject", "sender", "replyTo", "body"]
     valid_labels = ["LEGITIMATE", "PHISHING_OR_SPAM"]
+
+    requires_leakage_meta = False
+    if meta and meta.get("intended_purpose") in ["THRESHOLD_CALIBRATION", "FINAL_VALIDATION"]:
+        requires_leakage_meta = True
 
     seen_ids = set()
     seen_bodies = set()
@@ -72,6 +96,23 @@ def validate_data(records: List[Dict[str, Any]]) -> bool:
             if not isinstance(r[field], str):
                 print(f"Error in record index {idx}: Field '{field}' must be a string.")
                 return False
+
+        if requires_leakage_meta:
+            for field in ["timestamp", "campaign_hash", "sender_domain_hash"]:
+                if field not in r:
+                    print(f"Error in record index {idx}: Missing required leakage field '{field}' for purpose {meta.get('intended_purpose')}.")
+                    return False
+
+        if "timestamp" in r:
+            if not validate_timestamp(r["timestamp"]):
+                print(f"Error in record index {idx}: Invalid timestamp '{r['timestamp']}'. Must be ISO-8601 UTC (YYYY-MM-DDTHH:MM:SSZ).")
+                return False
+
+        for hash_field in ["campaign_hash", "sender_domain_hash", "url_domain_hash"]:
+            if hash_field in r:
+                if not validate_hash(r[hash_field]):
+                    print(f"Error in record index {idx}: Invalid {hash_field} '{r[hash_field]}'. Must be a 64-character lowercase hex string.")
+                    return False
 
         if not r["id"].strip():
             print(f"Error in record index {idx}: ID cannot be empty.")
@@ -173,7 +214,7 @@ def main():
             with open(args.val_data, 'r', encoding='utf-8') as f:
                 val_records = json.load(f)
 
-            if validate_metadata(cal_meta) and validate_metadata(val_meta) and validate_data(cal_records) and validate_data(val_records):
+            if validate_metadata(cal_meta) and validate_metadata(val_meta) and validate_data(cal_records, cal_meta) and validate_data(val_records, val_meta):
                 success = success and validate_separation(cal_records, cal_meta, val_records, val_meta)
             else:
                 success = False
@@ -193,7 +234,8 @@ def main():
         with open(args.data, 'r', encoding='utf-8') as f:
             try:
                 records = json.load(f)
-                success = success and validate_data(records)
+                meta_to_pass = meta if 'meta' in locals() else None
+                success = success and validate_data(records, meta_to_pass)
             except json.JSONDecodeError:
                 print(f"Error: Invalid JSON in {args.data}")
                 success = False

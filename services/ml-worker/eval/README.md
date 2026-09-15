@@ -5,18 +5,45 @@ This directory contains the engineering validation benchmark for the CiperScope 
 
 **IMPORTANT: This benchmark is an engineering validation set and is not evidence of production-grade statistical performance.**
 
-## Dataset Schema
-The dataset is stored in `data/samples.json` using the following schema:
-```json
-{
-  "id": "sample-XXX",
-  "label": "LEGITIMATE" | "PHISHING_OR_SPAM",
-  "subject": "string",
-  "sender": "string",
-  "replyTo": "string",
-  "body": "string"
-}
-```
+### 1. Expected Data Format
+Input datasets must be provided as JSON arrays containing exactly the required record-level fields.
+
+**A. Existing Required Record Fields**
+- `id`: Unique identifier (string).
+- `label`: Exactly `"LEGITIMATE"` or `"PHISHING_OR_SPAM"`.
+- `subject`: The email subject line (string).
+- `sender`: The sender email address (string).
+- `replyTo`: The reply-to email address (string).
+- `body`: The email body text (string).
+
+**B. New Optional Leakage Metadata**
+To support rigorous data separation, the following record-level metadata may be provided:
+- `timestamp`: (string) UTC ISO-8601.
+- `campaign_hash`: (string) SHA-256 hash.
+- `sender_domain_hash`: (string) SHA-256 hash.
+- `url_domain_hash`: (string) SHA-256 hash.
+
+**C. Exact Timestamp Format**
+Must be UTC ISO-8601.
+Formats accepted: `YYYY-MM-DDTHH:MM:SSZ` or with fractional seconds `YYYY-MM-DDTHH:MM:SS.[0-9]+Z`.
+
+**D. Exact Hash Format**
+Must be exactly 64-character lowercase hexadecimal string (SHA-256).
+
+**E. Purpose-Specific Requirements**
+- `ENGINEERING_REGRESSION`: Only the existing core fields are required. Leakage metadata is strictly optional.
+- `THRESHOLD_CALIBRATION`: The dataset MUST include `timestamp`, `campaign_hash`, and `sender_domain_hash` to enable rigorous upstream separation control. `url_domain_hash` is OPTIONAL (to support legitimate URL-free records), but if supplied, it must strictly match the hash format.
+- `FINAL_VALIDATION`: The dataset MUST include `timestamp`, `campaign_hash`, and `sender_domain_hash` to establish robust independence from the calibration dataset. `url_domain_hash` is OPTIONAL.
+
+**F. Privacy Boundary**
+The ML evaluator purposefully does not ingest raw Campaign IDs, Thread IDs, Recipient IDs, or raw extracted URLs. Upstream pipelines must compute and provide cryptographic hashes for correlation. While these hashes act as correlation identifiers and may be considered sensitive structurally, they prevent the ML evaluator from stockpiling unnecessarily raw deanonymizing fields.
+
+**G. Important Limitations**
+- Dataset-level `coverage_period` does not establish record-level temporal independence.
+- Presence of campaign/domain hashes enables correlation checks but does not itself prove dataset independence.
+- URL-free records may legitimately omit `url_domain_hash`. The absence of `url_domain_hash` means the evaluator cannot perform URL-domain correlation for that record. It does NOT mean the record is URL-independent, campaign-independent, or automatically safe for holdout evaluation.
+
+### 2. Evaluator Usage
 
 ## Label Definitions
 - `LEGITIMATE`: Benign emails representing normal business communication.

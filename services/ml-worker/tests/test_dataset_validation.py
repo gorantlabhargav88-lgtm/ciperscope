@@ -178,5 +178,129 @@ class TestDatasetValidation(unittest.TestCase):
 
         self.assertFalse(validate_separation(cal_data, cal_meta, val_data, val_meta))
 
+    # LEAKAGE METADATA TESTS
+    def get_valid_leakage_meta(self) -> Dict[str, Any]:
+        return {
+            "timestamp": "2023-09-15T10:00:00Z",
+            "campaign_hash": "a"*64,
+            "sender_domain_hash": "b"*64
+        }
+
+    def test_valid_leakage_metadata(self):
+        r = self.get_valid_record()
+        r.update(self.get_valid_leakage_meta())
+        cal_meta = self.get_valid_metadata()
+        cal_meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        self.assertTrue(validate_data([r], cal_meta))
+
+    def test_missing_leakage_metadata_rejected_for_calibration(self):
+        r = self.get_valid_record()
+        cal_meta = self.get_valid_metadata()
+        cal_meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        self.assertFalse(validate_data([r], cal_meta))
+
+    def test_missing_leakage_metadata_rejected_for_validation(self):
+        r = self.get_valid_record()
+        val_meta = self.get_valid_metadata()
+        val_meta["intended_purpose"] = "FINAL_VALIDATION"
+        self.assertFalse(validate_data([r], val_meta))
+
+    def test_missing_leakage_metadata_accepted_for_engineering(self):
+        r = self.get_valid_record()
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "ENGINEERING_REGRESSION"
+        self.assertTrue(validate_data([r], meta))
+
+    def test_url_free_calibration_record_accepted(self):
+        r = self.get_valid_record()
+        r.update(self.get_valid_leakage_meta())
+        cal_meta = self.get_valid_metadata()
+        cal_meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        self.assertTrue(validate_data([r], cal_meta))
+
+    def test_url_free_final_validation_record_accepted(self):
+        r = self.get_valid_record()
+        r.update(self.get_valid_leakage_meta())
+        val_meta = self.get_valid_metadata()
+        val_meta["intended_purpose"] = "FINAL_VALIDATION"
+        self.assertTrue(validate_data([r], val_meta))
+
+    def test_present_url_hash_valid(self):
+        r = self.get_valid_record()
+        r.update(self.get_valid_leakage_meta())
+        r["url_domain_hash"] = "c"*64
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+        self.assertTrue(validate_data([r], meta))
+
+    def test_timestamp_validation(self):
+        r = self.get_valid_record()
+        r.update(self.get_valid_leakage_meta())
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+
+        # valid frac
+        r["timestamp"] = "2023-09-15T10:00:00.123Z"
+        self.assertTrue(validate_data([r], meta))
+
+        # invalid format
+        r["timestamp"] = "2023-09-15 10:00:00"
+        self.assertFalse(validate_data([r], meta))
+
+        # invalid date
+        r["timestamp"] = "2023-02-30T10:00:00Z"
+        self.assertFalse(validate_data([r], meta))
+
+        # invalid type
+        r["timestamp"] = 123
+        self.assertFalse(validate_data([r], meta))
+
+    def test_hash_validation(self):
+        r = self.get_valid_record()
+        r.update(self.get_valid_leakage_meta())
+        meta = self.get_valid_metadata()
+        meta["intended_purpose"] = "THRESHOLD_CALIBRATION"
+
+        # empty hash
+        r["campaign_hash"] = ""
+        self.assertFalse(validate_data([r], meta))
+
+        # non-string
+        r["campaign_hash"] = 123
+        self.assertFalse(validate_data([r], meta))
+
+        # uppercase hex (must be lowercase)
+        r["campaign_hash"] = ("A"*64)
+        self.assertFalse(validate_data([r], meta))
+
+        # short hash
+        r["campaign_hash"] = "a"*63
+        self.assertFalse(validate_data([r], meta))
+
+        # test sender_domain_hash
+        r.update(self.get_valid_leakage_meta())
+        r["sender_domain_hash"] = "b"*63
+        self.assertFalse(validate_data([r], meta))
+
+        # test url_domain_hash invalid empty
+        r.update(self.get_valid_leakage_meta())
+        r["url_domain_hash"] = ""
+        self.assertFalse(validate_data([r], meta))
+
+        # test url_domain_hash invalid length
+        r.update(self.get_valid_leakage_meta())
+        r["url_domain_hash"] = "c"*63
+        self.assertFalse(validate_data([r], meta))
+
+        # test url_domain_hash uppercase
+        r.update(self.get_valid_leakage_meta())
+        r["url_domain_hash"] = "C"*64
+        self.assertFalse(validate_data([r], meta))
+
+        # test url_domain_hash non-string
+        r.update(self.get_valid_leakage_meta())
+        r["url_domain_hash"] = 123
+        self.assertFalse(validate_data([r], meta))
+
 if __name__ == '__main__':
     unittest.main()
