@@ -3,6 +3,7 @@ import { logger } from '@ciperscope/logger';
 import { env } from '@ciperscope/config';
 import { EmailForensicParser } from '../parser/EmailForensicParser';
 import { RawEmailStore } from '@ciperscope/storage';
+import { performance } from 'perf_hooks';
 
 interface MLServiceResponse {
   status: string;
@@ -72,6 +73,7 @@ export class MLClassifier {
     };
 
     let mlResponse: MLServiceResponse;
+    const startMs = performance.now();
 
     try {
       if (!this.mlServiceToken) {
@@ -98,8 +100,9 @@ export class MLClassifier {
 
       mlResponse = (await res.json()) as MLServiceResponse;
     } catch (err: unknown) {
+      const durationMs = Math.round(performance.now() - startMs);
       const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-      logger.error({ err, emailId }, 'ML Classification request failed');
+      logger.error({ err, emailId, durationMs }, 'ML Classification request failed');
       const status = errorMsg === 'TIMEOUT' ? 'TIMEOUT' : 'FAILED';
 
       await this.prisma.mLInference.create({
@@ -130,6 +133,7 @@ export class MLClassifier {
       }
     });
 
-    logger.info({ emailId, status: mlResponse.status }, 'ML Classification completed');
+    const durationMs = Math.round(performance.now() - startMs);
+    logger.info({ emailId, status: mlResponse.status, durationMs }, 'ML Classification completed');
   }
 }

@@ -21,15 +21,18 @@ async def lifespan(app: FastAPI):
     def load_model():
         global current_provider
         try:
+            start_time = time.time()
             logging.info("Starting background model initialization...")
             provider = DistilBertModelProvider()
+            duration_ms = int((time.time() - start_time) * 1000)
             if provider.is_ready:
                 current_provider = provider
-                logging.info("Model initialized successfully.")
+                logging.info(f"event=model_load status=READY duration_ms={duration_ms}")
             else:
-                logging.error("Model provider failed to initialize properly.")
+                logging.error(f"event=model_load status=NOT_AVAILABLE duration_ms={duration_ms} error_name=InitializationFailure")
         except Exception as e:
-            logging.error(f"Error initializing model: {e}")
+            duration_ms = int((time.time() - start_time) * 1000)
+            logging.error(f"event=model_load status=NOT_AVAILABLE duration_ms={duration_ms} error_name={type(e).__name__}")
 
     # Kick off in threadpool to not block lifespan/startup
     loop = asyncio.get_running_loop()
@@ -243,7 +246,13 @@ async def predict_email(request: PredictionRequest, token: str = Depends(verify_
         processed_text = processed_text[:100000]
 
     # 2. Inference
+    start_time = time.time()
     prediction_result = await run_in_threadpool(current_provider.predict, processed_text)
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    status = prediction_result.get("status", "FAILED")
+    logging.info(f"event=ml_inference status={status} duration_ms={duration_ms}")
+
     metadata = current_provider.get_metadata()
 
     # 3. Assemble Response
