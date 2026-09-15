@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { DemoModeBanner } from '../components/DemoModeBanner';
+import { useAuth } from '../features/auth/AuthContext';
 
 export const EmailAnalysis = () => {
   const [uploading, setUploading] = useState(false);
@@ -21,7 +22,9 @@ export const EmailAnalysis = () => {
   const [threatIndicators, setThreatIndicators] = useState<any[]>([]);
   const [geolocation, setGeolocation] = useState<any[]>([]);
 
-  const organizationId = '00000000-0000-0000-0000-000000000000'; // dummy for UI
+  const { user } = useAuth();
+  const organizationId = user?.organizationId || '';
+
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -51,7 +54,8 @@ export const EmailAnalysis = () => {
         headers: {
           'x-organization-id': organizationId
         },
-        body: formData
+        body: formData,
+        credentials: 'include'
       });
       const data = await res.json();
       setUploadResult(res.ok ? data : { error: data.message || 'Upload failed' });
@@ -68,7 +72,8 @@ export const EmailAnalysis = () => {
       const fetchDetails = async () => {
         try {
           const res = await fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/analysis`, {
-            headers: { 'x-organization-id': organizationId }
+            headers: { 'x-organization-id': organizationId },
+            credentials: 'include'
           });
           const data = await res.json();
           setAnalysis(data);
@@ -78,57 +83,57 @@ export const EmailAnalysis = () => {
 
             // Fetch headers
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/headers`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setHeaders(d.headers || []));
 
             // Fetch hops
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/received-hops`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setHops(d.hops || []));
 
             // Fetch mime
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/mime-parts`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setMimeParts(d.mimeParts || []));
 
             // Phase 9 Auth fetching
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/authentication`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setAuthAnalysis(d.analysis || null));
 
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/spf`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setSpf(d.spfVerifications || []));
 
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/dkim`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setDkim(d.dkimVerifications || []));
 
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/dmarc`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setDmarc(d.dmarcVerification || null));
 
             // Phase 10
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/urls`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setUrls(d.urls || []));
 
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/attachments`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setAttachments(d.attachments || []));
 
             // Phase 11
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/ai-analysis`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setAnalysis((prev: any) => ({...prev, mlInference: d.prediction || {status: 'NOT_AVAILABLE'}})));
 
             // Phase 14.5
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/threat-indicators`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setThreatIndicators(d.threatIndicators || []));
 
             fetch(`http://localhost:3000/api/v1/emails/${uploadResult.emailId}/geolocation`, {
-              headers: { 'x-organization-id': organizationId }
+              headers: { 'x-organization-id': organizationId }, credentials: 'include'
             }).then(r => r.json()).then(d => setGeolocation(d.geolocation || []));
 
           } else if (data.analysisStatus === 'FAILED') {
