@@ -1800,4 +1800,234 @@ describe('Case API (Integration) - Real RBAC', () => {
       await prisma.case.delete({ where: { id: ec.id } });
     });
   });
+
+  describe('DELETE /api/v1/cases/:caseId/emails/:emailId', () => {
+    let testCaseId: string;
+    let testEmailId: string;
+    let foreignCaseId: string;
+    let foreignEmailId: string;
+
+    beforeEach(async () => {
+      // 1. Create a Case and Email in the main tenant
+      const c1 = await prisma.case.create({
+        data: {
+          title: 'Unlink Target Case',
+          organizationId: orgId,
+          creatorId: userIdWithPerm
+        }
+      });
+      testCaseId = c1.id;
+
+      const e1 = await prisma.email.create({
+        data: {
+          organizationId: orgId,
+          caseId: testCaseId,
+          messageId: 'unlink-target-123',
+          subject: 'Unlink Target',
+          senderAddress: 'test@example.com',
+          date: new Date(),
+          rawStorageKey: 'test-key',
+          classification: 'UNKNOWN',
+          sha256: `dummy-sha256-unlink-test-${Date.now()}`
+        }
+      });
+      testEmailId = e1.id;
+
+      // 2. Create a Case and Email in the foreign tenant
+      const fc1 = await prisma.case.create({
+        data: {
+          title: 'Foreign Unlink Target Case',
+          organizationId: otherOrgId,
+          creatorId: userIdWithoutPerm
+        }
+      });
+      foreignCaseId = fc1.id;
+
+      const fe1 = await prisma.email.create({
+        data: {
+          organizationId: otherOrgId,
+          caseId: foreignCaseId,
+          messageId: 'foreign-unlink-target-123',
+          subject: 'Foreign Target',
+          senderAddress: 'foreign@example.com',
+          date: new Date(),
+          rawStorageKey: 'test-key',
+          classification: 'UNKNOWN',
+          sha256: `dummy-sha256-unlink-foreign-${Date.now()}`
+        }
+      });
+      foreignEmailId = fe1.id;
+    });
+
+    afterEach(async () => {
+      await prisma.auditLog.deleteMany({
+        where: { action: 'CASE_EMAIL_UNLINKED' }
+      });
+      await prisma.email.deleteMany({
+        where: { id: { in: [testEmailId, foreignEmailId] } }
+      });
+      await prisma.case.deleteMany({
+        where: { id: { in: [testCaseId, foreignCaseId] } }
+      });
+    });
+
+    it('1-4, 16, 18-23. valid unlink -> success, caseId null, records remain, audit logged correctly', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/emails/${testEmailId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Verify DB email state
+      const email = await prisma.email.findUnique({ where: { id: testEmailId } });
+      expect(email).not.toBeNull(); // 3. Email record remains, 21. No Email deletion
+      expect(email?.caseId).toBeNull(); // 2. caseId becomes null
+      expect(email?.organizationId).toBe(orgId); // 23. Remains associated with org
+      expect(email?.subject).toBe('Unlink Target'); // 20. Content remains unchanged
+
+      // Verify DB case state
+      const c = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(c).not.toBeNull(); // 4. Case record remains, 22. No Case deletion
+      expect(c?.title).toBe('Unlink Target Case'); // 19. Case fields unchanged
+
+      // Verify Audit Log
+      const logs = await prisma.auditLog.findMany({
+        where: { action: 'CASE_EMAIL_UNLINKED', resourceId: testCaseId }
+      });
+      expect(logs.length).toBe(1); // 16. Audit exists
+      const log = logs[0];
+      expect(log.actorId).toBe(userIdWithPerm);
+      expect(log.organizationId).toBe(orgId);
+      expect((log.metadata as any).emailId).toBe(testEmailId); // 18. Contains emailId
+      expect((log.metadata as any).subject).toBeUndefined(); // 18. No raw content
+    });
+
+    it('5. unauthenticated -> 401', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/emails/${testEmailId}`,
+        headers: { 'x-organization-id': orgId }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('6. authenticated user without CASE_LINK_EMAIL -> 403', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/emails/${testEmailId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` }
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('7. malformed caseId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/not-a-uuid/emails/${testEmailId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('8. malformed emailId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/emails/not-a-uuid`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('9, 13. foreign Case -> 404, spoofing fails', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${foreignCaseId}/emails/${testEmailId}`, // target foreign case with my email
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404); // Caught by Case tenant check
+    });
+
+    it('10, 14, 15, 17. foreign Email -> safe 404, cross-tenant unmodified, no audit', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/emails/${foreignEmailId}`, // my case, foreign email
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+
+      // Verify untouched
+      const email = await prisma.email.findUnique({ where: { id: foreignEmailId } });
+      expect(email?.caseId).toBe(foreignCaseId);
+
+      const logs = await prisma.auditLog.findMany({
+        where: { action: 'CASE_EMAIL_UNLINKED', resourceId: testCaseId }
+      });
+      expect(logs.length).toBe(0);
+    });
+
+    it('11. Email linked to different Case -> safe 404', async () => {
+      const otherCase = await prisma.case.create({
+        data: { title: 'Other', organizationId: orgId }
+      });
+      const otherEmail = await prisma.email.create({
+        data: {
+          organizationId: orgId,
+          caseId: otherCase.id,
+          sha256: 'other-dummy',
+          classification: 'UNKNOWN'
+        }
+      });
+
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/emails/${otherEmail.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+
+      const verify = await prisma.email.findUnique({ where: { id: otherEmail.id } });
+      expect(verify?.caseId).toBe(otherCase.id);
+
+      await prisma.email.delete({ where: { id: otherEmail.id } });
+      await prisma.case.delete({ where: { id: otherCase.id } });
+    });
+
+    it('12. Email already unlinked -> safe 404', async () => {
+      await prisma.email.update({
+        where: { id: testEmailId },
+        data: { caseId: null }
+      });
+
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/emails/${testEmailId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('24. concurrent unlink behavior is safe', async () => {
+      // Send 5 concurrent unlink requests for the exact same email
+      const promises = Array(5).fill(0).map(() => realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/emails/${testEmailId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      }));
+
+      const results = await Promise.all(promises);
+
+      // Exactly ONE should succeed (200), the others should fail (404)
+      const successes = results.filter(r => r.statusCode === 200).length;
+      const failures = results.filter(r => r.statusCode === 404).length;
+
+      expect(successes).toBe(1);
+      expect(failures).toBe(4);
+
+      const logs = await prisma.auditLog.findMany({
+        where: { action: 'CASE_EMAIL_UNLINKED', resourceId: testCaseId }
+      });
+      expect(logs.length).toBe(1); // Only 1 audit event
+    });
+  });
 });

@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
-import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema } from '../../utils/validation';
+import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema } from '../../utils/validation';
 import { z } from 'zod';
 import { logAuditEvent } from '../../utils/audit';
 
@@ -629,6 +629,71 @@ export default async function caseRoutes(server: FastifyInstance) {
       }
       if (err.code === 'P2025') {
         return reply.status(400).send({ error: 'Bad Request', message: 'Invalid cursor: record not found or inaccessible' });
+      }
+      throw err;
+    }
+  });
+
+  server.delete('/:caseId/emails/:emailId', {
+    schema: { params: fastifyCaseEmailParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_LINK_EMAIL')]
+  }, async (request, reply) => {
+    const { caseId, emailId } = request.params as { caseId: string, emailId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub as string;
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        // 1. Verify Case exists securely in the tenant
+        const existingCase = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } }
+        });
+
+        if (!existingCase) {
+          throw new Error('CASE_NOT_FOUND');
+        }
+
+        // 2. Perform conditional, tenant-scoped atomic update to clear the caseId
+        const result = await tx.email.updateMany({
+          where: {
+            id: emailId,
+            organizationId,
+            caseId
+          },
+          data: {
+            caseId: null
+          }
+        });
+
+        // 3. ToCToU / Record presence check
+        if (result.count === 0) {
+          throw new Error('EMAIL_NOT_LINKED');
+        }
+      });
+
+      // 4. Log the audit event on absolute success
+      await logAuditEvent({
+        action: 'CASE_EMAIL_UNLINKED',
+        resource: 'Case',
+        resourceId: caseId,
+        actorId: userId,
+        status: 'SUCCESS',
+        metadata: { emailId },
+        req: request
+      });
+
+      return reply.status(200).send({ success: true });
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+      if (err.message === 'EMAIL_NOT_LINKED') {
+        // For security against enumeration of cross-tenant emails, if count=0 we pretend it's 404
+        return reply.status(404).send({ error: 'Not Found', message: 'Email not found or not linked to this case' });
       }
       throw err;
     }

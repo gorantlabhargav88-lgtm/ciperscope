@@ -81,3 +81,10 @@ export const CaseNoteListQuerySchema = z.object({
 }).strict();
 
 export const fastifyCaseNoteListQuerySchema = zodToJsonSchema(CaseNoteListQuerySchema as any);
+
+export const CaseEmailParamsSchema = z.object({
+  caseId: uuidSchema,
+  emailId: uuidSchema,
+});
+
+export const fastifyCaseEmailParamsSchema = zodToJsonSchema(CaseEmailParamsSchema as any);
