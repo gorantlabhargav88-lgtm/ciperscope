@@ -145,6 +145,7 @@ model Organization {
   Role         Role[]
   APIKey       APIKey[]
   mlInferences MLInference[]
+  caseNotes    CaseNote[]
 }
 
 model User {
@@ -163,6 +164,7 @@ model User {
   custodyEvents ChainOfCustodyEvent[]
   createdCases  Case[] @relation("CaseCreator")
   assignedCases Case[] @relation("CaseAssignee")
+  caseNotes     CaseNote[]
 }
 
 model OrganizationMember {
@@ -296,6 +298,7 @@ model Case {
   reports        Report[]
   alerts         Alert[]
   investigations Investigation[]
+  notes          CaseNote[]
 
   @@index([organizationId])
   @@index([status, priority])
@@ -327,6 +330,23 @@ model InvestigationNote {
   updatedAt       DateTime @updatedAt
 
   investigation Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+}
+
+model CaseNote {
+  id             String   @id @default(uuid())
+  organizationId String
+  caseId         String
+  authorId       String
+  content        String   @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  case           Case         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  author         User         @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, caseId])
+  @@index([organizationId, authorId])
 }
 
 // ============================================================================

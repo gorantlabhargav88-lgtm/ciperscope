@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
-import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema } from '../../utils/validation';
+import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema } from '../../utils/validation';
 import { z } from 'zod';
 import { logAuditEvent } from '../../utils/audit';
 
@@ -461,6 +461,73 @@ export default async function caseRoutes(server: FastifyInstance) {
       }
       if (err.message === 'EMAIL_ALREADY_LINKED') {
         return reply.status(409).send({ error: 'Conflict', message: 'Email is already linked to a case' });
+      }
+      throw err;
+    }
+  });
+
+  server.post('/:caseId/notes', {
+    schema: { params: fastifyCaseParamsSchema, body: fastifyCreateCaseNoteBodySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_ADD_NOTE')]
+  }, async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    if (!userId) {
+      return reply.status(401).send({ error: 'Unauthorized', message: 'User ID missing from token' });
+    }
+
+    const { content } = request.body as { content: string };
+
+    try {
+      const newNote = await prisma.$transaction(async (tx) => {
+        // 1. Verify Case exists in the tenant securely
+        const existingCase = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } }
+        });
+
+        if (!existingCase) {
+          throw new Error('CASE_NOT_FOUND');
+        }
+
+        // 2. Create the CaseNote
+        return await tx.caseNote.create({
+          data: {
+            organizationId,
+            caseId,
+            authorId: userId,
+            content
+          },
+          select: {
+            id: true,
+            caseId: true,
+            authorId: true,
+            content: true,
+            createdAt: true,
+            updatedAt: true
+          }
+        });
+      });
+
+      await logAuditEvent({
+        action: 'CASE_NOTE_ADDED',
+        resource: 'Case',
+        resourceId: caseId,
+        actorId: userId,
+        status: 'SUCCESS',
+        metadata: { noteId: newNote.id },
+        req: request
+      });
+
+      return reply.status(201).send(newNote);
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
       }
       throw err;
     }

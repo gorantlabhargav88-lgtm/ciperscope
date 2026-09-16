@@ -68,3 +68,9 @@ export const LinkCaseEmailBodySchema = z.object({
 }).strict();
 
 export const fastifyLinkCaseEmailBodySchema = zodToJsonSchema(LinkCaseEmailBodySchema as any);
+
+export const CreateCaseNoteBodySchema = z.object({
+  content: z.string().min(1).max(4000),
+}).strict();
+
+export const fastifyCreateCaseNoteBodySchema = zodToJsonSchema(CreateCaseNoteBodySchema as any);
