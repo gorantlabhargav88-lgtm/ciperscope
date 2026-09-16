@@ -1485,4 +1485,319 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect((lastLog.metadata as any).content).toBeUndefined();
     });
   });
+
+  describe('GET /api/v1/cases/:caseId/notes', () => {
+    let testCaseId: string;
+    const testNotesIds: string[] = [];
+    let foreignCaseId: string;
+    let foreignNoteId: string;
+
+    beforeEach(async () => {
+      const c = await prisma.case.create({
+        data: {
+          title: 'Notes List Target',
+          organizationId: orgId,
+          creatorId: userIdWithPerm
+        }
+      });
+      testCaseId = c.id;
+
+      for (let i = 0; i < 25; i++) {
+        // use a short delay to ensure createdAt ordering is deterministic or at least sequential if possible,
+        // though our orderBy uses id desc as a tie breaker.
+        const n = await prisma.caseNote.create({
+          data: {
+            caseId: testCaseId,
+            organizationId: orgId,
+            authorId: userIdWithPerm,
+            content: `Test Note ${i}`
+          }
+        });
+        testNotesIds.push(n.id);
+      }
+
+      // Foreign case and note setup
+      const fc = await prisma.case.create({
+        data: {
+          title: 'Foreign Target',
+          organizationId: otherOrgId,
+          creatorId: userIdWithPerm
+        }
+      });
+      foreignCaseId = fc.id;
+      const fn = await prisma.caseNote.create({
+        data: {
+          caseId: foreignCaseId,
+          organizationId: otherOrgId,
+          authorId: userIdWithPerm,
+          content: 'Foreign Note'
+        }
+      });
+      foreignNoteId = fn.id;
+    });
+
+    afterEach(async () => {
+      await prisma.caseNote.deleteMany({ where: { caseId: { in: [testCaseId, foreignCaseId] } } });
+      await prisma.case.deleteMany({ where: { id: { in: [testCaseId, foreignCaseId] } } });
+      testNotesIds.length = 0;
+    });
+
+    it('1. authorized user receives Case Notes -> 200', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.payload);
+      expect(Array.isArray(data.items)).toBe(true);
+      expect(data.items.length).toBe(20); // Default limit
+      expect(data.items[0].content).toBeDefined();
+    });
+
+    it('2. unauthenticated -> 401', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes`,
+        headers: { 'x-organization-id': orgId }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('3. authenticated user without CASE_READ -> 403', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` }
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('4. cross-tenant Case -> 404', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${foreignCaseId}/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('5. foreign tenant notes are never returned', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      const data = JSON.parse(res.payload);
+      const foundForeign = data.items.some((item: any) => item.id === foreignNoteId);
+      expect(foundForeign).toBe(false);
+    });
+
+    it('6. malformed caseId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/invalid-uuid/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('7. default pagination works', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      const data = JSON.parse(res.payload);
+      expect(data.items.length).toBe(20);
+      expect(data.nextCursor).toBeDefined();
+    });
+
+    it('8. custom limit works', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?limit=10`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      const data = JSON.parse(res.payload);
+      expect(data.items.length).toBe(10);
+    });
+
+    it('9. limit >100 -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?limit=101`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('10. limit <=0 -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?limit=0`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('11. malformed cursor -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?cursor=invalidbase64`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('12. cursor with invalid UUID -> 400', async () => {
+      const badCursor = Buffer.from(JSON.stringify([new Date().toISOString(), 'not-uuid'])).toString('base64');
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?cursor=${badCursor}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('13. cursor with invalid timestamp -> 400', async () => {
+      const badCursor = Buffer.from(JSON.stringify(['not-date', testNotesIds[0]])).toString('base64');
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?cursor=${badCursor}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('14. unknown query parameter -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?fake=123`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('15. deterministic createdAt/id ordering', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?limit=5`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      const data = JSON.parse(res.payload);
+      const dates = data.items.map((i: any) => new Date(i.createdAt).getTime());
+
+      for (let i = 0; i < dates.length - 1; i++) {
+        expect(dates[i]).toBeGreaterThanOrEqual(dates[i+1]);
+      }
+    });
+
+    it('16-17. pagination returns no duplicate records and eventually all records', async () => {
+      let nextCursor: string | null = null;
+      let count = 0;
+      const seenIds = new Set<string>();
+
+      do {
+        const query: string = nextCursor ? `?limit=10&cursor=${nextCursor}` : `?limit=10`;
+        const res = await realServer.inject({
+          method: 'GET',
+          url: `/api/v1/cases/${testCaseId}/notes${query}`,
+          headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+        });
+
+        expect(res.statusCode).toBe(200);
+        const data = JSON.parse(res.payload);
+
+        for (const item of data.items) {
+          expect(seenIds.has(item.id)).toBe(false);
+          seenIds.add(item.id);
+        }
+
+        count += data.items.length;
+        nextCursor = data.nextCursor;
+      } while (nextCursor);
+
+      expect(count).toBe(25);
+    });
+
+    it('18. empty CaseNote result works', async () => {
+      const emptyCase = await prisma.case.create({
+        data: { title: 'Empty Notes', organizationId: orgId, creatorId: userIdWithPerm }
+      });
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${emptyCase.id}/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.payload);
+      expect(data.items.length).toBe(0);
+      expect(data.nextCursor).toBeNull();
+      await prisma.case.delete({ where: { id: emptyCase.id } });
+    });
+
+    it('19. response does not expose User/Organization objects', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes?limit=1`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      const data = JSON.parse(res.payload);
+      const item = data.items[0];
+      expect(item.user).toBeUndefined();
+      expect(item.organization).toBeUndefined();
+    });
+
+    it('20. note content is not written into audit metadata', async () => {
+      await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+
+      const logs = await prisma.auditLog.findMany({
+        where: { action: 'CASE_VIEWED', resourceId: testCaseId }
+      });
+
+      const lastLog = logs[logs.length - 1];
+      expect(lastLog.metadata).toBeDefined();
+      expect((lastLog.metadata as any).subresource).toBe('notes');
+      expect((lastLog.metadata as any).content).toBeUndefined();
+    });
+
+    it('21-22. existing Case and Email.caseId remain unchanged', async () => {
+      // Create a case with email linked
+      const ec = await prisma.case.create({
+        data: { title: 'Email Target', organizationId: orgId, creatorId: userIdWithPerm }
+      });
+
+      const email = await prisma.email.create({
+        data: {
+          organizationId: orgId,
+          caseId: ec.id,
+          messageId: 'test-email-123',
+          subject: 'Test subject',
+          senderAddress: 'test@example.com',
+          date: new Date(),
+          rawStorageKey: 'test-key',
+          classification: 'UNKNOWN',
+          sha256: 'dummy-sha256'
+        }
+      });
+
+      // Attempt to retrieve notes for it
+      await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${ec.id}/notes`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+
+      const verifyEmail = await prisma.email.findUnique({ where: { id: email.id } });
+      expect(verifyEmail?.caseId).toBe(ec.id);
+
+      await prisma.email.delete({ where: { id: email.id } });
+      await prisma.case.delete({ where: { id: ec.id } });
+    });
+  });
 });

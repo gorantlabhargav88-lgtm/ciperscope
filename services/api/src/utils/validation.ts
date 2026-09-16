@@ -74,3 +74,10 @@ export const CreateCaseNoteBodySchema = z.object({
 }).strict();
 
 export const fastifyCreateCaseNoteBodySchema = zodToJsonSchema(CreateCaseNoteBodySchema as any);
+
+export const CaseNoteListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().optional(),
+}).strict();
+
+export const fastifyCaseNoteListQuerySchema = zodToJsonSchema(CaseNoteListQuerySchema as any);
