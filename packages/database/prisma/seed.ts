@@ -13,13 +13,32 @@ async function main() {
     },
   });
 
-  // 1.5 Create SYSTEM_ADMIN Role
+  // 1.5 Create SYSTEM_ADMIN Role and CASE_CREATE permission
   const systemAdminRole = await prisma.role.create({
     data: {
       name: 'SYSTEM_ADMIN',
       isSystem: true,
       description: 'System Administrator',
     },
+  });
+
+  const caseCreatePermission = await prisma.permission.upsert({
+    where: { action: 'CASE_CREATE' },
+    update: {},
+    create: { action: 'CASE_CREATE', description: 'Create cases' }
+  });
+
+  const caseReadPermission = await prisma.permission.upsert({
+    where: { action: 'CASE_READ' },
+    update: {},
+    create: { action: 'CASE_READ', description: 'Read cases' }
+  });
+
+  await prisma.rolePermission.createMany({
+    data: [
+      { roleId: systemAdminRole.id, permissionId: caseCreatePermission.id },
+      { roleId: systemAdminRole.id, permissionId: caseReadPermission.id }
+    ]
   });
 
   // 2. Create a System Admin User

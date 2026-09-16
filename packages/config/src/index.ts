@@ -4,7 +4,7 @@ import path from 'path';
 
 // Note: Ensure the app requiring this package has a way to resolve the .env correctly.
 // Since it's a monorepo, looking up up up might hit the root.
-dotenv.config({ path: path.resolve(__dirname, '../../../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),

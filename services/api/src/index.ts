@@ -8,6 +8,7 @@ import { prisma } from '@ciperscope/database';
 import authRoutes from './modules/auth/auth.routes';
 import rbacPlugin from './plugins/rbac';
 import emailRoutes from './modules/email/email.routes';
+import caseRoutes from './modules/case/case.routes';
 import fastifyMultipart from '@fastify/multipart';
 import { createRedisConnection } from '@ciperscope/queue';
 
@@ -19,6 +20,11 @@ const server: FastifyInstance = Fastify({
   genReqId: () => generateRequestId(),
   // Prevent X-Forwarded-For spoofing by only trusting explicitly configured proxies
   trustProxy: env.TRUST_PROXY ? env.TRUST_PROXY.split(',') : false,
+  ajv: {
+    customOptions: {
+      removeAdditional: false,
+    },
+  },
 });
 
 // Setup Request Context
@@ -107,6 +113,7 @@ server.get('/readiness', async (request, reply) => {
 // Register API Modules
 server.register(authRoutes, { prefix: '/api/v1/auth' });
 server.register(emailRoutes, { prefix: '/api/v1/emails' });
+server.register(caseRoutes, { prefix: '/api/v1/cases' });
 
 const start = async () => {
   try {

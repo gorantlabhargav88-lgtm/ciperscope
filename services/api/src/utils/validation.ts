@@ -24,3 +24,26 @@ export const OrgHeaderSchema = z.object({
 export const fastifyEmailParamsSchema = zodToJsonSchema(EmailParamsSchema as any);
 export const fastifyAttachmentParamsSchema = zodToJsonSchema(AttachmentParamsSchema as any);
 export const fastifyOrgHeaderSchema = zodToJsonSchema(OrgHeaderSchema as any);
+
+// Case Management
+export const CreateCaseBodySchema = z.object({
+  title: z.string().max(255),
+  description: z.string().max(4000).optional(),
+  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+}).strict(); // Using .strict() equivalent to additionalProperties: false
+
+export const fastifyCreateCaseBodySchema = zodToJsonSchema(CreateCaseBodySchema as any);
+
+export const CaseParamsSchema = z.object({
+  caseId: uuidSchema,
+});
+
+export const CaseListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().optional(),
+  status: z.enum(['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']).optional(),
+  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+}).strict();
+
+export const fastifyCaseParamsSchema = zodToJsonSchema(CaseParamsSchema as any);
+export const fastifyCaseListQuerySchema = zodToJsonSchema(CaseListQuerySchema as any);
