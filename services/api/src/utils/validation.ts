@@ -88,3 +88,16 @@ export const CaseEmailParamsSchema = z.object({
 });
 
 export const fastifyCaseEmailParamsSchema = zodToJsonSchema(CaseEmailParamsSchema as any);
+
+export const CaseNoteParamsSchema = z.object({
+  caseId: uuidSchema,
+  noteId: uuidSchema,
+});
+
+export const fastifyCaseNoteParamsSchema = zodToJsonSchema(CaseNoteParamsSchema as any);
+
+export const UpdateCaseNoteBodySchema = z.object({
+  content: z.string().min(1).max(4000).regex(/\S/, 'Content cannot be empty whitespace'),
+}).strict();
+
+export const fastifyUpdateCaseNoteBodySchema = zodToJsonSchema(UpdateCaseNoteBodySchema as any);

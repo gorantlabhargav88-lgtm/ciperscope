@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
-import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema } from '../../utils/validation';
+import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema } from '../../utils/validation';
 import { z } from 'zod';
 import { logAuditEvent } from '../../utils/audit';
 
@@ -694,6 +694,71 @@ export default async function caseRoutes(server: FastifyInstance) {
       if (err.message === 'EMAIL_NOT_LINKED') {
         // For security against enumeration of cross-tenant emails, if count=0 we pretend it's 404
         return reply.status(404).send({ error: 'Not Found', message: 'Email not found or not linked to this case' });
+      }
+      throw err;
+    }
+  });
+  server.patch('/:caseId/notes/:noteId', {
+    schema: { params: fastifyCaseNoteParamsSchema, body: fastifyUpdateCaseNoteBodySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_ADD_NOTE')]
+  }, async (request, reply) => {
+    const { caseId, noteId } = request.params as { caseId: string, noteId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub as string;
+    const { content } = request.body as { content: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        // 1. Verify Case exists securely in the tenant
+        const existingCase = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } }
+        });
+
+        if (!existingCase) {
+          throw new Error('CASE_NOT_FOUND');
+        }
+
+        // 2. Perform conditional, tenant-scoped and author-scoped atomic update
+        const result = await tx.caseNote.updateMany({
+          where: {
+            id: noteId,
+            caseId,
+            organizationId,
+            authorId: userId
+          },
+          data: {
+            content
+          }
+        });
+
+        if (result.count === 0) {
+          throw new Error('NOTE_NOT_FOUND_OR_UNAUTHORIZED');
+        }
+      });
+
+      // 3. Log the audit event on absolute success
+      await logAuditEvent({
+        action: 'CASE_NOTE_UPDATED',
+        resource: 'Case',
+        resourceId: caseId,
+        actorId: userId,
+        status: 'SUCCESS',
+        metadata: { noteId },
+        req: request
+      });
+
+      return reply.status(200).send({ success: true });
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+      if (err.message === 'NOTE_NOT_FOUND_OR_UNAUTHORIZED') {
+        // Safe 404 response to avoid leaking cross-tenant or cross-author note existence
+        return reply.status(404).send({ error: 'Not Found', message: 'Note not found or unauthorized' });
       }
       throw err;
     }
