@@ -47,3 +47,24 @@ export const CaseListQuerySchema = z.object({
 
 export const fastifyCaseParamsSchema = zodToJsonSchema(CaseParamsSchema as any);
 export const fastifyCaseListQuerySchema = zodToJsonSchema(CaseListQuerySchema as any);
+
+export const UpdateCaseBodySchema = z.object({
+  title: z.string().max(255).optional(),
+  description: z.string().max(4000).optional(),
+  priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+  status: z.enum(['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']).optional(),
+}).strict();
+
+export const fastifyUpdateCaseBodySchema = zodToJsonSchema(UpdateCaseBodySchema as any);
+
+export const AssignCaseBodySchema = z.object({
+  assignedUserId: uuidSchema.nullable(),
+}).strict();
+
+export const fastifyAssignCaseBodySchema = zodToJsonSchema(AssignCaseBodySchema as any);
+
+export const LinkCaseEmailBodySchema = z.object({
+  emailId: uuidSchema,
+}).strict();
+
+export const fastifyLinkCaseEmailBodySchema = zodToJsonSchema(LinkCaseEmailBodySchema as any);

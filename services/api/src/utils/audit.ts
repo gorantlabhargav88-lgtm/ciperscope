@@ -21,7 +21,10 @@ export type AuditAction =
   | 'EMAIL_ATTACHMENT_VIEWED'
   | 'EMAIL_AI_ANALYSIS_VIEWED'
   | 'CASE_CREATED'
-  | 'CASE_VIEWED';
+  | 'CASE_VIEWED'
+  | 'CASE_UPDATED'
+  | 'CASE_ASSIGNED'
+  | 'CASE_EMAIL_LINKED';
 
 export type AuditStatus = 'SUCCESS' | 'FAILURE' | 'DENIED';
 

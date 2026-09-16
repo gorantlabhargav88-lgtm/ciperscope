@@ -15,7 +15,7 @@ describe('Case API (Integration) - POST /api/v1/cases', () => {
     server = Fastify({
       ajv: { customOptions: { removeAdditional: false } }
     });
-    
+
     // Mock Authentication and Authorization for tests
     server.decorate('authenticate', async (request: { user: { sub: string, orgs: string[] } }) => {
       if ((request as any).headers['x-mock-unauthorized'] === 'true') {
@@ -23,7 +23,7 @@ describe('Case API (Integration) - POST /api/v1/cases', () => {
       }
       request.user = { sub: testUserId, orgs: [testOrgId] };
     });
-    
+
     server.decorate('requirePermission', (action: string) => {
       return async (request: { headers: Record<string, string>, user: { sub: string, orgs: string[] } }) => {
          const orgId = request.headers['x-organization-id'];
@@ -49,13 +49,13 @@ describe('Case API (Integration) - POST /api/v1/cases', () => {
     });
 
     await prisma.user.create({
-      data: { 
-        id: testUserId, 
-        email: `test-${Date.now()}@case.local`, 
-        passwordHash: 'dummy' 
+      data: {
+        id: testUserId,
+        email: `test-${Date.now()}@case.local`,
+        passwordHash: 'dummy'
       }
     });
-    
+
     await server.ready();
   });
 
@@ -143,7 +143,7 @@ describe('Case API (Integration) - POST /api/v1/cases', () => {
     });
     expect(response.statusCode).toBe(400);
   });
-  
+
   it('8.5 Client-supplied status is rejected with 400', async () => {
     const response = await server.inject({
       method: 'POST',
@@ -152,7 +152,7 @@ describe('Case API (Integration) - POST /api/v1/cases', () => {
       payload: { title: 'Test Status Spoof', status: 'RESOLVED' },
     });
     expect(response.statusCode).toBe(400);
-    
+
     // Assert no cases were persisted maliciously
     const cases = await prisma.case.findMany({ where: { title: 'Test Status Spoof' }});
     expect(cases.length).toBe(0);
@@ -298,10 +298,31 @@ describe('Case API (Integration) - Real RBAC', () => {
       create: { action: 'CASE_READ', description: 'Read cases' }
     });
 
+    const caseUpdatePerm = await prisma.permission.upsert({
+      where: { action: 'CASE_UPDATE' },
+      update: {},
+      create: { action: 'CASE_UPDATE', description: 'Update cases' }
+    });
+
+    const caseAssignPerm = await prisma.permission.upsert({
+      where: { action: 'CASE_ASSIGN' },
+      update: {},
+      create: { action: 'CASE_ASSIGN', description: 'Assign cases' }
+    });
+
+    const caseLinkEmailPerm = await prisma.permission.upsert({
+      where: { action: 'CASE_LINK_EMAIL' },
+      update: {},
+      create: { action: 'CASE_LINK_EMAIL', description: 'Link emails to cases' }
+    });
+
     await prisma.rolePermission.createMany({
       data: [
         { roleId: roleWithPerm.id, permissionId: caseCreatePerm.id },
-        { roleId: roleWithPerm.id, permissionId: caseReadPerm.id }
+        { roleId: roleWithPerm.id, permissionId: caseReadPerm.id },
+        { roleId: roleWithPerm.id, permissionId: caseUpdatePerm.id },
+        { roleId: roleWithPerm.id, permissionId: caseAssignPerm.id },
+        { roleId: roleWithPerm.id, permissionId: caseLinkEmailPerm.id }
       ]
     });
 
@@ -456,7 +477,7 @@ describe('Case API (Integration) - Real RBAC', () => {
 
     expect(response.statusCode).toBe(200);
     const json = response.json();
-    
+
     // Ensure the list has ZERO from otherOrgId
     const foundOther = json.items.some((c: any) => c.organizationId === otherOrgId);
     expect(foundOther).toBe(false);
@@ -480,7 +501,7 @@ describe('Case API (Integration) - Real RBAC', () => {
     const json = response.json();
     expect(json.id).toBe(newCase.id);
     expect(json.organizationId).toBe(orgId);
-    
+
     const auditLog = await prisma.auditLog.findFirst({
       where: { resourceId: newCase.id, action: 'CASE_VIEWED' }
     });
@@ -607,12 +628,12 @@ describe('Case API (Integration) - Real RBAC', () => {
 
     // 2. Reuse that cursor with a different valid status filter.
     const res = await realServer.inject({ method: 'GET', url: `/api/v1/cases?limit=1&cursor=${cursor}&status=CLOSED`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
-    
+
     // 3. Assert:
     expect(res.statusCode).not.toBe(500);
     // Response should be successful (e.g. 200 or 400 depending on DB state, but typically 200)
     expect([200, 400]).toContain(res.statusCode);
-    
+
     if (res.statusCode === 200) {
       const items = res.json().items;
       expect(Array.isArray(items)).toBe(true);
@@ -630,11 +651,11 @@ describe('Case API (Integration) - Real RBAC', () => {
 
     // 2. Reuse that cursor with a different valid priority filter.
     const res = await realServer.inject({ method: 'GET', url: `/api/v1/cases?limit=1&cursor=${cursor}&priority=CRITICAL`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
-    
+
     // 3. Assert:
     expect(res.statusCode).not.toBe(500);
     expect([200, 400]).toContain(res.statusCode);
-    
+
     if (res.statusCode === 200) {
       const items = res.json().items;
       expect(Array.isArray(items)).toBe(true);
@@ -642,5 +663,662 @@ describe('Case API (Integration) - Real RBAC', () => {
         expect(item.organizationId).toBe(orgId);
       });
     }
+  });
+
+  describe('PATCH /api/v1/cases/:caseId', () => {
+    let testCaseId: string;
+
+    beforeEach(async () => {
+      // Create a fresh case for each test
+      const c = await prisma.case.create({
+        data: {
+          title: 'Patch Target',
+          description: 'Original Description',
+          priority: 'MEDIUM',
+          status: 'OPEN',
+          organizationId: orgId,
+          creatorId: userIdWithPerm
+        }
+      });
+      testCaseId = c.id;
+    });
+
+    afterEach(async () => {
+      await prisma.case.deleteMany({ where: { id: testCaseId } });
+    });
+
+    it('1. unauthenticated -> rejected', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId },
+        payload: { title: 'New' }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('2. user without CASE_UPDATE -> 403', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` },
+        payload: { title: 'New' }
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('3. authorized user -> 200, 4. title update persists', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { title: 'Updated Title' }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().title).toBe('Updated Title');
+
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.title).toBe('Updated Title');
+    });
+
+    it('5. description update persists, 6. priority update persists', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { description: 'Updated Desc', priority: 'CRITICAL' }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().description).toBe('Updated Desc');
+      expect(res.json().priority).toBe('CRITICAL');
+
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.priority).toBe('CRITICAL');
+    });
+
+    it('7. status update persists and 10. resolvedAt behavior', async () => {
+      // Set to RESOLVED
+      const res1 = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { status: 'RESOLVED' }
+      });
+      expect(res1.statusCode).toBe(200);
+      expect(res1.json().status).toBe('RESOLVED');
+      expect(res1.json().resolvedAt).not.toBeNull();
+
+      // Set back to OPEN
+      const res2 = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { status: 'OPEN' }
+      });
+      expect(res2.statusCode).toBe(200);
+      expect(res2.json().status).toBe('OPEN');
+      expect(res2.json().resolvedAt).toBeNull();
+    });
+
+    it('8. partial PATCH updates only supplied fields', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { priority: 'HIGH' } // Title and desc omitted
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().title).toBe('Patch Target');
+      expect(res.json().description).toBe('Original Description');
+      expect(res.json().priority).toBe('HIGH');
+    });
+
+    it('9. empty update body -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: {}
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('10. unknown field -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { unknownField: 'hacker' }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('11-17. Server authoritative fields injection -> 400', async () => {
+      const fields = [
+        { organizationId: otherOrgId },
+        { creatorId: userIdWithoutPerm },
+        { id: crypto.randomUUID() },
+        { assignedUserId: userIdWithoutPerm },
+        { resolvedAt: new Date().toISOString() },
+        { createdAt: new Date().toISOString() },
+        { updatedAt: new Date().toISOString() }
+      ];
+
+      for (const payload of fields) {
+        const res = await realServer.inject({
+          method: 'PATCH',
+          url: `/api/v1/cases/${testCaseId}`,
+          headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+          payload
+        });
+        expect(res.statusCode).toBe(400); // Because of .strict()
+      }
+    });
+
+    it('18. invalid UUID -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/not-a-uuid`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { title: 'New' }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('19. nonexistent Case -> 404', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${crypto.randomUUID()}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { title: 'New' }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('20. cross-tenant Case -> 404', async () => {
+      // Create a case in otherOrgId
+      const otherCase = await prisma.case.create({
+        data: { title: 'Other Case', organizationId: otherOrgId }
+      });
+
+      // Attempt to update it using orgId context
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${otherCase.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }, // tokenWithPerm has orgId in orgs, but header is orgId
+        payload: { title: 'Hacked' }
+      });
+      expect(res.statusCode).toBe(404); // Not found in tenant scope
+
+      // 27. cross-tenant update creates no Case mutation
+      const dbOtherCase = await prisma.case.findUnique({ where: { id: otherCase.id } });
+      expect(dbOtherCase?.title).toBe('Other Case');
+
+      await prisma.case.delete({ where: { id: otherCase.id } });
+    });
+
+    it('21-24. Valid update does not change server authoritative fields', async () => {
+      const original = await prisma.case.findUnique({ where: { id: testCaseId } });
+
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { title: 'New Title' }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.organizationId).toBe(original?.organizationId);
+      expect(dbCase?.creatorId).toBe(original?.creatorId);
+      expect(dbCase?.id).toBe(original?.id);
+      expect(dbCase?.assignedUserId).toBe(original?.assignedUserId);
+    });
+
+    it('25. CASE_UPDATED audit event persists', async () => {
+      await prisma.auditLog.deleteMany(); // Clear logs for deterministic assertion
+
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { title: 'Audited' }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const log = await prisma.auditLog.findFirst({
+        where: { action: 'CASE_UPDATED', resourceId: testCaseId }
+      });
+      expect(log).not.toBeNull();
+      expect(log?.actorId).toBe(userIdWithPerm);
+      expect(log?.organizationId).toBe(orgId);
+    });
+
+    it('26. unauthorized update creates no Case mutation', async () => {
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` },
+        payload: { title: 'Hacked' }
+      });
+      expect(res.statusCode).toBe(403);
+
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.title).toBe('Patch Target');
+    });
+  });
+
+  describe('POST /api/v1/cases/:caseId/assignment', () => {
+    let testCaseId: string;
+
+    beforeEach(async () => {
+      const c = await prisma.case.create({
+        data: {
+          title: 'Assign Target',
+          organizationId: orgId,
+          creatorId: userIdWithPerm
+        }
+      });
+      testCaseId = c.id;
+    });
+
+    afterEach(async () => {
+      await prisma.case.deleteMany({ where: { id: testCaseId } });
+    });
+
+    it('1. no JWT -> 401', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId },
+        payload: { assignedUserId: userIdWithPerm }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('3. user with CASE_ASSIGN -> success, 6. valid same-tenant user -> 200, 7. persisted correctly, 8. correct response', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: userIdWithoutPerm } // Same tenant
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().assignedUserId).toBe(userIdWithoutPerm);
+
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.assignedUserId).toBe(userIdWithoutPerm);
+    });
+
+    it('4. user without CASE_ASSIGN -> 403, 5. no mutation', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` },
+        payload: { assignedUserId: userIdWithPerm }
+      });
+      expect(res.statusCode).toBe(403);
+
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.assignedUserId).toBeNull();
+    });
+
+    it('9. CASE_ASSIGNED audit persisted', async () => {
+      await prisma.auditLog.deleteMany();
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: userIdWithoutPerm }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const log = await prisma.auditLog.findFirst({
+        where: { action: 'CASE_ASSIGNED', resourceId: testCaseId }
+      });
+      expect(log).not.toBeNull();
+      expect(log?.actorId).toBe(userIdWithPerm);
+      expect(log?.organizationId).toBe(orgId);
+    });
+
+    it('11. assign Case A (Org A) to User B (Org B) -> reject', async () => {
+      // Create User B in Org B only
+      const userBId = crypto.randomUUID();
+      await prisma.user.create({ data: { id: userBId, email: `userb-${Date.now()}@test.local`, passwordHash: 'dummy' } });
+      const roleB = await prisma.role.create({ data: { name: 'RoleB', organizationId: otherOrgId } });
+      await prisma.organizationMember.create({ data: { userId: userBId, organizationId: otherOrgId, roleId: roleB.id } });
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: userBId }
+      });
+      // Validation rejects cross-tenant targets
+      expect(res.statusCode).toBe(400);
+
+      // 12. verify Case A remains unchanged
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.assignedUserId).toBeNull();
+
+      await prisma.organizationMember.deleteMany({ where: { userId: userBId } });
+      await prisma.role.delete({ where: { id: roleB.id } });
+      await prisma.user.delete({ where: { id: userBId } });
+    });
+
+    it('15. nonexistent assignedUserId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: crypto.randomUUID() }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('16. malformed assignedUserId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: 'not-a-uuid' }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('17. inactive target -> reject', async () => {
+      const inactiveUser = crypto.randomUUID();
+      await prisma.user.create({ data: { id: inactiveUser, email: `inactive-${Date.now()}@test.local`, passwordHash: 'dummy', isActive: false } });
+      const role = await prisma.role.create({ data: { name: 'InactiveRole', organizationId: orgId } });
+      await prisma.organizationMember.create({ data: { userId: inactiveUser, organizationId: orgId, roleId: role.id } });
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: inactiveUser }
+      });
+      expect(res.statusCode).toBe(400); // INVALID_TARGET_USER mapped to 400
+
+      await prisma.organizationMember.deleteMany({ where: { userId: inactiveUser } });
+      await prisma.role.delete({ where: { id: role.id } });
+      await prisma.user.delete({ where: { id: inactiveUser } });
+    });
+
+    it('18-22. mass assignment protection (unknown fields -> 400)', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: userIdWithPerm, status: 'CLOSED', creatorId: crypto.randomUUID() }
+      });
+      expect(res.statusCode).toBe(400); // Strict schema rejects unknown fields
+    });
+
+    it('23. null assignment behavior (unassignment)', async () => {
+      // First assign
+      await prisma.case.update({ where: { id: testCaseId }, data: { assignedUserId: userIdWithPerm } });
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: null }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().assignedUserId).toBeNull();
+
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.assignedUserId).toBeNull();
+    });
+
+    it('25. cross-tenant assignment creates no mutation', async () => {
+      const otherCase = await prisma.case.create({
+        data: { title: 'Other Case', organizationId: otherOrgId }
+      });
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${otherCase.id}/assignment`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { assignedUserId: userIdWithPerm }
+      });
+      expect(res.statusCode).toBe(404);
+
+      await prisma.case.delete({ where: { id: otherCase.id } });
+    });
+  });
+
+  describe('POST /api/v1/cases/:caseId/emails', () => {
+    let testCaseId: string;
+    let testEmailId: string;
+    let otherEmailId: string;
+
+    beforeEach(async () => {
+      const c = await prisma.case.create({
+        data: {
+          title: 'Link Target',
+          organizationId: orgId,
+          creatorId: userIdWithPerm
+        }
+      });
+      testCaseId = c.id;
+
+      const e1 = await prisma.email.create({
+        data: {
+          organizationId: orgId,
+          sha256: `dummy-sha-${Date.now()}-1`,
+          subject: 'Test Email 1'
+        }
+      });
+      testEmailId = e1.id;
+
+      const e2 = await prisma.email.create({
+        data: {
+          organizationId: otherOrgId,
+          sha256: `dummy-sha-${Date.now()}-2`,
+          subject: 'Test Email 2 (Other Org)'
+        }
+      });
+      otherEmailId = e2.id;
+    });
+
+    afterEach(async () => {
+      await prisma.email.deleteMany({ where: { id: { in: [testEmailId, otherEmailId] } } });
+      await prisma.case.deleteMany({ where: { id: testCaseId } });
+    });
+
+    it('1. no JWT -> 401', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId },
+        payload: { emailId: testEmailId }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('3. authorized CASE_LINK_EMAIL -> success, 6. same-tenant Case + Email -> success, 7. persisted correctly, 8. response confirms link', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: testEmailId }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().caseId).toBe(testCaseId);
+
+      const dbEmail = await prisma.email.findUnique({ where: { id: testEmailId } });
+      expect(dbEmail?.caseId).toBe(testCaseId);
+    });
+
+    it('4. unauthorized user -> 403, 5. denied request does not mutate Email', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` },
+        payload: { emailId: testEmailId }
+      });
+      expect(res.statusCode).toBe(403);
+
+      const dbEmail = await prisma.email.findUnique({ where: { id: testEmailId } });
+      expect(dbEmail?.caseId).toBeNull();
+    });
+
+    it('9. CASE_EMAIL_LINKED audit persisted', async () => {
+      await prisma.auditLog.deleteMany();
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: testEmailId }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const log = await prisma.auditLog.findFirst({
+        where: { action: 'CASE_EMAIL_LINKED', resourceId: testCaseId }
+      });
+      expect(log).not.toBeNull();
+      expect(log?.actorId).toBe(userIdWithPerm);
+      expect(log?.organizationId).toBe(orgId);
+    });
+
+    it('10. Case A + Email B from different organizations -> rejected', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: otherEmailId }
+      });
+      expect(res.statusCode).toBe(404); // Email not found in org
+
+      const dbEmail = await prisma.email.findUnique({ where: { id: otherEmailId } });
+      expect(dbEmail?.caseId).toBeNull();
+    });
+
+    it('11. Case B + Email A -> rejected', async () => {
+      const otherCase = await prisma.case.create({
+        data: { title: 'Other Case', organizationId: otherOrgId }
+      });
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${otherCase.id}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: testEmailId }
+      });
+      expect(res.statusCode).toBe(404); // Case not found in org
+
+      await prisma.case.delete({ where: { id: otherCase.id } });
+    });
+
+    it('14. organization header spoofing -> rejected', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': otherOrgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: testEmailId }
+      });
+      expect(res.statusCode).toBe(403); // RBAC rejects because user is not in otherOrgId
+    });
+
+    it('16. Email already linked -> safe conflict behavior, 17. existing Case link unchanged', async () => {
+      // First link
+      await prisma.email.update({ where: { id: testEmailId }, data: { caseId: testCaseId } });
+
+      // Create another case
+      const case2 = await prisma.case.create({
+        data: { title: 'Case 2', organizationId: orgId }
+      });
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${case2.id}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: testEmailId }
+      });
+      expect(res.statusCode).toBe(409); // EMAIL_ALREADY_LINKED
+
+      const dbEmail = await prisma.email.findUnique({ where: { id: testEmailId } });
+      expect(dbEmail?.caseId).toBe(testCaseId); // unchanged
+
+      await prisma.case.delete({ where: { id: case2.id } });
+    });
+
+    it('18. malformed caseId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/not-a-uuid/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: testEmailId }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('19. malformed emailId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: 'not-a-uuid' }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('20. unknown body field -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: testEmailId, arbitraryField: true }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('21. arbitrary organizationId injection -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { emailId: testEmailId, organizationId: otherOrgId }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('22. Race condition protection: concurrent links to different cases only succeed once', async () => {
+      const otherCase = await prisma.case.create({
+        data: { title: 'Other Target', organizationId: orgId }
+      });
+
+      // Fire both requests simultaneously
+      const [res1, res2] = await Promise.all([
+        realServer.inject({
+          method: 'POST',
+          url: `/api/v1/cases/${testCaseId}/emails`,
+          headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+          payload: { emailId: testEmailId }
+        }),
+        realServer.inject({
+          method: 'POST',
+          url: `/api/v1/cases/${otherCase.id}/emails`,
+          headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+          payload: { emailId: testEmailId }
+        })
+      ]);
+
+      const statuses = [res1.statusCode, res2.statusCode].sort();
+      // Exactly one succeeds (200), exactly one fails with conflict (409) due to conditional update
+      expect(statuses).toEqual([200, 409]);
+
+      const dbEmail = await prisma.email.findUnique({ where: { id: testEmailId } });
+      expect(dbEmail?.caseId).not.toBeNull();
+
+      const winningCaseId = res1.statusCode === 200 ? testCaseId : otherCase.id;
+      expect(dbEmail?.caseId).toBe(winningCaseId);
+
+      await prisma.case.delete({ where: { id: otherCase.id } });
+    });
   });
 });
