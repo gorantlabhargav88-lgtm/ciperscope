@@ -743,28 +743,48 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect(dbCase?.priority).toBe('CRITICAL');
     });
 
-    it('7. status update persists and 10. resolvedAt behavior', async () => {
-      // Set to RESOLVED
-      const res1 = await realServer.inject({
+    it('7, 11-14. Valid state machine transitions and 10. resolvedAt behavior', async () => {
+      // OPEN -> INVESTIGATING
+      let res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { status: 'INVESTIGATING' }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().status).toBe('INVESTIGATING');
+
+      // INVESTIGATING -> CONTAINED
+      res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { status: 'CONTAINED' }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().status).toBe('CONTAINED');
+
+      // CONTAINED -> RESOLVED
+      res = await realServer.inject({
         method: 'PATCH',
         url: `/api/v1/cases/${testCaseId}`,
         headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
         payload: { status: 'RESOLVED' }
       });
-      expect(res1.statusCode).toBe(200);
-      expect(res1.json().status).toBe('RESOLVED');
-      expect(res1.json().resolvedAt).not.toBeNull();
+      expect(res.statusCode).toBe(200);
+      expect(res.json().status).toBe('RESOLVED');
+      expect(res.json().resolvedAt).not.toBeNull();
 
-      // Set back to OPEN
-      const res2 = await realServer.inject({
+      // RESOLVED -> CLOSED
+      res = await realServer.inject({
         method: 'PATCH',
         url: `/api/v1/cases/${testCaseId}`,
         headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
-        payload: { status: 'OPEN' }
+        payload: { status: 'CLOSED' }
       });
-      expect(res2.statusCode).toBe(200);
-      expect(res2.json().status).toBe('OPEN');
-      expect(res2.json().resolvedAt).toBeNull();
+      expect(res.statusCode).toBe(200);
+      expect(res.json().status).toBe('CLOSED');
+      expect(res.json().resolvedAt).not.toBeNull();
     });
 
     it('8. partial PATCH updates only supplied fields', async () => {
@@ -912,6 +932,135 @@ describe('Case API (Integration) - Real RBAC', () => {
 
       const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
       expect(dbCase?.title).toBe('Patch Target');
+    });
+
+    it('15-28. Invalid transitions are rejected', async () => {
+      const checkInvalidTransition = async (startStatus: string, attemptStatus: string) => {
+        // Setup initial status by bypassing API for test setup
+        await prisma.case.update({
+          where: { id: testCaseId },
+          data: { status: startStatus as any }
+        });
+
+        const res = await realServer.inject({
+          method: 'PATCH',
+          url: `/api/v1/cases/${testCaseId}`,
+          headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+          payload: { status: attemptStatus }
+        });
+
+        expect(res.statusCode).toBe(400);
+        const json = res.json();
+        expect(json.message).toContain('Invalid state transition');
+      };
+
+      // From OPEN
+      await checkInvalidTransition('OPEN', 'CONTAINED');
+      await checkInvalidTransition('OPEN', 'RESOLVED');
+      await checkInvalidTransition('OPEN', 'CLOSED');
+
+      // From INVESTIGATING
+      await checkInvalidTransition('INVESTIGATING', 'OPEN');
+      await checkInvalidTransition('INVESTIGATING', 'RESOLVED');
+      await checkInvalidTransition('INVESTIGATING', 'CLOSED');
+
+      // From CONTAINED
+      await checkInvalidTransition('CONTAINED', 'OPEN');
+      await checkInvalidTransition('CONTAINED', 'INVESTIGATING');
+      await checkInvalidTransition('CONTAINED', 'CLOSED');
+
+      // From RESOLVED
+      await checkInvalidTransition('RESOLVED', 'OPEN');
+      await checkInvalidTransition('RESOLVED', 'INVESTIGATING');
+      await checkInvalidTransition('RESOLVED', 'CONTAINED');
+
+      // From CLOSED
+      await checkInvalidTransition('CLOSED', 'OPEN');
+      await checkInvalidTransition('CLOSED', 'INVESTIGATING');
+      await checkInvalidTransition('CLOSED', 'CONTAINED');
+      await checkInvalidTransition('CLOSED', 'RESOLVED');
+    });
+
+    it('29. Idempotency - Same status transition succeeds without error and 30. Does not emit duplicate audit log', async () => {
+      // First legitimate transition
+      await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { status: 'INVESTIGATING' }
+      });
+
+      await prisma.auditLog.deleteMany(); // Clear logs
+
+      // Idempotent retry
+      const res = await realServer.inject({
+        method: 'PATCH',
+        url: `/api/v1/cases/${testCaseId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { status: 'INVESTIGATING' }
+      });
+
+      expect(res.statusCode).toBe(200);
+
+      // Verify no status change audit event was logged since it was a no-op
+      const logs = await prisma.auditLog.findMany({
+        where: { action: 'CASE_UPDATED', resourceId: testCaseId }
+      });
+      // The update itself logged a CASE_UPDATED event because we touched the DB,
+      // but let's verify metadata doesn't contain status changes.
+      expect(logs.length).toBe(1);
+      if (logs[0].metadata) {
+        expect(logs[0].metadata).not.toHaveProperty('previousStatus');
+        expect(logs[0].metadata).not.toHaveProperty('newStatus');
+      }
+    });
+
+    it('38-42. Concurrency - Competing transitions', async () => {
+      // Clear logs to verify count
+      await prisma.auditLog.deleteMany();
+
+      // Case is currently OPEN. Send 3 valid transitions to INVESTIGATING concurrently
+      const promises = [
+        realServer.inject({
+          method: 'PATCH',
+          url: `/api/v1/cases/${testCaseId}`,
+          headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+          payload: { status: 'INVESTIGATING' }
+        }),
+        realServer.inject({
+          method: 'PATCH',
+          url: `/api/v1/cases/${testCaseId}`,
+          headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+          payload: { status: 'INVESTIGATING' }
+        }),
+        realServer.inject({
+          method: 'PATCH',
+          url: `/api/v1/cases/${testCaseId}`,
+          headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+          payload: { status: 'INVESTIGATING' }
+        })
+      ];
+
+      const results = await Promise.all(promises);
+
+      // One might succeed, and the others should either succeed as idempotent (if processed sequentially after the first completes)
+      // or fail with 409 Conflict if they hit the atomic update count === 0 simultaneously.
+      // Both outcomes are safe. What matters is the DB state and audit count.
+      for (const res of results) {
+        expect([200, 409]).toContain(res.statusCode);
+      }
+
+      // Check final state
+      const dbCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(dbCase?.status).toBe('INVESTIGATING');
+
+      // Check audit count: Only one state transition should be logged with metadata
+      const logs = await prisma.auditLog.findMany({
+        where: { action: 'CASE_UPDATED', resourceId: testCaseId }
+      });
+
+      const transitionLogs = logs.filter((log: any) => log.metadata && log.metadata.newStatus === 'INVESTIGATING');
+      expect(transitionLogs.length).toBe(1); // Exactly one true transition
     });
   });
 

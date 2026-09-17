@@ -190,6 +190,19 @@ export default async function caseRoutes(server: FastifyInstance) {
     return reply.status(200).send(c);
   });
 
+  // State machine transition helper
+  const isValidTransition = (fromStatus: string, toStatus: string): boolean => {
+    if (fromStatus === toStatus) return true;
+    const transitions: Record<string, string[]> = {
+      'OPEN': ['INVESTIGATING'],
+      'INVESTIGATING': ['CONTAINED'],
+      'CONTAINED': ['RESOLVED'],
+      'RESOLVED': ['CLOSED'],
+      'CLOSED': []
+    };
+    return transitions[fromStatus]?.includes(toStatus) ?? false;
+  };
+
   server.patch('/:caseId', {
     schema: {
       params: fastifyCaseParamsSchema,
@@ -221,55 +234,84 @@ export default async function caseRoutes(server: FastifyInstance) {
       status?: 'OPEN' | 'INVESTIGATING' | 'CONTAINED' | 'RESOLVED' | 'CLOSED';
     };
 
-    // Construct update data explicitly to prevent mass-assignment
     const data: any = {};
     if (title !== undefined) data.title = title;
     if (description !== undefined) data.description = description;
     if (priority !== undefined) data.priority = priority;
 
-    // Status and resolvedAt handling
+    const currentCase = await prisma.case.findUnique({
+      where: { id_organizationId: { id: caseId, organizationId } },
+      select: { id: true, status: true }
+    });
+
+    if (!currentCase) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+    }
+
     if (status !== undefined) {
+      if (!isValidTransition(currentCase.status, status)) {
+        return reply.status(400).send({ error: 'Bad Request', message: `Invalid state transition from ${currentCase.status} to ${status}` });
+      }
       data.status = status;
       if (status === 'RESOLVED' || status === 'CLOSED') {
         data.resolvedAt = new Date();
-      } else {
-        data.resolvedAt = null; // Re-opening clears resolvedAt
       }
+      // Re-opening is strictly forbidden by the state machine, so we no longer clear resolvedAt
     }
 
     try {
-      // Find first to verify existence and tenant isolation
-      // Prisma's composite update using id_organizationId provides atomic isolation
-      const c = await prisma.case.update({
-        where: { id_organizationId: { id: caseId, organizationId } },
-        data,
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          status: true,
-          priority: true,
-          organizationId: true,
-          creatorId: true,
-          assignedUserId: true,
-          resolvedAt: true,
-          createdAt: true,
-          updatedAt: true,
-        }
-      });
+      let c;
+      if (status !== undefined && status !== currentCase.status) {
+        c = await prisma.$transaction(async (tx) => {
+          const result = await tx.case.updateMany({
+            where: { id: caseId, organizationId, status: currentCase.status },
+            data
+          });
+          if (result.count === 0) {
+            throw new Error('CONCURRENCY_CONFLICT');
+          }
+          return await tx.case.findUnique({
+            where: { id_organizationId: { id: caseId, organizationId } },
+            select: {
+              id: true, title: true, description: true, status: true, priority: true,
+              organizationId: true, creatorId: true, assignedUserId: true, resolvedAt: true,
+              createdAt: true, updatedAt: true,
+            }
+          });
+        });
+      } else {
+        c = await prisma.case.update({
+          where: { id_organizationId: { id: caseId, organizationId } },
+          data,
+          select: {
+            id: true, title: true, description: true, status: true, priority: true,
+            organizationId: true, creatorId: true, assignedUserId: true, resolvedAt: true,
+            createdAt: true, updatedAt: true,
+          }
+        });
+      }
+
+      const auditMetadata: any = {};
+      if (status !== undefined && status !== currentCase.status) {
+        auditMetadata.previousStatus = currentCase.status;
+        auditMetadata.newStatus = status;
+      }
 
       await logAuditEvent({
         action: 'CASE_UPDATED',
         resource: 'Case',
-        resourceId: c.id,
+        resourceId: c!.id,
         actorId: userId,
         status: 'SUCCESS',
+        metadata: Object.keys(auditMetadata).length > 0 ? auditMetadata : undefined,
         req: request
       });
 
       return reply.status(200).send(c);
     } catch (err: any) {
-      // P2025: Record to update not found (either doesn't exist, or belongs to another tenant)
+      if (err.message === 'CONCURRENCY_CONFLICT') {
+        return reply.status(409).send({ error: 'Conflict', message: 'The case status was modified concurrently' });
+      }
       if (err.code === 'P2025') {
         return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
       }
