@@ -3274,5 +3274,47 @@ describe('Case API (Integration) - Real RBAC', () => {
       const verify = await prisma.evidence.findUnique({ where: { id: e.id } });
       expect(verify?.status).toBe('DELETED');
     });
+
+    it('6. GET /custody lists chain of custody for evidence', async () => {
+      const e = await prisma.evidence.create({
+        data: { caseId: testCaseId, type: 'LOG', storageKey: 'c1', sha256: 'f'.repeat(64), status: 'ACTIVE' }
+      });
+
+      await prisma.chainOfCustodyEvent.createMany({
+        data: [
+          { evidenceId: e.id, action: 'UPLOADED', actorId: userIdWithPerm, timestamp: new Date(Date.now() - 2000) },
+          { evidenceId: e.id, action: 'ACCESSED', actorId: userIdWithPerm, timestamp: new Date(Date.now() - 1000) }
+        ]
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/evidence/${e.id}/custody`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.payload);
+      expect(data.items.length).toBe(2);
+      expect(data.items[0].action).toBe('ACCESSED'); // desc order
+      expect(data.items[0].actor.id).toBe(userIdWithPerm);
+      expect(data.items[1].action).toBe('UPLOADED');
+    });
+
+    it('7. Accessing evidence detail creates ACCESSED event', async () => {
+      const e = await prisma.evidence.create({
+        data: { caseId: testCaseId, type: 'LOG', storageKey: 'c2', sha256: 'g'.repeat(64), status: 'ACTIVE' }
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/evidence/${e.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+
+      const custody = await prisma.chainOfCustodyEvent.findMany({ where: { evidenceId: e.id } });
+      expect(custody.length).toBe(1);
+      expect(custody[0].action).toBe('ACCESSED');
+    });
   });
 });

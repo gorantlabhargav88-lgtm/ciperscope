@@ -32,7 +32,8 @@ export type AuditAction =
   | 'CASE_HISTORY_VIEWED'
   | 'CASE_EVIDENCE_ADDED'
   | 'CASE_EVIDENCE_VIEWED'
-  | 'CASE_EVIDENCE_DELETED';
+  | 'CASE_EVIDENCE_DELETED'
+  | 'CASE_CUSTODY_VIEWED';
 
 export type AuditStatus = 'SUCCESS' | 'FAILURE' | 'DENIED';
 

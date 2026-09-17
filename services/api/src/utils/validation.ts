@@ -161,3 +161,9 @@ export const EvidenceParamsSchema = z.object({
   evidenceId: uuidSchema
 });
 export const fastifyEvidenceParamsSchema = zodToJsonSchema(EvidenceParamsSchema as any);
+
+export const CustodyListQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(100).default(20),
+  cursor: z.string().optional()
+});
+export const fastifyCustodyListQuerySchema = zodToJsonSchema(CustodyListQuerySchema as any);
