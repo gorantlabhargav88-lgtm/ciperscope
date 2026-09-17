@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
-import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema } from '../../utils/validation';
+import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema } from '../../utils/validation';
 import { z } from 'zod';
 import { logAuditEvent } from '../../utils/audit';
 
@@ -821,6 +821,106 @@ export default async function caseRoutes(server: FastifyInstance) {
       if (err.message === 'NOTE_NOT_FOUND_OR_UNAUTHORIZED') {
         // Safe 404 response to avoid leaking cross-tenant or cross-author note existence
         return reply.status(404).send({ error: 'Not Found', message: 'Note not found or unauthorized' });
+      }
+      throw err;
+    }
+  });
+
+  server.get('/:caseId/timeline', {
+    schema: { params: fastifyCaseParamsSchema, querystring: fastifyCaseTimelineQuerySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const query = request.query as {
+      limit: number;
+      cursor?: string;
+    };
+
+    const limit = query.limit;
+
+    let cursorOpt: any = undefined;
+    if (query.cursor) {
+      try {
+        const decodedString = Buffer.from(query.cursor, 'base64').toString('utf-8');
+        const decoded = JSON.parse(decodedString);
+
+        const cursorSchema = z.tuple([
+          z.string().datetime(),
+          uuidSchema
+        ]);
+
+        const validated = cursorSchema.parse(decoded);
+        cursorOpt = { id: validated[1] };
+      } catch (err) {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Malformed cursor' });
+      }
+    }
+
+    try {
+      const { items, nextCursor } = await prisma.$transaction(async (tx) => {
+        // 1. Verify Case exists in the tenant securely
+        const existingCase = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } }
+        });
+
+        if (!existingCase) {
+          throw new Error('CASE_NOT_FOUND');
+        }
+
+        // 2. Fetch the timeline (AuditLog entries for this Case) with pagination
+        const logs = await tx.auditLog.findMany({
+          where: { organizationId, resource: 'Case', resourceId: caseId },
+          take: limit + 1,
+          skip: cursorOpt ? 1 : 0,
+          cursor: cursorOpt,
+          orderBy: [
+            { createdAt: 'desc' },
+            { id: 'desc' }
+          ],
+          select: {
+            id: true,
+            action: true,
+            actorId: true,
+            createdAt: true,
+            metadata: true
+          }
+        });
+
+        let nextCursorValue: string | null = null;
+        if (logs.length > limit) {
+          logs.pop();
+          const lastItem = logs[logs.length - 1];
+          if (lastItem) {
+            nextCursorValue = Buffer.from(JSON.stringify([lastItem.createdAt.toISOString(), lastItem.id])).toString('base64');
+          }
+        }
+
+        return { items: logs, nextCursor: nextCursorValue };
+      });
+
+      // Log read access according to Case read conventions
+      await logAuditEvent({
+        action: 'CASE_VIEWED',
+        resource: 'Case',
+        resourceId: caseId,
+        status: 'SUCCESS',
+        metadata: { subresource: 'timeline' },
+        req: request
+      });
+
+      return reply.status(200).send({ items, nextCursor });
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+      if (err.code === 'P2025') {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Invalid cursor: record not found or inaccessible' });
       }
       throw err;
     }

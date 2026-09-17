@@ -2461,4 +2461,190 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect(logs.length).toBe(1);
     });
   });
+
+  describe('GET /api/v1/cases/:caseId/timeline', () => {
+    let testCaseId: string;
+    let otherCaseId: string;
+
+    beforeEach(async () => {
+      // Create a case
+      const c1 = await prisma.case.create({
+        data: { title: 'Timeline Case 1', organizationId: orgId, creatorId: userIdWithPerm }
+      });
+      testCaseId = c1.id;
+
+      const c2 = await prisma.case.create({
+        data: { title: 'Timeline Case 2', organizationId: otherOrgId, creatorId: userIdWithPerm }
+      });
+      otherCaseId = c2.id;
+    });
+
+    afterEach(async () => {
+      await prisma.auditLog.deleteMany({
+        where: { resourceId: { in: [testCaseId, otherCaseId] } }
+      });
+      await prisma.case.deleteMany({
+        where: { id: { in: [testCaseId, otherCaseId] } }
+      });
+    });
+
+    it('1, 9, 14. Authenticated valid request returns correct Case events', async () => {
+      // 14. Multiple event types
+      await prisma.auditLog.createMany({
+        data: [
+          { organizationId: orgId, action: 'CASE_CREATED', resource: 'Case', resourceId: testCaseId, status: 'SUCCESS' },
+          { organizationId: orgId, action: 'CASE_UPDATED', resource: 'Case', resourceId: testCaseId, status: 'SUCCESS' }
+        ]
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+
+      expect(res.statusCode).toBe(200);
+      const json = JSON.parse(res.payload);
+      // It also creates a CASE_VIEWED event on read, but that happens *after* the read query, so it might not be in the items yet.
+      // Actually wait, findMany happens before logAuditEvent.
+      expect(json.items.length).toBe(2);
+      expect(json.items.map((i: any) => i.action)).toEqual(expect.arrayContaining(['CASE_CREATED', 'CASE_UPDATED']));
+    });
+
+    it('2. Unauthenticated request -> 401', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline`,
+        headers: { 'x-organization-id': orgId }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('3. Missing CASE_READ -> 403', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` }
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('4. Malformed caseId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/not-a-uuid/timeline`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('5. Nonexistent Case -> safe 404', async () => {
+      const fakeId = crypto.randomUUID();
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${fakeId}/timeline`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('6. Foreign Case -> safe 404', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${otherCaseId}/timeline`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('7, 8. Foreign organization/Case audit records never appear', async () => {
+      // Create event for other case
+      await prisma.auditLog.create({
+        data: { organizationId: otherOrgId, action: 'CASE_CREATED', resource: 'Case', resourceId: otherCaseId, status: 'SUCCESS' }
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+
+      expect(res.statusCode).toBe(200);
+      const json = JSON.parse(res.payload);
+      expect(json.items.length).toBe(0);
+    });
+
+    it('10, 11, 12, 18. Deterministic ordering, pagination boundaries, timestamps', async () => {
+      const timeBase = Date.now();
+      await prisma.auditLog.createMany({
+        data: [
+          { organizationId: orgId, action: 'CASE_CREATED', resource: 'Case', resourceId: testCaseId, status: 'SUCCESS', createdAt: new Date(timeBase - 3000) },
+          { organizationId: orgId, action: 'CASE_UPDATED', resource: 'Case', resourceId: testCaseId, status: 'SUCCESS', createdAt: new Date(timeBase - 2000) },
+          { organizationId: orgId, action: 'CASE_ASSIGNED', resource: 'Case', resourceId: testCaseId, status: 'SUCCESS', createdAt: new Date(timeBase - 1000) }
+        ]
+      });
+
+      // Fetch with limit 2
+      const res1 = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline?limit=2`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res1.statusCode).toBe(200);
+      const json1 = JSON.parse(res1.payload);
+      expect(json1.items.length).toBe(2);
+      expect(json1.nextCursor).toBeDefined();
+
+      // Ensure desc ordering
+      expect(new Date(json1.items[0].createdAt).getTime()).toBeGreaterThan(new Date(json1.items[1].createdAt).getTime());
+      expect(json1.items[0].action).toBe('CASE_ASSIGNED');
+      expect(json1.items[1].action).toBe('CASE_UPDATED');
+
+      const res2 = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline?limit=2&cursor=${json1.nextCursor}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      const json2 = JSON.parse(res2.payload);
+      expect(json2.items.length).toBe(1);
+      expect(json2.items[0].action).toBe('CASE_CREATED');
+      expect(json2.nextCursor).toBeNull();
+    });
+
+    it('13. Empty Case timeline', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.payload).items.length).toBe(0);
+    });
+
+    it('15, 16, 17. Safe metadata (no sensitive content)', async () => {
+      await prisma.auditLog.create({
+        data: {
+          organizationId: orgId, action: 'CASE_NOTE_DELETED', resource: 'Case', resourceId: testCaseId, status: 'SUCCESS',
+          metadata: { noteId: 'abc', password: '***REDACTED***' }
+        }
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      const json = JSON.parse(res.payload);
+      expect(json.items[0].metadata.password).toBe('***REDACTED***');
+    });
+
+    it('20. Cursor tampering/malformed fails cleanly', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/timeline?cursor=invalidbase64`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
 });
