@@ -27,7 +27,8 @@ export type AuditAction =
   | 'CASE_EMAIL_LINKED'
   | 'CASE_EMAIL_UNLINKED'
   | 'CASE_NOTE_ADDED'
-  | 'CASE_NOTE_UPDATED';
+  | 'CASE_NOTE_UPDATED'
+  | 'CASE_NOTE_DELETED';
 
 export type AuditStatus = 'SUCCESS' | 'FAILURE' | 'DENIED';
 

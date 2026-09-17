@@ -2274,4 +2274,191 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect(logs.length).toBe(5); // 5 successful mutations
     });
   });
+
+  describe('DELETE /api/v1/cases/:caseId/notes/:noteId', () => {
+    let testCaseId: string;
+    let otherCaseId: string;
+    let testNoteId: string;
+    let otherNoteId: string;
+
+    beforeEach(async () => {
+      // 1. Create Cases
+      const c1 = await prisma.case.create({
+        data: { title: 'T1', organizationId: orgId, creatorId: userIdWithPerm }
+      });
+      testCaseId = c1.id;
+
+      const c2 = await prisma.case.create({
+        data: { title: 'T2', organizationId: orgId, creatorId: userIdWithPerm }
+      });
+      otherCaseId = c2.id;
+
+      // 2. Create Notes
+      const n1 = await prisma.caseNote.create({
+        data: { organizationId: orgId, caseId: testCaseId, authorId: userIdWithPerm, content: 'To be deleted' }
+      });
+      testNoteId = n1.id;
+
+      const n2 = await prisma.caseNote.create({
+        data: { organizationId: orgId, caseId: testCaseId, authorId: userIdWithoutPerm, content: 'Other Author Note' }
+      });
+      otherNoteId = n2.id;
+    });
+
+    afterEach(async () => {
+      await prisma.auditLog.deleteMany({
+        where: { action: 'CASE_NOTE_DELETED', resourceId: testCaseId }
+      });
+      await prisma.caseNote.deleteMany({
+        where: { caseId: { in: [testCaseId, otherCaseId] } }
+      });
+      await prisma.evidence.deleteMany({
+        where: { caseId: { in: [testCaseId, otherCaseId] } }
+      });
+      await prisma.case.deleteMany({
+        where: { id: { in: [testCaseId, otherCaseId] } }
+      });
+    });
+
+    it('1, 12, 13, 14, 15, 17. successful author deletion', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/${testNoteId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.payload)).toEqual({ success: true });
+
+      // Note no longer exists
+      const deletedNote = await prisma.caseNote.findUnique({ where: { id: testNoteId } });
+      expect(deletedNote).toBeNull();
+
+      // Case remains intact
+      const remainingCase = await prisma.case.findUnique({ where: { id: testCaseId } });
+      expect(remainingCase).not.toBeNull();
+
+      // Audit log created exactly once
+      const logs = await prisma.auditLog.findMany({
+        where: { action: 'CASE_NOTE_DELETED', resourceId: testCaseId }
+      });
+      expect(logs.length).toBe(1);
+      expect(logs[0].actorId).toBe(userIdWithPerm);
+      expect((logs[0].metadata as any).noteId).toBe(testNoteId);
+      expect((logs[0].metadata as any).content).toBeUndefined();
+    });
+
+    it('2. unauthenticated request -> 401', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/${testNoteId}`,
+        headers: { 'x-organization-id': orgId }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('3. user without CASE_ADD_NOTE -> 403', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/${testNoteId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` }
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('4. same-tenant different-author rejection -> safe 404', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/${otherNoteId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+
+      const unedited = await prisma.caseNote.findUnique({ where: { id: otherNoteId } });
+      expect(unedited).not.toBeNull();
+    });
+
+    it('5, 6. cross-tenant Case and Note rejection -> 403 / 404', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/${testNoteId}`,
+        headers: { 'x-organization-id': otherOrgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(403); // case lookup fails tenant check
+
+      const logs = await prisma.auditLog.findMany({ where: { action: 'CASE_NOTE_DELETED' } });
+      expect(logs.length).toBe(0);
+    });
+
+    it('7. Note belonging to a different Case -> safe 404', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${otherCaseId}/notes/${testNoteId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('8, 9, 16. nonexistent or already-deleted Note -> safe 404, no audit', async () => {
+      const fakeId = crypto.randomUUID();
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/${fakeId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+
+      const logs = await prisma.auditLog.findMany({ where: { action: 'CASE_NOTE_DELETED' } });
+      expect(logs.length).toBe(0);
+    });
+
+    it('10, 11. malformed caseId and noteId -> 400', async () => {
+      let res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/not-a-uuid/notes/${testNoteId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+
+      res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/not-a-uuid`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('18, 19. body payload is ignored', async () => {
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/${testNoteId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { authorId: crypto.randomUUID(), organizationId: crypto.randomUUID() }
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('20. concurrent deletion behavior', async () => {
+      const promises = Array(5).fill(0).map(() => realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/notes/${testNoteId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      }));
+
+      const results = await Promise.all(promises);
+
+      const successes = results.filter(r => r.statusCode === 200).length;
+      const notFounds = results.filter(r => r.statusCode === 404).length;
+
+      expect(successes).toBe(1);
+      expect(notFounds).toBe(4);
+
+      const deletedNote = await prisma.caseNote.findUnique({ where: { id: testNoteId } });
+      expect(deletedNote).toBeNull();
+
+      const logs = await prisma.auditLog.findMany({
+        where: { action: 'CASE_NOTE_DELETED', resourceId: testCaseId }
+      });
+      expect(logs.length).toBe(1);
+    });
+  });
 });
