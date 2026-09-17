@@ -2897,7 +2897,7 @@ describe('Case API (Integration) - Real RBAC', () => {
     });
   });
 
-  describe('GET /api/v1/cases/:caseId/assignment-history', () => {
+  describe('GET /api/v1/cases/:caseId/history', () => {
     let testCaseId: string;
 
     beforeEach(async () => {
@@ -2914,30 +2914,46 @@ describe('Case API (Integration) - Real RBAC', () => {
       await prisma.auditLog.createMany({
         data: [
           { action: 'CASE_ASSIGNED', resource: 'Case', resourceId: testCaseId, organizationId: orgId, actorId: userIdWithPerm, metadata: { assignedUserId: userIdWithPerm }, createdAt: new Date(Date.now() - 3000) },
+          { action: 'CASE_UPDATED', resource: 'Case', resourceId: testCaseId, organizationId: orgId, actorId: userIdWithPerm, metadata: { status: 'OPEN' }, createdAt: new Date(Date.now() - 2500) },
           { action: 'CASE_ASSIGNED', resource: 'Case', resourceId: testCaseId, organizationId: orgId, actorId: userIdWithPerm, metadata: { assignedUserId: null }, createdAt: new Date(Date.now() - 2000) },
           { action: 'CASE_ASSIGNED', resource: 'Case', resourceId: testCaseId, organizationId: orgId, actorId: userIdWithPerm, metadata: { assignedUserId: userIdWithPerm }, createdAt: new Date(Date.now() - 1000) },
         ]
       });
     });
 
-    it('1. Returns assignment history for authorized user', async () => {
+    it('1. Returns history for authorized user', async () => {
       const res = await realServer.inject({
         method: 'GET',
-        url: `/api/v1/cases/${testCaseId}/assignment-history`,
+        url: `/api/v1/cases/${testCaseId}/history`,
         headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
       });
       expect(res.statusCode).toBe(200);
       const data = JSON.parse(res.payload);
-      expect(data.items.length).toBe(3);
-      expect(data.items[0].metadata.assignedUserId).toBe(userIdWithPerm);
-      expect(data.items[1].metadata.assignedUserId).toBe(null);
+      expect(data.items.length).toBe(4);
+      expect(data.items[0].action).toBe('CASE_ASSIGNED'); // -1000
+      expect(data.items[1].action).toBe('CASE_ASSIGNED'); // -2000
+      expect(data.items[2].action).toBe('CASE_UPDATED'); // -2500
+      expect(data.items[3].action).toBe('CASE_ASSIGNED'); // -3000
+    });
+
+    it('1.1. Filters history by action', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/history?action=CASE_UPDATED`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.payload);
+      expect(data.items.length).toBe(1);
+      expect(data.items[0].action).toBe('CASE_UPDATED');
+
     });
 
     it('2. Tenant isolation', async () => {
       const otherCase = await prisma.case.create({ data: { title: 'Other', organizationId: otherOrgId } });
       const res = await realServer.inject({
         method: 'GET',
-        url: `/api/v1/cases/${otherCase.id}/assignment-history`,
+        url: `/api/v1/cases/${otherCase.id}/history`,
         headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
       });
       expect(res.statusCode).toBe(404);
@@ -2946,7 +2962,7 @@ describe('Case API (Integration) - Real RBAC', () => {
     it('3. Requires authentication', async () => {
       const res = await realServer.inject({
         method: 'GET',
-        url: `/api/v1/cases/${testCaseId}/assignment-history`,
+        url: `/api/v1/cases/${testCaseId}/history`,
         headers: { 'x-organization-id': orgId }
       });
       expect(res.statusCode).toBe(401);

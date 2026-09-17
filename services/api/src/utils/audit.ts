@@ -29,7 +29,7 @@ export type AuditAction =
   | 'CASE_NOTE_ADDED'
   | 'CASE_NOTE_UPDATED'
   | 'CASE_NOTE_DELETED'
-  | 'CASE_ASSIGNMENT_HISTORY_VIEWED';
+  | 'CASE_HISTORY_VIEWED';
 
 export type AuditStatus = 'SUCCESS' | 'FAILURE' | 'DENIED';
 

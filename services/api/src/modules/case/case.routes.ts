@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
-import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseAssignmentHistoryQuerySchema } from '../../utils/validation';
+import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseHistoryQuerySchema } from '../../utils/validation';
 import { z } from 'zod';
 import { logAuditEvent } from '../../utils/audit';
 
@@ -439,8 +439,8 @@ export default async function caseRoutes(server: FastifyInstance) {
     }
   });
 
-  server.get('/:caseId/assignment-history', {
-    schema: { params: fastifyCaseParamsSchema, querystring: fastifyCaseAssignmentHistoryQuerySchema },
+  server.get('/:caseId/history', {
+    schema: { params: fastifyCaseParamsSchema, querystring: fastifyCaseHistoryQuerySchema },
     preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
   }, async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
@@ -453,6 +453,7 @@ export default async function caseRoutes(server: FastifyInstance) {
     const query = request.query as {
       limit: number;
       cursor?: string;
+      action?: string;
     };
 
     const limit = query.limit;
@@ -486,13 +487,13 @@ export default async function caseRoutes(server: FastifyInstance) {
           throw new Error('CASE_NOT_FOUND');
         }
 
-        // 2. Fetch the assignment history (AuditLog entries for CASE_ASSIGNED) with pagination
+        // 2. Fetch the history (AuditLog entries) with pagination
         const logs = await tx.auditLog.findMany({
           where: {
             organizationId,
             resource: 'Case',
             resourceId: caseId,
-            action: 'CASE_ASSIGNED'
+            ...(query.action ? { action: query.action } : {})
           },
           take: limit + 1,
           skip: cursorOpt ? 1 : 0,
@@ -524,7 +525,7 @@ export default async function caseRoutes(server: FastifyInstance) {
 
       // Audit the history access
       await logAuditEvent({
-        action: 'CASE_ASSIGNMENT_HISTORY_VIEWED',
+        action: 'CASE_HISTORY_VIEWED',
         resource: 'Case',
         resourceId: caseId,
         actorId: request.user?.sub,

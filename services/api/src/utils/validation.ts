@@ -109,12 +109,23 @@ export const CaseEmailParamsSchema = z.object({
 
 export const fastifyCaseEmailParamsSchema = zodToJsonSchema(CaseEmailParamsSchema as any);
 
-export const CaseAssignmentHistoryQuerySchema = z.object({
+export const CaseHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().optional(),
+  action: z.enum([
+    'CASE_CREATED',
+    'CASE_VIEWED',
+    'CASE_UPDATED',
+    'CASE_ASSIGNED',
+    'CASE_EMAIL_LINKED',
+    'CASE_EMAIL_UNLINKED',
+    'CASE_NOTE_ADDED',
+    'CASE_NOTE_UPDATED',
+    'CASE_NOTE_DELETED'
+  ]).optional()
 }).strict();
 
-export const fastifyCaseAssignmentHistoryQuerySchema = zodToJsonSchema(CaseAssignmentHistoryQuerySchema as any);
+export const fastifyCaseHistoryQuerySchema = zodToJsonSchema(CaseHistoryQuerySchema as any);
 
 export const CaseNoteParamsSchema = z.object({
   caseId: uuidSchema,
