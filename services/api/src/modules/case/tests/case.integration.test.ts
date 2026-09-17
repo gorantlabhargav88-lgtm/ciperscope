@@ -2647,4 +2647,168 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect(res.statusCode).toBe(400);
     });
   });
+
+  describe('GET /api/v1/cases/:caseId/emails', () => {
+    let testCaseId: string;
+    let otherCaseId: string;
+
+    beforeEach(async () => {
+      // Create cases
+      const c1 = await prisma.case.create({
+        data: { title: 'Email List Case 1', organizationId: orgId, creatorId: userIdWithPerm }
+      });
+      testCaseId = c1.id;
+
+      const c2 = await prisma.case.create({
+        data: { title: 'Email List Case 2', organizationId: otherOrgId, creatorId: userIdWithPerm }
+      });
+      otherCaseId = c2.id;
+    });
+
+    afterEach(async () => {
+      await prisma.email.deleteMany({
+        where: { caseId: { in: [testCaseId, otherCaseId] } }
+      });
+      await prisma.case.deleteMany({
+        where: { id: { in: [testCaseId, otherCaseId] } }
+      });
+      // also cleanup any other emails
+      await prisma.email.deleteMany({
+        where: { organizationId: { in: [orgId, otherOrgId] } }
+      });
+    });
+
+    it('1, 9, 14. Authenticated valid request returns linked emails', async () => {
+      // Create 2 emails linked to the case
+      await prisma.email.createMany({
+        data: [
+          { organizationId: orgId, caseId: testCaseId, sha256: 'hash1', subject: 'Phishing 1' },
+          { organizationId: orgId, caseId: testCaseId, sha256: 'hash2', subject: 'Phishing 2' },
+          // Unlinked email
+          { organizationId: orgId, sha256: 'hash3', subject: 'Unlinked' },
+          // Email linked to another case
+          { organizationId: orgId, caseId: otherCaseId, sha256: 'hash4', subject: 'Other Case' } // wait, otherCaseId is otherOrgId, so org must match!
+        ]
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+
+      expect(res.statusCode).toBe(200);
+      const json = JSON.parse(res.payload);
+      expect(json.items.length).toBe(2);
+      expect(json.items.map((i: any) => i.subject)).toEqual(expect.arrayContaining(['Phishing 1', 'Phishing 2']));
+
+      // Ensure safe response fields
+      expect(json.items[0]).toHaveProperty('id');
+      expect(json.items[0]).toHaveProperty('subject');
+      expect(json.items[0]).toHaveProperty('date');
+      expect(json.items[0]).toHaveProperty('classification');
+      expect(json.items[0]).toHaveProperty('analysisStatus');
+      expect(json.items[0]).not.toHaveProperty('rawStorageKey'); // Sensitive!
+    });
+
+    it('2. Unauthenticated request -> 401', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('3. Missing CASE_READ -> 403', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithoutPerm}` }
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('4. Malformed caseId -> 400', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/not-a-uuid/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('5. Nonexistent Case -> safe 404', async () => {
+      const fakeId = crypto.randomUUID();
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${fakeId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('6. Foreign Case -> safe 404', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${otherCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('7, 8. Foreign organization/Case emails never appear', async () => {
+      // Create email for other case in other org
+      await prisma.email.create({
+        data: { organizationId: otherOrgId, caseId: otherCaseId, sha256: 'hash5', subject: 'Foreign Email' }
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/emails`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+
+      expect(res.statusCode).toBe(200);
+      const json = JSON.parse(res.payload);
+      expect(json.items.length).toBe(0);
+    });
+
+    it('10, 11, 12. Deterministic ordering, pagination boundaries', async () => {
+      const timeBase = Date.now();
+      await prisma.email.createMany({
+        data: [
+          { organizationId: orgId, caseId: testCaseId, sha256: 'hash6', subject: 'E1', createdAt: new Date(timeBase - 3000) },
+          { organizationId: orgId, caseId: testCaseId, sha256: 'hash7', subject: 'E2', createdAt: new Date(timeBase - 2000) },
+          { organizationId: orgId, caseId: testCaseId, sha256: 'hash8', subject: 'E3', createdAt: new Date(timeBase - 1000) }
+        ]
+      });
+
+      // Fetch with limit 2
+      const res1 = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/emails?limit=2`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res1.statusCode).toBe(200);
+      const json1 = JSON.parse(res1.payload);
+      expect(json1.items.length).toBe(2);
+      expect(json1.nextCursor).toBeDefined();
+
+      // Ensure desc ordering
+      expect(new Date(json1.items[0].createdAt).getTime()).toBeGreaterThan(new Date(json1.items[1].createdAt).getTime());
+      expect(json1.items[0].subject).toBe('E3');
+      expect(json1.items[1].subject).toBe('E2');
+
+      const res2 = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/emails?limit=2&cursor=${json1.nextCursor}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      const json2 = JSON.parse(res2.payload);
+      expect(json2.items.length).toBe(1);
+      expect(json2.items[0].subject).toBe('E1');
+      expect(json2.nextCursor).toBeNull();
+    });
+  });
 });

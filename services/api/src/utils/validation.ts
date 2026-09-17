@@ -89,6 +89,13 @@ export const CaseTimelineQuerySchema = z.object({
 
 export const fastifyCaseTimelineQuerySchema = zodToJsonSchema(CaseTimelineQuerySchema as any);
 
+export const CaseEmailListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().optional(),
+}).strict();
+
+export const fastifyCaseEmailListQuerySchema = zodToJsonSchema(CaseEmailListQuerySchema as any);
+
 export const CaseEmailParamsSchema = z.object({
   caseId: uuidSchema,
   emailId: uuidSchema,
