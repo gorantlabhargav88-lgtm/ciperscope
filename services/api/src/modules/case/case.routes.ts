@@ -74,15 +74,42 @@ export default async function caseRoutes(server: FastifyInstance) {
     const query = request.query as {
       limit: number;
       cursor?: string;
+      q?: string;
       status?: 'OPEN' | 'INVESTIGATING' | 'CONTAINED' | 'RESOLVED' | 'CLOSED';
       priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+      assigneeId?: string;
+      createdFrom?: string;
+      createdTo?: string;
+      sort: 'createdAt' | 'updatedAt' | 'priority' | 'status';
+      direction: 'asc' | 'desc';
     };
+
+    if (query.createdFrom && query.createdTo) {
+      if (new Date(query.createdFrom) > new Date(query.createdTo)) {
+        return reply.status(400).send({ error: 'Bad Request', message: 'createdFrom cannot be after createdTo' });
+      }
+    }
 
     const limit = query.limit;
 
     const where: any = { organizationId };
+
+    if (query.q) {
+      where.OR = [
+        { title: { contains: query.q, mode: 'insensitive' } },
+        { description: { contains: query.q, mode: 'insensitive' } }
+      ];
+    }
+
     if (query.status) where.status = query.status;
     if (query.priority) where.priority = query.priority;
+    if (query.assigneeId) where.assignedUserId = query.assigneeId;
+
+    if (query.createdFrom || query.createdTo) {
+      where.createdAt = {};
+      if (query.createdFrom) where.createdAt.gte = new Date(query.createdFrom);
+      if (query.createdTo) where.createdAt.lte = new Date(query.createdTo);
+    }
 
     let cursorOpt: any = undefined;
     if (query.cursor) {
@@ -90,10 +117,8 @@ export default async function caseRoutes(server: FastifyInstance) {
         const decodedString = Buffer.from(query.cursor, 'base64').toString('utf-8');
         const decoded = JSON.parse(decodedString);
 
-        const cursorSchema = z.tuple([
-          z.string().datetime(),
-          uuidSchema
-        ]);
+        const sortValSchema = (query.sort === 'createdAt' || query.sort === 'updatedAt') ? z.string().datetime() : z.string();
+        const cursorSchema = z.tuple([sortValSchema, uuidSchema]);
 
         const validated = cursorSchema.parse(decoded);
         cursorOpt = { id: validated[1] };
@@ -102,6 +127,11 @@ export default async function caseRoutes(server: FastifyInstance) {
       }
     }
 
+    const orderBy = [
+      { [query.sort]: query.direction },
+      { id: query.direction }
+    ];
+
     let items;
     try {
       items = await prisma.case.findMany({
@@ -109,10 +139,7 @@ export default async function caseRoutes(server: FastifyInstance) {
         take: limit + 1,
         skip: cursorOpt ? 1 : 0,
         cursor: cursorOpt,
-        orderBy: [
-          { createdAt: 'desc' },
-          { id: 'desc' }
-        ],
+        orderBy,
         select: {
           id: true,
           title: true,
@@ -138,9 +165,12 @@ export default async function caseRoutes(server: FastifyInstance) {
 
     let nextCursor: string | null = null;
     if (items.length > limit) {
-      const nextItem = items.pop();
-      if (nextItem) {
-        nextCursor = Buffer.from(JSON.stringify([nextItem.createdAt.toISOString(), nextItem.id])).toString('base64');
+      items.pop(); // remove the n+1 item
+      const lastItem = items[items.length - 1];
+      if (lastItem) {
+        const sortValue = (lastItem as any)[query.sort];
+        const cursorVal = (sortValue instanceof Date) ? sortValue.toISOString() : sortValue;
+        nextCursor = Buffer.from(JSON.stringify([cursorVal, lastItem.id])).toString('base64');
       }
     }
 

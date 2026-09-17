@@ -672,6 +672,106 @@ describe('Case API (Integration) - Real RBAC', () => {
     }
   });
 
+  describe('Advanced Search, Filtering & Sorting', () => {
+    let cases: any[];
+
+    beforeAll(async () => {
+      // Clean up cases in this tenant to avoid interference from other tests
+      await prisma.case.deleteMany({ where: { organizationId: orgId } });
+
+      const now = Date.now();
+      cases = await Promise.all([
+        prisma.case.create({ data: { title: 'Alpha Malware Incident', description: 'Malware found on desktop', priority: 'CRITICAL', status: 'INVESTIGATING', assignedUserId: userIdWithPerm, createdAt: new Date(now - 100000), organizationId: orgId } }),
+        prisma.case.create({ data: { title: 'Beta Phishing Attempt', description: 'Suspicious email received', priority: 'HIGH', status: 'OPEN', assignedUserId: userIdWithoutPerm, createdAt: new Date(now - 80000), organizationId: orgId } }),
+        prisma.case.create({ data: { title: 'Gamma Ransomware', description: 'Systems locked down', priority: 'CRITICAL', status: 'CONTAINED', assignedUserId: userIdWithPerm, createdAt: new Date(now - 60000), organizationId: orgId } }),
+        prisma.case.create({ data: { title: 'Delta Unauthorized Access', description: 'User login from unknown IP', priority: 'MEDIUM', status: 'OPEN', assignedUserId: userIdWithPerm, createdAt: new Date(now - 40000), organizationId: orgId } }),
+        // Case in other tenant to ensure tenant isolation
+        prisma.case.create({ data: { title: 'Alpha Malware Other Org', description: 'Malware found on desktop', priority: 'CRITICAL', status: 'INVESTIGATING', organizationId: otherOrgId } })
+      ]);
+    });
+
+    afterAll(async () => {
+      // We do not delete cases from otherOrgId to preserve isolation tests.
+      // But we will delete the ones we just made to be clean.
+      await prisma.case.deleteMany({ where: { id: { in: cases.map(c => c.id) } } });
+    });
+
+    it('8. search by title', async () => {
+      const res = await realServer.inject({ method: 'GET', url: '/api/v1/cases?q=malware', headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(res.statusCode).toBe(200);
+      const items = res.json().items;
+      expect(items.length).toBe(1);
+      expect(items[0].title).toBe('Alpha Malware Incident');
+    });
+
+    it('9. search by description', async () => {
+      const res = await realServer.inject({ method: 'GET', url: '/api/v1/cases?q=email', headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(res.statusCode).toBe(200);
+      const items = res.json().items;
+      expect(items.length).toBe(1);
+      expect(items[0].title).toBe('Beta Phishing Attempt');
+    });
+
+    it('14. search cannot escape tenant boundary', async () => {
+      const res = await realServer.inject({ method: 'GET', url: '/api/v1/cases?q=malware', headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(res.statusCode).toBe(200);
+      const items = res.json().items;
+      expect(items.length).toBe(1); // Would be 2 if tenant leaked
+    });
+
+    it('20. valid same-tenant assignee filter', async () => {
+      const res = await realServer.inject({ method: 'GET', url: `/api/v1/cases?assigneeId=${userIdWithoutPerm}`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(res.statusCode).toBe(200);
+      const items = res.json().items;
+      expect(items.length).toBe(1);
+      expect(items[0].title).toBe('Beta Phishing Attempt');
+    });
+
+    it('24-26. date range filtering', async () => {
+      const allCasesRes = await realServer.inject({ method: 'GET', url: `/api/v1/cases`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      const allItems = allCasesRes.json().items;
+      const oldest = allItems[allItems.length - 1].createdAt;
+      const newest = allItems[0].createdAt;
+
+      const res = await realServer.inject({ method: 'GET', url: `/api/v1/cases?createdFrom=${oldest}&createdTo=${newest}`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items.length).toBe(4);
+    });
+
+    it('28. createdFrom > createdTo rejected', async () => {
+      const res = await realServer.inject({ method: 'GET', url: `/api/v1/cases?createdFrom=2024-01-02T00:00:00Z&createdTo=2024-01-01T00:00:00Z`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('34. priority sorting', async () => {
+      const res = await realServer.inject({ method: 'GET', url: `/api/v1/cases?sort=priority&direction=asc`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(res.statusCode).toBe(200);
+      const items = res.json().items;
+      expect(items.length).toBe(4);
+    });
+
+    it('43. all supported filters simultaneously', async () => {
+      const res = await realServer.inject({ method: 'GET', url: `/api/v1/cases?q=malware&status=INVESTIGATING&priority=CRITICAL&assigneeId=${userIdWithPerm}&sort=updatedAt&direction=desc`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items.length).toBe(1);
+    });
+
+    it('49. sorting + cursor remains deterministic', async () => {
+      const page1 = await realServer.inject({ method: 'GET', url: `/api/v1/cases?limit=2&sort=priority&direction=desc`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      const nextCursor = page1.json().nextCursor;
+      expect(nextCursor).toBeDefined();
+
+      const page2 = await realServer.inject({ method: 'GET', url: `/api/v1/cases?limit=2&sort=priority&direction=desc&cursor=${nextCursor}`, headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` } });
+      expect(page2.statusCode).toBe(200);
+
+      const allItems = [...page1.json().items, ...page2.json().items];
+      expect(allItems.length).toBe(4);
+
+      const uniqueIds = new Set(allItems.map(i => i.id));
+      expect(uniqueIds.size).toBe(4);
+    });
+  });
+
   describe('PATCH /api/v1/cases/:caseId', () => {
     let testCaseId: string;
 

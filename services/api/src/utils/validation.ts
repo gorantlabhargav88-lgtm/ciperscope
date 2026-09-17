@@ -41,8 +41,14 @@ export const CaseParamsSchema = z.object({
 export const CaseListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().optional(),
+  q: z.string().max(255).optional(),
   status: z.enum(['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']).optional(),
   priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+  assigneeId: uuidSchema.optional(),
+  createdFrom: z.string().datetime().optional(),
+  createdTo: z.string().datetime().optional(),
+  sort: z.enum(['createdAt', 'updatedAt', 'priority', 'status']).default('createdAt'),
+  direction: z.enum(['asc', 'desc']).default('desc'),
 }).strict();
 
 export const fastifyCaseParamsSchema = zodToJsonSchema(CaseParamsSchema as any);
