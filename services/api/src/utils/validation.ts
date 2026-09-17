@@ -139,3 +139,25 @@ export const UpdateCaseNoteBodySchema = z.object({
 }).strict();
 
 export const fastifyUpdateCaseNoteBodySchema = zodToJsonSchema(UpdateCaseNoteBodySchema as any);
+
+export const CreateEvidenceBodySchema = z.object({
+  type: z.enum(['RAW_EMAIL', 'HEADER', 'ATTACHMENT', 'URL', 'IP', 'DOMAIN', 'SCREENSHOT', 'REPORT', 'LOG', 'OTHER']),
+  storageKey: z.string().min(1).refine(val => !val.includes('..') && !val.startsWith('/'), 'Invalid storage path'),
+  filename: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
+  sizeBytes: z.number().int().min(0).optional(),
+  sha256: z.string().length(64).regex(/^[a-f0-9]{64}$/i, 'Must be a 64-character hex string')
+});
+export const fastifyCreateEvidenceBodySchema = zodToJsonSchema(CreateEvidenceBodySchema as any);
+
+export const EvidenceListQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(100).default(20),
+  cursor: z.string().optional()
+});
+export const fastifyEvidenceListQuerySchema = zodToJsonSchema(EvidenceListQuerySchema as any);
+
+export const EvidenceParamsSchema = z.object({
+  caseId: uuidSchema,
+  evidenceId: uuidSchema
+});
+export const fastifyEvidenceParamsSchema = zodToJsonSchema(EvidenceParamsSchema as any);

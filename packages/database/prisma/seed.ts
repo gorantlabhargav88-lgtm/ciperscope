@@ -34,10 +34,17 @@ async function main() {
     create: { action: 'CASE_READ', description: 'Read cases' }
   });
 
+  const caseManageEvidencePermission = await prisma.permission.upsert({
+    where: { action: 'CASE_MANAGE_EVIDENCE' },
+    update: {},
+    create: { action: 'CASE_MANAGE_EVIDENCE', description: 'Manage case evidence' }
+  });
+
   await prisma.rolePermission.createMany({
     data: [
       { roleId: systemAdminRole.id, permissionId: caseCreatePermission.id },
-      { roleId: systemAdminRole.id, permissionId: caseReadPermission.id }
+      { roleId: systemAdminRole.id, permissionId: caseReadPermission.id },
+      { roleId: systemAdminRole.id, permissionId: caseManageEvidencePermission.id }
     ]
   });
 

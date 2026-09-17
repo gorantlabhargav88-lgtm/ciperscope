@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
-import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseHistoryQuerySchema } from '../../utils/validation';
+import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseHistoryQuerySchema, fastifyCreateEvidenceBodySchema, fastifyEvidenceListQuerySchema, fastifyEvidenceParamsSchema } from '../../utils/validation';
 import { z } from 'zod';
 import { logAuditEvent } from '../../utils/audit';
 
@@ -1257,6 +1257,238 @@ export default async function caseRoutes(server: FastifyInstance) {
       }
       if (err.code === 'P2025') {
         return reply.status(400).send({ error: 'Bad Request', message: 'Invalid cursor: record not found or inaccessible' });
+      }
+      throw err;
+    }
+  });
+
+  // ==========================================================================
+  // CASE EVIDENCE
+  // ==========================================================================
+
+  server.post('/:caseId/evidence', {
+    schema: { params: fastifyCaseParamsSchema, body: fastifyCreateEvidenceBodySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_MANAGE_EVIDENCE')]
+  }, async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+    const body = request.body as any; // Verified by fastifyCreateEvidenceBodySchema
+
+    try {
+      const evidence = await prisma.$transaction(async (tx) => {
+        const c = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } }
+        });
+        if (!c) throw new Error('CASE_NOT_FOUND');
+
+        const e = await tx.evidence.create({
+          data: {
+            caseId,
+            type: body.type,
+            storageKey: body.storageKey,
+            filename: body.filename || null,
+            mimeType: body.mimeType || null,
+            sizeBytes: body.sizeBytes || null,
+            sha256: body.sha256,
+            status: 'ACTIVE',
+            collectionTime: body.collectionTime ? new Date(body.collectionTime) : new Date(),
+            collectedById: body.collectedById || null,
+            custodyEvents: {
+              create: {
+                action: 'UPLOADED',
+                actorId: request.user?.sub
+              }
+            }
+          }
+        });
+        return e;
+      });
+
+      await logAuditEvent({
+        action: 'CASE_EVIDENCE_ADDED',
+        resource: 'Evidence',
+        resourceId: evidence.id,
+        actorId: request.user?.sub,
+        organizationId,
+        status: 'SUCCESS',
+        metadata: { caseId, sha256: evidence.sha256 },
+        req: request
+      });
+
+      return reply.status(201).send(evidence);
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+      if (err.code === 'P2002' && err.meta?.target?.includes('sha256')) {
+         // Evidence with this SHA-256 already exists in the system (unique constraint)
+         return reply.status(409).send({ error: 'Conflict', message: 'Evidence with this SHA-256 already exists' });
+      }
+      throw err;
+    }
+  });
+
+  server.get('/:caseId/evidence', {
+    schema: { params: fastifyCaseParamsSchema, querystring: fastifyEvidenceListQuerySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const query = request.query as any;
+    const organizationId = request.headers['x-organization-id'] as string;
+    const limit = parseInt(query.limit) || 20;
+
+    let cursorOpt = undefined;
+    if (query.cursor) {
+      try {
+        const decoded = JSON.parse(Buffer.from(query.cursor, 'base64').toString('utf-8'));
+        if (!Array.isArray(decoded) || decoded.length !== 2) throw new Error();
+        cursorOpt = { id: decoded[1] };
+      } catch (err) {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Invalid cursor format' });
+      }
+    }
+
+    try {
+      const items = await prisma.$transaction(async (tx) => {
+        const c = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } },
+          select: { id: true }
+        });
+        if (!c) throw new Error('CASE_NOT_FOUND');
+
+        const items = await tx.evidence.findMany({
+          where: { caseId, status: { not: 'DELETED' } },
+          take: limit + 1,
+          skip: cursorOpt ? 1 : 0,
+          cursor: cursorOpt,
+          orderBy: [
+            { collectionTime: 'desc' },
+            { id: 'desc' }
+          ]
+        });
+        return items;
+      });
+
+      let nextCursorValue: string | null = null;
+      if (items.length > limit) {
+        items.pop();
+        const lastItem = items[items.length - 1];
+        if (lastItem) {
+          nextCursorValue = Buffer.from(JSON.stringify([lastItem.collectionTime.toISOString(), lastItem.id])).toString('base64');
+        }
+      }
+
+      await logAuditEvent({
+        action: 'CASE_EVIDENCE_VIEWED',
+        resource: 'Case',
+        resourceId: caseId,
+        actorId: request.user?.sub,
+        organizationId,
+        status: 'SUCCESS',
+        metadata: { list: true },
+        req: request
+      });
+
+      return reply.status(200).send({ items, nextCursor: nextCursorValue });
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+      if (err.code === 'P2025') {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Invalid cursor: record not found or inaccessible' });
+      }
+      throw err;
+    }
+  });
+
+  server.get('/:caseId/evidence/:evidenceId', {
+    schema: { params: fastifyEvidenceParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const { caseId, evidenceId } = request.params as { caseId: string, evidenceId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+
+    try {
+      const evidence = await prisma.$transaction(async (tx) => {
+        const c = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } },
+          select: { id: true }
+        });
+        if (!c) throw new Error('CASE_NOT_FOUND');
+
+        const e = await tx.evidence.findUnique({
+          where: { id: evidenceId }
+        });
+        if (!e || e.caseId !== caseId || e.status === 'DELETED') {
+          throw new Error('EVIDENCE_NOT_FOUND');
+        }
+        return e;
+      });
+
+      await logAuditEvent({
+        action: 'CASE_EVIDENCE_VIEWED',
+        resource: 'Evidence',
+        resourceId: evidence.id,
+        actorId: request.user?.sub,
+        organizationId,
+        status: 'SUCCESS',
+        metadata: { caseId },
+        req: request
+      });
+
+      return reply.status(200).send(evidence);
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND' || err.message === 'EVIDENCE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case or Evidence not found' });
+      }
+      throw err;
+    }
+  });
+
+  server.delete('/:caseId/evidence/:evidenceId', {
+    schema: { params: fastifyEvidenceParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_MANAGE_EVIDENCE')]
+  }, async (request, reply) => {
+    const { caseId, evidenceId } = request.params as { caseId: string, evidenceId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        const c = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } },
+          select: { id: true }
+        });
+        if (!c) throw new Error('CASE_NOT_FOUND');
+
+        const e = await tx.evidence.findUnique({
+          where: { id: evidenceId }
+        });
+        if (!e || e.caseId !== caseId || e.status === 'DELETED') {
+          throw new Error('EVIDENCE_NOT_FOUND');
+        }
+
+        // Soft delete the evidence (hard delete is restricted by custodyEvents)
+        await tx.evidence.update({
+          where: { id: evidenceId },
+          data: { status: 'DELETED' }
+        });
+      });
+
+      await logAuditEvent({
+        action: 'CASE_EVIDENCE_DELETED',
+        resource: 'Evidence',
+        resourceId: evidenceId,
+        actorId: request.user?.sub,
+        organizationId,
+        status: 'SUCCESS',
+        metadata: { caseId },
+        req: request
+      });
+
+      return reply.status(204).send();
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND' || err.message === 'EVIDENCE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case or Evidence not found' });
       }
       throw err;
     }

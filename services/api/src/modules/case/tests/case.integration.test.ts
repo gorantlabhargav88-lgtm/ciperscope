@@ -316,6 +316,12 @@ describe('Case API (Integration) - Real RBAC', () => {
       create: { action: 'CASE_LINK_EMAIL', description: 'Link emails to cases' }
     });
 
+    const caseManageEvidencePerm = await prisma.permission.upsert({
+      where: { action: 'CASE_MANAGE_EVIDENCE' },
+      update: {},
+      create: { action: 'CASE_MANAGE_EVIDENCE', description: 'Manage evidence' }
+    });
+
     const caseAddNotePerm = await prisma.permission.upsert({
       where: { action: 'CASE_ADD_NOTE' },
       update: {},
@@ -329,7 +335,8 @@ describe('Case API (Integration) - Real RBAC', () => {
         { roleId: roleWithPerm.id, permissionId: caseUpdatePerm.id },
         { roleId: roleWithPerm.id, permissionId: caseAssignPerm.id },
         { roleId: roleWithPerm.id, permissionId: caseLinkEmailPerm.id },
-        { roleId: roleWithPerm.id, permissionId: caseAddNotePerm.id }
+        { roleId: roleWithPerm.id, permissionId: caseAddNotePerm.id },
+        { roleId: roleWithPerm.id, permissionId: caseManageEvidencePerm.id }
       ]
     });
 
@@ -3138,6 +3145,134 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect(json2.items.length).toBe(1);
       expect(json2.items[0].subject).toBe('E1');
       expect(json2.nextCursor).toBeNull();
+    });
+  });
+
+  describe('Evidence API', () => {
+    let testCaseId: string;
+    let otherCaseId: string;
+
+    beforeEach(async () => {
+      const c = await prisma.case.create({ data: { title: 'Evidence Test', organizationId: orgId, creatorId: userIdWithPerm } });
+      testCaseId = c.id;
+      const oc = await prisma.case.create({ data: { title: 'Other Evidence', organizationId: otherOrgId } });
+      otherCaseId = oc.id;
+    });
+
+    afterEach(async () => {
+      await prisma.chainOfCustodyEvent.deleteMany({
+        where: { evidence: { caseId: { in: [testCaseId, otherCaseId] } } }
+      });
+      await prisma.evidence.deleteMany({
+        where: { caseId: { in: [testCaseId, otherCaseId] } }
+      });
+      await prisma.case.deleteMany({
+        where: { id: { in: [testCaseId, otherCaseId] } }
+      });
+    });
+
+    it('1. POST /api/v1/cases/:caseId/evidence creates evidence and audit log', async () => {
+      const payload = {
+        type: 'LOG',
+        storageKey: 's3://bucket/test.log',
+        filename: 'test.log',
+        mimeType: 'text/plain',
+        sizeBytes: 1024,
+        sha256: 'a'.repeat(64)
+      };
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/evidence`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload
+      });
+
+      expect(res.statusCode).toBe(201);
+      const data = JSON.parse(res.payload);
+      expect(data.type).toBe('LOG');
+      expect(data.storageKey).toBe('s3://bucket/test.log');
+      expect(data.sha256).toBe(payload.sha256);
+      expect(data.status).toBe('ACTIVE');
+
+      // Verify custody event
+      const custody = await prisma.chainOfCustodyEvent.findFirst({ where: { evidenceId: data.id } });
+      expect(custody).toBeDefined();
+      expect(custody?.action).toBe('UPLOADED');
+      expect(custody?.actorId).toBe(userIdWithPerm);
+
+      // Verify audit
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: 'CASE_EVIDENCE_ADDED', resourceId: data.id, organizationId: orgId },
+        orderBy: { createdAt: 'desc' }
+      });
+      expect(audit).toBeDefined();
+    });
+
+    it('2. Tenant isolation on POST evidence', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${otherCaseId}/evidence`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { type: 'LOG', storageKey: 's3', sha256: 'a'.repeat(64) }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('3. Unique SHA256 constraint', async () => {
+      await prisma.evidence.create({
+        data: { caseId: testCaseId, type: 'LOG', storageKey: 'key', sha256: 'b'.repeat(64), status: 'ACTIVE' }
+      });
+
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/evidence`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { type: 'LOG', storageKey: 's3', sha256: 'b'.repeat(64) }
+      });
+      expect(res.statusCode).toBe(409);
+    });
+
+    it('4. GET /evidence lists active evidence only', async () => {
+      await prisma.evidence.createMany({
+        data: [
+          { caseId: testCaseId, type: 'LOG', storageKey: '1', sha256: 'c'.repeat(64), status: 'ACTIVE', collectionTime: new Date(Date.now() - 1000) },
+          { caseId: testCaseId, type: 'LOG', storageKey: '2', sha256: 'd'.repeat(64), status: 'DELETED', collectionTime: new Date(Date.now() - 500) }
+        ]
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/evidence`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.payload);
+      expect(data.items.length).toBe(1);
+      expect(data.items[0].sha256).toBe('c'.repeat(64));
+    });
+
+    it('5. DELETE /evidence soft-deletes and prevents duplicate deletions', async () => {
+      const e = await prisma.evidence.create({
+        data: { caseId: testCaseId, type: 'LOG', storageKey: '1', sha256: 'e'.repeat(64), status: 'ACTIVE' }
+      });
+
+      const res1 = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/evidence/${e.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res1.statusCode).toBe(204);
+
+      const res2 = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/evidence/${e.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res2.statusCode).toBe(404);
+
+      const verify = await prisma.evidence.findUnique({ where: { id: e.id } });
+      expect(verify?.status).toBe('DELETED');
     });
   });
 });
