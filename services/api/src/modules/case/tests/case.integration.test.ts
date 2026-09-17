@@ -2897,6 +2897,62 @@ describe('Case API (Integration) - Real RBAC', () => {
     });
   });
 
+  describe('GET /api/v1/cases/:caseId/assignment-history', () => {
+    let testCaseId: string;
+
+    beforeEach(async () => {
+      const c = await prisma.case.create({
+        data: {
+          title: 'History Test Case',
+          organizationId: orgId,
+          creatorId: userIdWithPerm
+        }
+      });
+      testCaseId = c.id;
+
+      // Seed 3 assignments
+      await prisma.auditLog.createMany({
+        data: [
+          { action: 'CASE_ASSIGNED', resource: 'Case', resourceId: testCaseId, organizationId: orgId, actorId: userIdWithPerm, metadata: { assignedUserId: userIdWithPerm }, createdAt: new Date(Date.now() - 3000) },
+          { action: 'CASE_ASSIGNED', resource: 'Case', resourceId: testCaseId, organizationId: orgId, actorId: userIdWithPerm, metadata: { assignedUserId: null }, createdAt: new Date(Date.now() - 2000) },
+          { action: 'CASE_ASSIGNED', resource: 'Case', resourceId: testCaseId, organizationId: orgId, actorId: userIdWithPerm, metadata: { assignedUserId: userIdWithPerm }, createdAt: new Date(Date.now() - 1000) },
+        ]
+      });
+    });
+
+    it('1. Returns assignment history for authorized user', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/assignment-history`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.payload);
+      expect(data.items.length).toBe(3);
+      expect(data.items[0].metadata.assignedUserId).toBe(userIdWithPerm);
+      expect(data.items[1].metadata.assignedUserId).toBe(null);
+    });
+
+    it('2. Tenant isolation', async () => {
+      const otherCase = await prisma.case.create({ data: { title: 'Other', organizationId: otherOrgId } });
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${otherCase.id}/assignment-history`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('3. Requires authentication', async () => {
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/assignment-history`,
+        headers: { 'x-organization-id': orgId }
+      });
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
   describe('GET /api/v1/cases/:caseId/emails', () => {
     let testCaseId: string;
     let otherCaseId: string;
