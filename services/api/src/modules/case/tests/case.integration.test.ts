@@ -2934,6 +2934,14 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect(data.items[1].action).toBe('CASE_ASSIGNED'); // -2000
       expect(data.items[2].action).toBe('CASE_UPDATED'); // -2500
       expect(data.items[3].action).toBe('CASE_ASSIGNED'); // -3000
+
+      // Verify enrichment
+      expect(data.items[0].actor).toBeDefined();
+      expect(data.items[0].actor.id).toBe(userIdWithPerm);
+      expect(data.items[0].assignedUser).toBeDefined();
+      expect(data.items[0].assignedUser.id).toBe(userIdWithPerm);
+
+      expect(data.items[1].assignedUser).toBeNull(); // assignedUserId was null
     });
 
     it('1.1. Filters history by action', async () => {

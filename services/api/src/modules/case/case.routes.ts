@@ -520,7 +520,58 @@ export default async function caseRoutes(server: FastifyInstance) {
           }
         }
 
-        return { items: logs, nextCursor: nextCursorValue };
+        // 3. Batched Actor / Assignee Enrichment (Tenant Scoped)
+        const uniqueUserIds = new Set<string>();
+        for (const log of logs) {
+          if (log.actorId) {
+            uniqueUserIds.add(log.actorId);
+          }
+          if (log.action === 'CASE_ASSIGNED' && log.metadata && typeof log.metadata === 'object' && 'assignedUserId' in log.metadata) {
+            const assignedUserId = (log.metadata as any).assignedUserId;
+            if (assignedUserId) {
+              uniqueUserIds.add(assignedUserId);
+            }
+          }
+        }
+
+        const userMap = new Map<string, any>();
+        if (uniqueUserIds.size > 0) {
+          const users = await tx.user.findMany({
+            where: {
+              id: { in: Array.from(uniqueUserIds) },
+              memberships: {
+                some: { organizationId }
+              }
+            },
+            select: {
+              id: true,
+              email: true,
+              firstName: true,
+              lastName: true
+            }
+          });
+          for (const u of users) {
+            userMap.set(u.id, u);
+          }
+        }
+
+        const enrichedLogs = logs.map(log => {
+          const result: any = { ...log };
+          if (log.actorId) {
+            result.actor = userMap.get(log.actorId) || null;
+          }
+          if (log.action === 'CASE_ASSIGNED' && log.metadata && typeof log.metadata === 'object' && 'assignedUserId' in log.metadata) {
+            const assignedUserId = (log.metadata as any).assignedUserId;
+            if (assignedUserId) {
+              result.assignedUser = userMap.get(assignedUserId) || null;
+            } else {
+              result.assignedUser = null;
+            }
+          }
+          return result;
+        });
+
+        return { items: enrichedLogs, nextCursor: nextCursorValue };
       });
 
       // Audit the history access
