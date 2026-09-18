@@ -3678,5 +3678,36 @@ describe('Investigation API (Integration)', () => {
     });
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
+
+  it('GET /api/v1/cases/:caseId/investigations/:investigationId/intelligence should return deterministic intelligence layer', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}/intelligence`,
+      headers: { 'x-organization-id': testOrgId }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+
+    // Check Intelligence structure
+    expect(body.investigation).toBeDefined();
+    expect(body.investigation.id).toBe(testInvestigationId);
+
+    expect(body.riskSummary).toBeDefined();
+    expect(body.riskSummary.entityCounts).toBeDefined();
+    expect(typeof body.riskSummary.maximumRiskScore).toBe('number');
+
+    expect(body.correlations).toBeInstanceOf(Array);
+    expect(body.attentionIndicators).toBeInstanceOf(Array);
+  });
+
+  it('GET intelligence should enforce tenant isolation for cross-tenant case', async () => {
+    const otherOrgId = crypto.randomUUID();
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}/intelligence`,
+      headers: { 'x-organization-id': otherOrgId }
+    });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+  });
 });
 

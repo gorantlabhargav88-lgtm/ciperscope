@@ -1560,7 +1560,7 @@ export default async function caseRoutes(server: FastifyInstance) {
           },
           include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } }
         });
-        
+
         const userMap = new Map(orgMembers.map(m => [m.userId, {
           id: m.user.id,
           email: m.user.email,
@@ -1686,7 +1686,7 @@ export default async function caseRoutes(server: FastifyInstance) {
         try {
           const decodedString = Buffer.from(query.cursor, 'base64').toString('utf-8');
           const decoded = JSON.parse(decodedString);
-          
+
           const cursorSchema = z.tuple([z.string().datetime(), uuidSchema]);
           const validated = cursorSchema.parse(decoded);
           cursorOpt = { id: validated[1] };
@@ -2187,6 +2187,204 @@ export default async function caseRoutes(server: FastifyInstance) {
       if (err.message === 'CASE_NOT_FOUND' || err.message === 'INVESTIGATION_NOT_FOUND') {
         return reply.status(404).send({ error: 'Not Found', message: 'Case or Investigation not found' });
       }
+      throw err;
+    }
+  });
+
+  // ============================================================================
+  // INTELLIGENCE
+  // ============================================================================
+
+  server.get('/:caseId/investigations/:investigationId/intelligence', {
+    schema: { params: fastifyInvestigationParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+    const { caseId, investigationId } = request.params as { caseId: string; investigationId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      // 1. Verify access
+      const caseRecord = await prisma.case.findUnique({
+        where: { id_organizationId: { id: caseId, organizationId } }
+      });
+      if (!caseRecord) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+
+      const investigation = await prisma.investigation.findUnique({
+        where: { id: investigationId }
+      });
+      if (!investigation || investigation.caseId !== caseId) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Investigation not found' });
+      }
+
+      // 2. Fetch data (bounded limits)
+      const [emails, evidence, alerts, reports] = await Promise.all([
+        prisma.email.findMany({
+          where: { caseId },
+          select: { id: true, senderAddress: true, riskScore: true, classification: true, sha256: true },
+          take: 500
+        }),
+        prisma.evidence.findMany({
+          where: { caseId },
+          select: { id: true, filename: true, sha256: true, type: true },
+          take: 500
+        }),
+        prisma.alert.findMany({
+          where: { caseId },
+          select: { id: true, severity: true, isRead: true, title: true },
+          take: 500
+        }),
+        prisma.report.findMany({
+          where: { caseId },
+          select: { id: true, title: true },
+          take: 500
+        })
+      ]);
+
+      // 3. Risk Aggregation
+      let maximumRiskScore = 0;
+      let totalRiskScore = 0;
+      let riskScoredEmails = 0;
+      let highRiskCount = 0;
+      const severityDistribution: Record<string, number> = {};
+      const classificationDistribution: Record<string, number> = {};
+
+      for (const email of emails) {
+        if (email.classification) {
+          classificationDistribution[email.classification] = (classificationDistribution[email.classification] || 0) + 1;
+          if (['PHISHING', 'MALWARE', 'BEC', 'FRAUD'].includes(email.classification)) highRiskCount++;
+        }
+        if (email.riskScore !== null && email.riskScore !== undefined) {
+          maximumRiskScore = Math.max(maximumRiskScore, email.riskScore);
+          totalRiskScore += email.riskScore;
+          riskScoredEmails++;
+          if (email.riskScore >= 0.8) highRiskCount++;
+        }
+      }
+
+      for (const alert of alerts) {
+        if (alert.severity) {
+          severityDistribution[alert.severity] = (severityDistribution[alert.severity] || 0) + 1;
+          if (alert.severity === 'CRITICAL' || alert.severity === 'HIGH') highRiskCount++;
+        }
+      }
+
+      const averageRiskScore = riskScoredEmails > 0 ? totalRiskScore / riskScoredEmails : 0;
+      const riskSummary = {
+        maximumRiskScore,
+        averageRiskScore,
+        highRiskCount,
+        severityDistribution,
+        classificationDistribution,
+        entityCounts: {
+          emails: emails.length,
+          evidence: evidence.length,
+          alerts: alerts.length,
+          reports: reports.length
+        }
+      };
+
+      // 4. Correlations
+      const correlations: any[] = [];
+      const evidenceHashIndex = new Map<string, typeof evidence[0]>();
+      evidence.forEach(ev => {
+        if (ev.sha256) evidenceHashIndex.set(ev.sha256, ev);
+      });
+
+      const senderIndex = new Map<string, string[]>();
+
+      emails.forEach(email => {
+        // Correlate Email <-> Evidence via SHA256
+        if (email.sha256 && evidenceHashIndex.has(email.sha256)) {
+          const ev = evidenceHashIndex.get(email.sha256)!;
+          correlations.push({
+            type: 'EMAIL_EVIDENCE_HASH_MATCH',
+            sourceId: email.id,
+            targetId: ev.id,
+            confidence: 1.0,
+            reasons: ['Exact SHA256 match between email and evidence item']
+          });
+        }
+
+        // Prepare Sender clustering
+        if (email.senderAddress) {
+          const arr = senderIndex.get(email.senderAddress) || [];
+          arr.push(email.id);
+          senderIndex.set(email.senderAddress, arr);
+        }
+      });
+
+      for (const [sender, emailIds] of senderIndex.entries()) {
+        if (emailIds.length > 1) {
+          for (let i = 0; i < emailIds.length; i++) {
+            for (let j = i + 1; j < emailIds.length; j++) {
+              correlations.push({
+                type: 'SHARED_SENDER',
+                sourceId: emailIds[i],
+                targetId: emailIds[j],
+                confidence: 0.9,
+                reasons: [`Emails share the exact sender address: ${sender}`]
+              });
+            }
+          }
+        }
+      }
+
+      // Sort and bound correlations
+      correlations.sort((a, b) => b.confidence - a.confidence);
+      const boundedCorrelations = correlations.slice(0, 100);
+
+      // 5. Attention Indicators
+      const attentionIndicators: any[] = [];
+      const unreadCriticalAlerts = alerts.filter(a => (a.severity === 'CRITICAL' || a.severity === 'HIGH') && !a.isRead);
+      if (unreadCriticalAlerts.length > 0) {
+        attentionIndicators.push({
+          type: 'UNRESOLVED_CRITICAL_ALERTS',
+          severity: 'CRITICAL',
+          message: `There are ${unreadCriticalAlerts.length} unread critical/high alerts for this case.`,
+          relatedIds: unreadCriticalAlerts.map(a => a.id)
+        });
+      }
+
+      if (highRiskCount > 0) {
+        attentionIndicators.push({
+          type: 'HIGH_RISK_ENTITIES_PRESENT',
+          severity: 'HIGH',
+          message: `Case contains ${highRiskCount} high-risk entities (High Risk Emails or Critical/High alerts).`
+        });
+      }
+
+      if (boundedCorrelations.length > 0) {
+        attentionIndicators.push({
+          type: 'CORRELATIONS_FOUND',
+          severity: 'INFO',
+          message: `Found ${correlations.length} deterministic cross-entity correlations.`
+        });
+      }
+
+      await logAuditEvent({
+        action: 'CASE_INVESTIGATION_INTELLIGENCE_VIEWED',
+        resource: 'InvestigationIntelligence',
+        resourceId: investigationId,
+        actorId: userId,
+        status: 'SUCCESS',
+        metadata: { caseId },
+        req: request
+      });
+
+      return reply.status(200).send({
+        investigation,
+        riskSummary,
+        correlations: boundedCorrelations,
+        attentionIndicators
+      });
+    } catch (err) {
       throw err;
     }
   });
