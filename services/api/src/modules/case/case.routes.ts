@@ -3,7 +3,7 @@ import { prisma } from '@ciperscope/database';
 import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseHistoryQuerySchema, fastifyCreateEvidenceBodySchema, fastifyEvidenceListQuerySchema, fastifyEvidenceParamsSchema, fastifyCustodyListQuerySchema, fastifyCreateReportBodySchema, fastifyReportListQuerySchema, fastifyReportParamsSchema, fastifyAlertListQuerySchema, fastifyAlertParamsSchema, fastifyUpdateAlertBodySchema, fastifyInvestigationListQuerySchema, fastifyInvestigationParamsSchema, fastifyCreateInvestigationBodySchema, fastifyUpdateInvestigationBodySchema } from '../../utils/validation';
 import { z } from 'zod';
 import { AuditAction, logAuditEvent } from '../../utils/audit';
-import { ctiProvider } from '../../utils/cti';
+import { ctiProvider } from '@ciperscope/providers';
 
 export default async function caseRoutes(server: FastifyInstance) {
   server.post('/', {

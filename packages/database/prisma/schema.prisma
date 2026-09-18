@@ -387,8 +387,6 @@ model Email {
   dnsObservations   DnsObservation[]
   inferences        MLInference[]
   riskAssessments   RiskAssessment[]
-  threatIndicators  ThreatIndicator[]
-  geolocationInfo   GeolocationInfo[]
   campaigns         CampaignEmail[]
 
   @@unique([organizationId, sha256])
@@ -898,38 +896,4 @@ model IdempotencyOperation {
 
   @@unique([organizationId, operationKey, resourceId])
   @@index([organizationId, operationKey])
-}
-
-// ============================================================================
-// PHASE 14.1 ENRICHMENT
-// ============================================================================
-
-model ThreatIndicator {
-  id         String        @id @default(uuid())
-  emailId    String
-  iocType    IndicatorType
-  iocValue   String        @db.Text
-  provider   String
-  status     ThreatVerdict
-  confidence Int?
-  metadata   Json?
-
-  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
-
-  @@unique([emailId, iocValue, provider])
-  @@index([emailId])
-}
-
-model GeolocationInfo {
-  id        String  @id @default(uuid())
-  emailId   String
-  ipAddress String
-  country   String?
-  city      String?
-  asn       String?
-  isp       String?
-
-  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
-
-  @@unique([emailId, ipAddress])
 }

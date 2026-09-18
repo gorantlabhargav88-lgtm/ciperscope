@@ -1,7 +1,6 @@
 import { CTIEnrichmentJob, validateCTIJob } from '@ciperscope/queue/src/cti-job';
 import { PrismaClient } from '@ciperscope/database';
-// @ts-ignore - Assuming the path or alias is available
-import { ctiProvider } from '../../../api/src/utils/cti';
+import { ctiProvider } from '@ciperscope/providers';
 import { createLogger } from '@ciperscope/logger';
 
 const logger = createLogger('cti-worker');

@@ -60,30 +60,56 @@ describe('Email Forensics API (Integration)', () => {
     });
     otherEmailId = otherEmail.id;
 
-    // Seed Threat Indicator
-    await prisma.threatIndicator.create({
+    // Seed Indicator and ThreatIntelObservation
+    const randomDomain = `malicious-${crypto.randomUUID()}.com`;
+    const randomIp = `1.2.3.${Math.floor(Math.random() * 255)}`;
+    const indicator = await prisma.indicator.create({
+      data: {
+        type: 'DOMAIN',
+        value: randomDomain
+      }
+    });
+
+    await prisma.threatIntelObservation.create({
+      data: {
+        indicatorId: indicator.id,
+        provider: 'TestProvider',
+        verdict: 'MALICIOUS',
+        confidence: 90,
+        rawResponse: { secret: 'do-not-expose' }
+      }
+    });
+
+    // Link indicator to email via Url
+    await prisma.emailUrl.create({
       data: {
         emailId: testEmailId,
-        iocType: 'DOMAIN',
-        iocValue: 'malicious.com',
-        provider: 'TestProvider',
-        status: 'MALICIOUS',
-        confidence: 90,
-        metadata: { secret: 'do-not-expose' }
+        url: `http://${randomDomain}`
       }
     });
 
     // Seed Geolocation
-    await prisma.geolocationInfo.create({
+    await prisma.geoLocation.create({
       data: {
-        emailId: testEmailId,
-        ipAddress: '1.2.3.4',
+        ipAddress: randomIp,
         country: 'US',
         city: 'Seattle',
         asn: 'AS1234',
         isp: 'Test ISP'
       }
     });
+
+    // Link IP to email via RelayHop
+    await prisma.relayHop.create({
+      data: {
+        emailId: testEmailId,
+        hopOrder: 0,
+        sourceIp: randomIp,
+        receivedHeader: 'from [1.2.3.4]'
+      }
+    });
+
+    server.decorate('testData', { randomDomain, randomIp });
 
     await server.ready();
   });
@@ -111,13 +137,15 @@ describe('Email Forensics API (Integration)', () => {
     expect(json.threatIndicators).toHaveLength(1);
 
     const indicator = json.threatIndicators[0];
+    const { randomDomain } = (server as any).testData;
     expect(indicator.iocType).toBe('DOMAIN');
-    expect(indicator.iocValue).toBe('malicious.com');
+    expect(indicator.iocValue).toBe(randomDomain);
     expect(indicator.provider).toBe('TestProvider');
     expect(indicator.status).toBe('MALICIOUS');
     expect(indicator.confidence).toBe(90);
     // Ensure metadata is NOT exposed
     expect(indicator.metadata).toBeUndefined();
+    expect(indicator.rawResponse).toBeUndefined();
   });
 
   it('should return empty ThreatIndicator array for email with no records', async () => {
@@ -194,7 +222,8 @@ describe('Email Forensics API (Integration)', () => {
     expect(json.geolocation).toHaveLength(1);
 
     const geo = json.geolocation[0];
-    expect(geo.ipAddress).toBe('1.2.3.4');
+    const { randomIp } = (server as any).testData;
+    expect(geo.ipAddress).toBe(randomIp);
     expect(geo.country).toBe('US');
     expect(geo.city).toBe('Seattle');
     expect(geo.asn).toBe('AS1234');

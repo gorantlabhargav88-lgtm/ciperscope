@@ -4,12 +4,6 @@ export interface AIProvider {
   generateSummary(text: string): Promise<string>;
 }
 
-// Threat Intelligence Provider
-export interface ThreatIntelligenceProvider {
-  analyzeIP(ip: string): Promise<any>;
-  analyzeDomain(domain: string): Promise<any>;
-  analyzeHash(hash: string): Promise<any>;
-}
 
 // Geolocation Provider
 export interface GeolocationProvider {
@@ -35,3 +29,5 @@ export interface NotificationProvider {
 export interface EmailPipelineProvider {
   processIncomingEmail(rawEmail: string): Promise<any>;
 }
+
+export * from './cti';

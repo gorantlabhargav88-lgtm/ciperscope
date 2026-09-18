@@ -566,22 +566,50 @@ export default async function emailRoutes(server: FastifyInstance) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
 
-    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    const email = await prisma.email.findUnique({
+      where: { id: emailId, organizationId },
+      include: {
+        urls: true,
+        attachments: true,
+        relayHops: true
+      }
+    });
+
     if (!email) {
       return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
     }
 
-    const indicators = await prisma.threatIndicator.findMany({
-      where: { emailId },
-      select: {
-        id: true,
-        iocType: true,
-        iocValue: true,
-        provider: true,
-        status: true,
-        confidence: true
+    const possibleIocs = [
+      ...email.urls.map(u => {
+        try {
+          return new URL(u.url).hostname;
+        } catch {
+          return u.url;
+        }
+      }),
+      ...email.attachments.map(a => a.sha256).filter(Boolean),
+      ...email.relayHops.map(h => h.sourceIp).filter(Boolean)
+    ] as string[];
+
+    const observations = await prisma.threatIntelObservation.findMany({
+      where: {
+        indicator: {
+          value: { in: possibleIocs }
+        }
+      },
+      include: {
+        indicator: true
       }
     });
+
+    const indicators = observations.map(obs => ({
+      id: obs.id,
+      iocType: obs.indicator.type,
+      iocValue: obs.indicator.value,
+      provider: obs.provider,
+      status: obs.verdict,
+      confidence: obs.confidence
+    }));
 
     await logAuditEvent({
       action: 'EMAIL_THREAT_INDICATORS_VIEWED',
@@ -605,13 +633,23 @@ export default async function emailRoutes(server: FastifyInstance) {
       return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
     }
 
-    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    const email = await prisma.email.findUnique({
+      where: { id: emailId, organizationId },
+      include: {
+        relayHops: true
+      }
+    });
+    
     if (!email) {
       return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
     }
 
-    const geolocation = await prisma.geolocationInfo.findMany({
-      where: { emailId },
+    const ips = email.relayHops.map(h => h.sourceIp).filter(Boolean) as string[];
+
+    const geolocation = await prisma.geoLocation.findMany({
+      where: {
+        ipAddress: { in: ips }
+      },
       select: {
         id: true,
         ipAddress: true,

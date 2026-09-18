@@ -8,7 +8,9 @@
     "dev": "tsc -w",
     "clean": "rm -rf dist"
   },
-  "dependencies": {},
+  "dependencies": {
+    "ioredis": "^6.0.0"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.0.0"
