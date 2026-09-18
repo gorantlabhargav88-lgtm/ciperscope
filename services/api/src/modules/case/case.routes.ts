@@ -2,7 +2,8 @@ import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
 import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseHistoryQuerySchema, fastifyCreateEvidenceBodySchema, fastifyEvidenceListQuerySchema, fastifyEvidenceParamsSchema, fastifyCustodyListQuerySchema, fastifyCreateReportBodySchema, fastifyReportListQuerySchema, fastifyReportParamsSchema, fastifyAlertListQuerySchema, fastifyAlertParamsSchema, fastifyUpdateAlertBodySchema, fastifyInvestigationListQuerySchema, fastifyInvestigationParamsSchema, fastifyCreateInvestigationBodySchema, fastifyUpdateInvestigationBodySchema } from '../../utils/validation';
 import { z } from 'zod';
-import { logAuditEvent } from '../../utils/audit';
+import { AuditAction, logAuditEvent } from '../../utils/audit';
+import { ctiProvider } from '../../utils/cti';
 
 export default async function caseRoutes(server: FastifyInstance) {
   server.post('/', {
@@ -2290,7 +2291,7 @@ export default async function caseRoutes(server: FastifyInstance) {
         }
       };
 
-      // 4. Correlations
+      // 4. Correlations & CTI
       const correlations: any[] = [];
       const evidenceHashIndex = new Map<string, typeof evidence[0]>();
       evidence.forEach(ev => {
@@ -2298,18 +2299,26 @@ export default async function caseRoutes(server: FastifyInstance) {
       });
 
       const senderIndex = new Map<string, string[]>();
+      const uniqueHashes = new Set<string>();
 
       emails.forEach(email => {
         // Correlate Email <-> Evidence via SHA256
-        if (email.sha256 && evidenceHashIndex.has(email.sha256)) {
-          const ev = evidenceHashIndex.get(email.sha256)!;
-          correlations.push({
-            type: 'EMAIL_EVIDENCE_HASH_MATCH',
-            sourceId: email.id,
-            targetId: ev.id,
-            confidence: 1.0,
-            reasons: ['Exact SHA256 match between email and evidence item']
-          });
+        if (email.sha256) {
+          uniqueHashes.add(email.sha256);
+          if (evidenceHashIndex.has(email.sha256)) {
+            const ev = evidenceHashIndex.get(email.sha256)!;
+            correlations.push({
+              type: 'EMAIL_EVIDENCE_HASH_MATCH',
+              sourceId: email.id,
+              targetId: ev.id,
+              confidence: 1.0,
+              reasons: ['Exact SHA256 match between email and evidence item'],
+              provenance: [
+                { sourceType: 'EMAIL', sourceId: email.id, field: 'sha256' },
+                { sourceType: 'EVIDENCE', sourceId: ev.id, field: 'sha256' }
+              ]
+            });
+          }
         }
 
         // Prepare Sender clustering
@@ -2329,12 +2338,43 @@ export default async function caseRoutes(server: FastifyInstance) {
                 sourceId: emailIds[i],
                 targetId: emailIds[j],
                 confidence: 0.9,
-                reasons: [`Emails share the exact sender address: ${sender}`]
+                reasons: [`Emails share the exact sender address: ${sender}`],
+                provenance: [
+                  { sourceType: 'EMAIL', sourceId: emailIds[i], field: 'senderAddress' },
+                  { sourceType: 'EMAIL', sourceId: emailIds[j], field: 'senderAddress' }
+                ]
               });
             }
           }
         }
       }
+
+      // External CTI Enrichment
+      const hashEnrichmentPromises = Array.from(uniqueHashes).slice(0, 50).map(async (hash) => {
+        try {
+          const result = await ctiProvider.enrichHash(hash);
+          if (result.status === 'available' && result.data?.malicious_votes > 0) {
+            // Find emails that had this hash
+            const matchingEmails = emails.filter(e => e.sha256 === hash);
+            matchingEmails.forEach(email => {
+              correlations.push({
+                type: 'CTI_MALICIOUS_HASH',
+                sourceId: email.id,
+                targetId: ctiProvider.name,
+                confidence: result.data.malicious_votes > 10 ? 0.9 : 0.6,
+                reasons: [`CTI provider flagged this hash as malicious (${result.data.malicious_votes} votes)`],
+                provenance: [
+                  { sourceType: 'EMAIL', sourceId: email.id, field: 'sha256' },
+                  { sourceType: 'EXTERNAL_CTI', sourceId: ctiProvider.name }
+                ]
+              });
+            });
+          }
+        } catch (err) {
+          // Swallow and degrade gracefully
+        }
+      });
+      await Promise.all(hashEnrichmentPromises);
 
       // Sort and bound correlations
       correlations.sort((a, b) => b.confidence - a.confidence);
@@ -2384,6 +2424,116 @@ export default async function caseRoutes(server: FastifyInstance) {
         correlations: boundedCorrelations,
         attentionIndicators
       });
+    } catch (err) {
+      throw err;
+    }
+  });
+
+  // ============================================================================
+  // ANALYST DECISIONS
+  // ============================================================================
+
+  server.post('/:caseId/investigations/:investigationId/decisions', {
+    schema: {
+      params: fastifyInvestigationParamsSchema,
+      body: {
+        type: 'object',
+        required: ['targetId', 'targetType', 'decision'],
+        properties: {
+          targetId: { type: 'string' },
+          targetType: { type: 'string' },
+          decision: { type: 'string', enum: ['REVIEWED', 'CONFIRMED', 'DISMISSED', 'ESCALATED'] },
+          reason: { type: 'string' }
+        },
+        additionalProperties: false
+      }
+    },
+    preValidation: [server.authenticate, server.requirePermission('CASE_UPDATE')] // Require UPDATE since it mutates state
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+    const { caseId, investigationId } = request.params as { caseId: string; investigationId: string };
+    const { targetId, targetType, decision, reason } = request.body as any;
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      const caseRecord = await prisma.case.findUnique({
+        where: { id_organizationId: { id: caseId, organizationId } }
+      });
+      if (!caseRecord) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+
+      const investigation = await prisma.investigation.findUnique({
+        where: { id: investigationId }
+      });
+      if (!investigation || investigation.caseId !== caseId) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Investigation not found' });
+      }
+
+      // Record the analyst decision in AuditLog (event sourcing approach)
+      await logAuditEvent({
+        action: 'CASE_INVESTIGATION_DECISION_RECORDED',
+        resource: 'InvestigationIntelligence',
+        resourceId: investigationId,
+        actorId: userId,
+        status: 'SUCCESS',
+        metadata: {
+          caseId,
+          targetId,
+          targetType,
+          decision,
+          reason
+        },
+        req: request
+      });
+
+      return reply.status(201).send({ status: 'decision_recorded', targetId, decision });
+    } catch (err) {
+      throw err;
+    }
+  });
+
+  server.get('/:caseId/investigations/:investigationId/decisions', {
+    schema: { params: fastifyInvestigationParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { caseId, investigationId } = request.params as { caseId: string; investigationId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      const caseRecord = await prisma.case.findUnique({
+        where: { id_organizationId: { id: caseId, organizationId } }
+      });
+      if (!caseRecord) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+
+      const investigation = await prisma.investigation.findUnique({
+        where: { id: investigationId }
+      });
+      if (!investigation || investigation.caseId !== caseId) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Investigation not found' });
+      }
+
+      const decisions = await prisma.auditLog.findMany({
+        where: {
+          organizationId,
+          resourceId: investigationId,
+          action: 'CASE_INVESTIGATION_DECISION_RECORDED'
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100
+      });
+
+      return reply.status(200).send({ decisions });
     } catch (err) {
       throw err;
     }

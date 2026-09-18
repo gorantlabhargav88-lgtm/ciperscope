@@ -3709,5 +3709,37 @@ describe('Investigation API (Integration)', () => {
     });
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
+
+  it('POST /api/v1/cases/:caseId/investigations/:investigationId/decisions should record analyst decision', async () => {
+    const res = await server.inject({
+      method: 'POST',
+      url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}/decisions`,
+      headers: { 'x-organization-id': testOrgId },
+      payload: {
+        targetId: 'some-target-id',
+        targetType: 'CORRELATION',
+        decision: 'CONFIRMED',
+        reason: 'Verified externally'
+      }
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.payload);
+    expect(body.status).toBe('decision_recorded');
+    expect(body.decision).toBe('CONFIRMED');
+  });
+
+  it('GET /api/v1/cases/:caseId/investigations/:investigationId/decisions should return recorded decisions', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}/decisions`,
+      headers: { 'x-organization-id': testOrgId }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.decisions).toBeInstanceOf(Array);
+    expect(body.decisions.length).toBeGreaterThanOrEqual(1);
+    expect(body.decisions[0].action).toBe('CASE_INVESTIGATION_DECISION_RECORDED');
+    expect(body.decisions[0].metadata.decision).toBe('CONFIRMED');
+  });
 });
 
