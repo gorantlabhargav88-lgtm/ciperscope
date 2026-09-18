@@ -2190,4 +2190,140 @@ export default async function caseRoutes(server: FastifyInstance) {
       throw err;
     }
   });
+
+  // ============================================================================
+  // WORKSPACE
+  // ============================================================================
+
+  server.get('/:caseId/investigations/:investigationId/workspace', {
+    schema: { params: fastifyInvestigationParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+    const { caseId, investigationId } = request.params as { caseId: string; investigationId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      const caseRecord = await prisma.case.findUnique({
+        where: { id_organizationId: { id: caseId, organizationId } },
+        select: {
+          id: true,
+          organizationId: true,
+          title: true,
+          description: true,
+          severity: true,
+          priority: true,
+          status: true,
+          assignedUserId: true,
+          creatorId: true,
+          createdAt: true,
+          updatedAt: true,
+          resolvedAt: true
+        }
+      });
+
+      if (!caseRecord) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+
+      const investigation = await prisma.investigation.findUnique({
+        where: { id: investigationId }
+      });
+
+      if (!investigation || investigation.caseId !== caseId) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Investigation not found' });
+      }
+
+      // Fetch aggregated data with bounds
+      const [
+        alerts,
+        emails,
+        evidence,
+        reports,
+        activity,
+        emailCount,
+        alertCount,
+        evidenceCount,
+        reportCount,
+        investigationCount
+      ] = await Promise.all([
+        prisma.alert.findMany({
+          where: { caseId },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+          select: { id: true, title: true, severity: true, isRead: true, createdAt: true }
+        }),
+        prisma.email.findMany({
+          where: { caseId },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+          select: { id: true, subject: true, senderAddress: true, date: true, classification: true, riskScore: true, createdAt: true }
+        }),
+        prisma.evidence.findMany({
+          where: { caseId },
+          orderBy: { collectionTime: 'desc' },
+          take: 50,
+          select: { id: true, type: true, filename: true, mimeType: true, sizeBytes: true, status: true, collectionTime: true }
+        }),
+        prisma.report.findMany({
+          where: { caseId },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+          select: { id: true, title: true, createdAt: true }
+        }),
+        prisma.auditLog.findMany({
+          where: {
+            organizationId,
+            resourceId: { in: [caseId, investigationId] }
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 50,
+          select: { id: true, action: true, resource: true, resourceId: true, createdAt: true, actorId: true }
+        }),
+        prisma.email.count({ where: { caseId } }),
+        prisma.alert.count({ where: { caseId } }),
+        prisma.evidence.count({ where: { caseId } }),
+        prisma.report.count({ where: { caseId } }),
+        prisma.investigation.count({ where: { caseId } })
+      ]);
+
+      const summary = {
+        emailCount,
+        alertCount,
+        evidenceCount,
+        reportCount,
+        investigationCount,
+        caseStatus: caseRecord.status,
+        casePriority: caseRecord.priority,
+        assignedUserId: caseRecord.assignedUserId
+      };
+
+      await logAuditEvent({
+        action: 'CASE_INVESTIGATION_VIEWED',
+        resource: 'Workspace',
+        resourceId: investigationId,
+        actorId: userId,
+        status: 'SUCCESS',
+        metadata: { caseId },
+        req: request
+      });
+
+      return reply.status(200).send({
+        investigation,
+        case: caseRecord,
+        alerts,
+        emails,
+        evidence,
+        reports,
+        activity,
+        summary
+      });
+    } catch (err) {
+      throw err;
+    }
+  });
 }

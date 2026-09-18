@@ -3643,11 +3643,37 @@ describe('Investigation API (Integration)', () => {
     expect(body.title).toBe('Updated Title');
   });
 
-  it('Should enforce tenant isolation for cross-tenant case', async () => {
+  it('GET /api/v1/cases/:caseId/investigations/:investigationId/workspace should return aggregated workspace', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}/workspace`,
+      headers: { 'x-organization-id': testOrgId }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.investigation).toBeDefined();
+    expect(body.investigation.id).toBe(testInvestigationId);
+    expect(body.case).toBeDefined();
+    expect(body.case.id).toBe(testCaseId);
+    expect(body.alerts).toBeInstanceOf(Array);
+    expect(body.emails).toBeInstanceOf(Array);
+    expect(body.evidence).toBeInstanceOf(Array);
+    expect(body.reports).toBeInstanceOf(Array);
+    expect(body.activity).toBeInstanceOf(Array);
+    expect(body.summary).toBeDefined();
+    expect(body.summary.investigationCount).toBeGreaterThanOrEqual(1);
+
+    // Check that sensitive fields are not leaked
+    if (body.case) {
+      expect(body.case.passwordHash).toBeUndefined();
+    }
+  });
+
+  it('GET workspace should enforce tenant isolation for cross-tenant case', async () => {
     const otherOrgId = crypto.randomUUID();
     const res = await server.inject({
       method: 'GET',
-      url: `/api/v1/cases/${testCaseId}/investigations`,
+      url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}/workspace`,
       headers: { 'x-organization-id': otherOrgId }
     });
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
