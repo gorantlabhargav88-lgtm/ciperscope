@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
-import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseHistoryQuerySchema, fastifyCreateEvidenceBodySchema, fastifyEvidenceListQuerySchema, fastifyEvidenceParamsSchema, fastifyCustodyListQuerySchema } from '../../utils/validation';
+import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseHistoryQuerySchema, fastifyCreateEvidenceBodySchema, fastifyEvidenceListQuerySchema, fastifyEvidenceParamsSchema, fastifyCustodyListQuerySchema, fastifyCreateReportBodySchema, fastifyReportListQuerySchema, fastifyReportParamsSchema, fastifyAlertListQuerySchema, fastifyAlertParamsSchema, fastifyUpdateAlertBodySchema } from '../../utils/validation';
 import { z } from 'zod';
 import { logAuditEvent } from '../../utils/audit';
 
@@ -1601,6 +1601,389 @@ export default async function caseRoutes(server: FastifyInstance) {
       }
       if (err.code === 'P2025') {
         return reply.status(400).send({ error: 'Bad Request', message: 'Invalid cursor' });
+      }
+      throw err;
+    }
+  });
+
+  server.post('/:caseId/reports', {
+    schema: { params: fastifyCaseParamsSchema, body: fastifyCreateReportBodySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_CREATE')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { caseId } = request.params as { caseId: string };
+    const userId = request.user?.sub;
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const { title, contentHtml, storageKey } = request.body as {
+      title: string;
+      contentHtml?: string;
+      storageKey?: string;
+    };
+
+    try {
+      const c = await prisma.case.findUnique({
+        where: { id_organizationId: { id: caseId, organizationId } }
+      });
+
+      if (!c) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+
+      const report = await prisma.report.create({
+        data: {
+          caseId,
+          title,
+          contentHtml,
+          storageKey,
+          generatedById: userId
+        }
+      });
+
+      await logAuditEvent({
+        action: 'CASE_REPORT_CREATED',
+        resource: 'Report',
+        resourceId: report.id,
+        status: 'SUCCESS',
+        metadata: { caseId },
+        actorId: userId,
+        organizationId,
+        req: request
+      });
+
+      return reply.status(201).send(report);
+    } catch (err) {
+      throw err;
+    }
+  });
+
+  server.get('/:caseId/reports', {
+    schema: { params: fastifyCaseParamsSchema, querystring: fastifyReportListQuerySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { caseId } = request.params as { caseId: string };
+    const query = request.query as { limit: number; cursor?: string; sort: 'createdAt'; direction: 'asc'|'desc' };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      const c = await prisma.case.findUnique({
+        where: { id_organizationId: { id: caseId, organizationId } }
+      });
+
+      if (!c) {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+
+      let cursorOpt: any = undefined;
+      if (query.cursor) {
+        try {
+          const decodedString = Buffer.from(query.cursor, 'base64').toString('utf-8');
+          const decoded = JSON.parse(decodedString);
+          
+          const cursorSchema = z.tuple([z.string().datetime(), uuidSchema]);
+          const validated = cursorSchema.parse(decoded);
+          cursorOpt = { id: validated[1] };
+        } catch (err) {
+          return reply.status(400).send({ error: 'Bad Request', message: 'Malformed cursor' });
+        }
+      }
+
+      const items = await prisma.report.findMany({
+        where: { caseId },
+        take: query.limit + 1,
+        skip: cursorOpt ? 1 : 0,
+        cursor: cursorOpt,
+        orderBy: [
+          { [query.sort]: query.direction },
+          { id: query.direction }
+        ]
+      });
+
+      let nextCursor: string | null = null;
+      if (items.length > query.limit) {
+        items.pop();
+        const lastItem = items[items.length - 1];
+        if (lastItem) {
+          nextCursor = Buffer.from(JSON.stringify([lastItem.createdAt.toISOString(), lastItem.id])).toString('base64');
+        }
+      }
+
+      return reply.status(200).send({ items, nextCursor });
+    } catch (err: any) {
+      if (err.code === 'P2025') {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Invalid cursor' });
+      }
+      throw err;
+    }
+  });
+
+  server.get('/:caseId/reports/:reportId', {
+    schema: { params: fastifyReportParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { caseId, reportId } = request.params as { caseId: string; reportId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const c = await prisma.case.findUnique({
+      where: { id_organizationId: { id: caseId, organizationId } }
+    });
+
+    if (!c) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+    }
+
+    const report = await prisma.report.findUnique({
+      where: { id: reportId }
+    });
+
+    if (!report || report.caseId !== caseId) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Report not found' });
+    }
+
+    return reply.status(200).send(report);
+  });
+
+  server.delete('/:caseId/reports/:reportId', {
+    schema: { params: fastifyReportParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_CREATE')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { caseId, reportId } = request.params as { caseId: string; reportId: string };
+    const userId = request.user?.sub;
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const c = await prisma.case.findUnique({
+      where: { id_organizationId: { id: caseId, organizationId } }
+    });
+
+    if (!c) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+    }
+
+    const report = await prisma.report.findUnique({
+      where: { id: reportId }
+    });
+
+    if (!report || report.caseId !== caseId) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Report not found' });
+    }
+
+    await prisma.report.delete({
+      where: { id: reportId }
+    });
+
+    await logAuditEvent({
+      action: 'CASE_REPORT_DELETED',
+      resource: 'Report',
+      resourceId: reportId,
+      status: 'SUCCESS',
+      metadata: { caseId },
+      actorId: userId,
+      organizationId,
+      req: request
+    });
+
+    return reply.status(204).send();
+  });
+
+  server.get('/:caseId/alerts', {
+    schema: { params: fastifyCaseParamsSchema, querystring: fastifyAlertListQuerySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const query = request.query as {
+      limit: number;
+      cursor?: string;
+      severity?: 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+      isRead?: boolean;
+      sort: 'createdAt';
+      direction: 'asc' | 'desc';
+    };
+
+    const limit = query.limit;
+    let cursorOpt: any = undefined;
+
+    if (query.cursor) {
+      try {
+        const decodedString = Buffer.from(query.cursor, 'base64').toString('utf-8');
+        const decoded = JSON.parse(decodedString);
+        const cursorSchema = z.tuple([z.string().datetime(), uuidSchema]);
+        const validated = cursorSchema.parse(decoded);
+        cursorOpt = { id: validated[1] };
+      } catch (err) {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Malformed cursor' });
+      }
+    }
+
+    try {
+      const { items, nextCursor } = await prisma.$transaction(async (tx) => {
+        const existingCase = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } }
+        });
+        if (!existingCase) throw new Error('CASE_NOT_FOUND');
+
+        const whereClause: any = { organizationId, caseId };
+        if (query.severity) whereClause.severity = query.severity;
+        if (query.isRead !== undefined) whereClause.isRead = query.isRead;
+
+        const alerts = await tx.alert.findMany({
+          where: whereClause,
+          take: limit + 1,
+          skip: cursorOpt ? 1 : 0,
+          cursor: cursorOpt,
+          orderBy: [
+            { [query.sort]: query.direction },
+            { id: query.direction }
+          ],
+          select: {
+            id: true,
+            organizationId: true,
+            caseId: true,
+            title: true,
+            message: true,
+            severity: true,
+            isRead: true,
+            createdAt: true
+          }
+        });
+
+        let nextCursorValue: string | null = null;
+        if (alerts.length > limit) {
+          alerts.pop();
+          const lastItem = alerts[alerts.length - 1];
+          if (lastItem) {
+            nextCursorValue = Buffer.from(JSON.stringify([lastItem.createdAt.toISOString(), lastItem.id])).toString('base64');
+          }
+        }
+        return { items: alerts, nextCursor: nextCursorValue };
+      });
+
+      return reply.status(200).send({ items, nextCursor });
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+      }
+      if (err.code === 'P2025') {
+        return reply.status(400).send({ error: 'Bad Request', message: 'Invalid cursor' });
+      }
+      throw err;
+    }
+  });
+
+  server.get('/:caseId/alerts/:alertId', {
+    schema: { params: fastifyAlertParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const { caseId, alertId } = request.params as { caseId: string, alertId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      const alert = await prisma.$transaction(async (tx) => {
+        const existingCase = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } }
+        });
+        if (!existingCase) throw new Error('CASE_NOT_FOUND');
+
+        const existingAlert = await tx.alert.findUnique({
+          where: { id: alertId }
+        });
+        if (!existingAlert || existingAlert.organizationId !== organizationId || existingAlert.caseId !== caseId) {
+          throw new Error('ALERT_NOT_FOUND');
+        }
+        return existingAlert;
+      });
+
+      await logAuditEvent({
+        action: 'CASE_ALERT_VIEWED',
+        resource: 'Alert',
+        resourceId: alertId,
+        actorId: userId,
+        status: 'SUCCESS',
+        metadata: { caseId },
+        req: request
+      });
+
+      return reply.status(200).send(alert);
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND' || err.message === 'ALERT_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case or Alert not found' });
+      }
+      throw err;
+    }
+  });
+
+  server.patch('/:caseId/alerts/:alertId', {
+    schema: { params: fastifyAlertParamsSchema, body: fastifyUpdateAlertBodySchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_UPDATE')]
+  }, async (request, reply) => {
+    const { caseId, alertId } = request.params as { caseId: string, alertId: string };
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+    const { isRead } = request.body as { isRead: boolean };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    try {
+      const updatedAlert = await prisma.$transaction(async (tx) => {
+        const existingCase = await tx.case.findUnique({
+          where: { id_organizationId: { id: caseId, organizationId } }
+        });
+        if (!existingCase) throw new Error('CASE_NOT_FOUND');
+
+        const existingAlert = await tx.alert.findUnique({
+          where: { id: alertId }
+        });
+        if (!existingAlert || existingAlert.organizationId !== organizationId || existingAlert.caseId !== caseId) {
+          throw new Error('ALERT_NOT_FOUND');
+        }
+
+        return await tx.alert.update({
+          where: { id: alertId },
+          data: { isRead }
+        });
+      });
+
+      await logAuditEvent({
+        action: 'CASE_ALERT_UPDATED',
+        resource: 'Alert',
+        resourceId: alertId,
+        actorId: userId,
+        status: 'SUCCESS',
+        metadata: { caseId, isRead },
+        req: request
+      });
+
+      return reply.status(200).send(updatedAlert);
+    } catch (err: any) {
+      if (err.message === 'CASE_NOT_FOUND' || err.message === 'ALERT_NOT_FOUND') {
+        return reply.status(404).send({ error: 'Not Found', message: 'Case or Alert not found' });
       }
       throw err;
     }

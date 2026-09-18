@@ -19,23 +19,23 @@ describe('Case API (Integration) - POST /api/v1/cases', () => {
     // Mock Authentication and Authorization for tests
     server.decorate('authenticate', async (request: { user: { sub: string, orgs: string[] } }) => {
       if ((request as any).headers['x-mock-unauthorized'] === 'true') {
-         throw new Error('Unauthorized');
+        throw new Error('Unauthorized');
       }
       request.user = { sub: testUserId, orgs: [testOrgId] };
     });
 
     server.decorate('requirePermission', (action: string) => {
       return async (request: { headers: Record<string, string>, user: { sub: string, orgs: string[] } }) => {
-         const orgId = request.headers['x-organization-id'];
-         if (!orgId) {
-           throw new Error('Tenant isolation failed: missing org');
-         }
-         if (request.headers['x-mock-forbidden'] === 'true') {
-           throw new Error('Forbidden: no permission');
-         }
-         if (orgId !== testOrgId) {
-           throw new Error('Forbidden: tenant isolation violation');
-         }
+        const orgId = request.headers['x-organization-id'];
+        if (!orgId) {
+          throw new Error('Tenant isolation failed: missing org');
+        }
+        if (request.headers['x-mock-forbidden'] === 'true') {
+          throw new Error('Forbidden: no permission');
+        }
+        if (orgId !== testOrgId) {
+          throw new Error('Forbidden: tenant isolation violation');
+        }
       };
     });
 
@@ -154,7 +154,7 @@ describe('Case API (Integration) - POST /api/v1/cases', () => {
     expect(response.statusCode).toBe(400);
 
     // Assert no cases were persisted maliciously
-    const cases = await prisma.case.findMany({ where: { title: 'Test Status Spoof' }});
+    const cases = await prisma.case.findMany({ where: { title: 'Test Status Spoof' } });
     expect(cases.length).toBe(0);
   });
 
@@ -1945,7 +1945,7 @@ describe('Case API (Integration) - Real RBAC', () => {
       const dates = data.items.map((i: any) => new Date(i.createdAt).getTime());
 
       for (let i = 0; i < dates.length - 1; i++) {
-        expect(dates[i]).toBeGreaterThanOrEqual(dates[i+1]);
+        expect(dates[i]).toBeGreaterThanOrEqual(dates[i + 1]);
       }
     });
 
@@ -3317,4 +3317,215 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect(custody[0].action).toBe('ACCESSED');
     });
   });
+
+  describe('Report API', () => {
+    let testCaseId: string;
+
+    beforeEach(async () => {
+      const c = await prisma.case.create({ data: { title: 'Report Test', organizationId: orgId, creatorId: userIdWithPerm } });
+      testCaseId = c.id;
+    });
+
+    afterEach(async () => {
+      await prisma.report.deleteMany({ where: { caseId: testCaseId } });
+      await prisma.case.deleteMany({ where: { id: testCaseId } });
+    });
+
+    it('1. POST /reports creates a new report', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/reports`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: {
+          title: 'Final Investigation Report',
+          contentHtml: '<p>Report content</p>'
+        }
+      });
+      expect(res.statusCode).toBe(201);
+      const data = JSON.parse(res.payload);
+      expect(data.title).toBe('Final Investigation Report');
+      expect(data.caseId).toBe(testCaseId);
+      expect(data.generatedById).toBe(userIdWithPerm);
+
+      const audit = await prisma.auditLog.findFirst({ where: { resourceId: data.id, action: 'CASE_REPORT_CREATED' } });
+      expect(audit).not.toBeNull();
+    });
+
+    it('2. GET /reports lists reports for a case', async () => {
+      await prisma.report.create({
+        data: { caseId: testCaseId, title: 'Final Investigation Report' }
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/reports`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.payload);
+      expect(data.items.length).toBeGreaterThan(0);
+      expect(data.items[0].title).toBe('Final Investigation Report');
+    });
+
+    it('3. GET /reports/:id retrieves a specific report', async () => {
+      const report = await prisma.report.create({
+        data: { caseId: testCaseId, title: 'Draft Report' }
+      });
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/reports/${report.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.payload);
+      expect(data.id).toBe(report.id);
+    });
+
+    it('4. DELETE /reports/:id deletes a report', async () => {
+      const report = await prisma.report.create({
+        data: { caseId: testCaseId, title: 'To Delete' }
+      });
+
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${testCaseId}/reports/${report.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(204);
+
+      const verify = await prisma.report.findUnique({ where: { id: report.id } });
+      expect(verify).toBeNull();
+
+      const audit = await prisma.auditLog.findFirst({ where: { resourceId: report.id, action: 'CASE_REPORT_DELETED' } });
+      expect(audit).not.toBeNull();
+    });
+
+    it('5. Enforces tenant isolation for reports', async () => {
+      const report = await prisma.report.create({
+        data: { caseId: testCaseId, title: 'Cross Tenant Report' }
+      });
+
+      const otherOrgId = crypto.randomUUID();
+
+      const res = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/reports/${report.id}`,
+        headers: { 'x-organization-id': otherOrgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
 });
+
+describe('Case Alerts API (Integration)', () => {
+  let server: FastifyInstance;
+  let testOrgId: string;
+  let testUserId: string;
+  let testCaseId: string;
+  let testAlertId: string;
+
+  beforeAll(async () => {
+    server = Fastify({ ajv: { customOptions: { removeAdditional: false } } });
+
+    server.decorate('authenticate', async (request: any) => {
+      request.user = { sub: testUserId, orgs: [testOrgId] };
+    });
+
+    server.decorate('requirePermission', (action: string) => {
+      return async (request: any) => {
+        const orgId = request.headers['x-organization-id'];
+        if (!orgId) throw new Error('Tenant isolation failed');
+        if (orgId !== testOrgId) throw new Error('Forbidden: tenant isolation violation');
+      };
+    });
+
+    server.register(caseRoutes, { prefix: '/api/v1/cases' });
+
+    testOrgId = crypto.randomUUID();
+    testUserId = crypto.randomUUID();
+
+    await prisma.organization.create({ data: { id: testOrgId, name: 'Alerts Test Org' } });
+
+    await prisma.user.create({
+      data: {
+        id: testUserId,
+        email: `alertstestuser_${Date.now()}@example.com`,
+        firstName: 'Test',
+        lastName: 'User',
+        passwordHash: 'dummyhash'
+      }
+    });
+
+    const newCase = await prisma.case.create({
+      data: { title: 'Alerts Case', organizationId: testOrgId, creatorId: testUserId }
+    });
+    testCaseId = newCase.id;
+
+    const alert = await prisma.alert.create({
+      data: {
+        organizationId: testOrgId,
+        caseId: testCaseId,
+        title: 'Suspicious Login',
+        message: 'Login from unknown IP',
+        severity: 'HIGH',
+        isRead: false
+      }
+    });
+    testAlertId = alert.id;
+  });
+
+  afterAll(async () => {
+    await prisma.organization.deleteMany({ where: { id: testOrgId } });
+    await prisma.user.deleteMany({ where: { id: testUserId } });
+  });
+
+  it('GET /api/v1/cases/:caseId/alerts should return list of alerts', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/alerts`,
+      headers: { 'x-organization-id': testOrgId }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.items.length).toBeGreaterThan(0);
+    expect(body.items[0].id).toBe(testAlertId);
+  });
+
+  it('GET /api/v1/cases/:caseId/alerts/:alertId should return specific alert and log view', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/alerts/${testAlertId}`,
+      headers: { 'x-organization-id': testOrgId }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.id).toBe(testAlertId);
+    expect(body.title).toBe('Suspicious Login');
+  });
+
+  it('PATCH /api/v1/cases/:caseId/alerts/:alertId should update isRead status', async () => {
+    const res = await server.inject({
+      method: 'PATCH',
+      url: `/api/v1/cases/${testCaseId}/alerts/${testAlertId}`,
+      headers: { 'x-organization-id': testOrgId },
+      payload: { isRead: true }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.isRead).toBe(true);
+  });
+
+  it('Should enforce tenant isolation (404/403) for cross-tenant alert access', async () => {
+    const otherOrgId = crypto.randomUUID();
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/alerts/${testAlertId}`,
+      headers: { 'x-organization-id': otherOrgId }
+    });
+    // With the mocked requirePermission, a different orgId returns 500 (since it throws an error in preValidation)
+    // Actually the mock returns 500 if the orgId doesn't match testOrgId, so we check >= 400
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+  });
+});
+

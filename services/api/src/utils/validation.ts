@@ -167,3 +167,45 @@ export const CustodyListQuerySchema = z.object({
   cursor: z.string().optional()
 });
 export const fastifyCustodyListQuerySchema = zodToJsonSchema(CustodyListQuerySchema as any);
+
+export const createReportBodySchema = z.object({
+  title: z.string().min(1).max(255),
+  contentHtml: z.string().max(1000000).optional(),
+  storageKey: z.string().max(1024).optional()
+});
+export const fastifyCreateReportBodySchema = zodToJsonSchema(createReportBodySchema as any);
+
+export const ReportListQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(100).default(20),
+  cursor: z.string().optional(),
+  sort: z.enum(['createdAt']).default('createdAt'),
+  direction: z.enum(['asc', 'desc']).default('desc')
+});
+export const fastifyReportListQuerySchema = zodToJsonSchema(ReportListQuerySchema as any);
+
+export const ReportParamsSchema = z.object({
+  caseId: uuidSchema,
+  reportId: uuidSchema
+});
+export const fastifyReportParamsSchema = zodToJsonSchema(ReportParamsSchema as any);
+
+export const AlertListQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(100).default(20),
+  cursor: z.string().optional(),
+  severity: z.enum(['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
+  isRead: z.enum(['true', 'false']).transform((val) => val === 'true').optional(),
+  sort: z.enum(['createdAt']).default('createdAt'),
+  direction: z.enum(['asc', 'desc']).default('desc')
+});
+export const fastifyAlertListQuerySchema = zodToJsonSchema(AlertListQuerySchema as any);
+
+export const AlertParamsSchema = z.object({
+  caseId: uuidSchema,
+  alertId: uuidSchema
+});
+export const fastifyAlertParamsSchema = zodToJsonSchema(AlertParamsSchema as any);
+
+export const UpdateAlertBodySchema = z.object({
+  isRead: z.boolean()
+});
+export const fastifyUpdateAlertBodySchema = zodToJsonSchema(UpdateAlertBodySchema as any);
