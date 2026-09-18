@@ -162,6 +162,30 @@ export const EvidenceParamsSchema = z.object({
 });
 export const fastifyEvidenceParamsSchema = zodToJsonSchema(EvidenceParamsSchema as any);
 
+export const InvestigationListQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(100).default(20),
+  cursor: z.string().optional()
+});
+export const fastifyInvestigationListQuerySchema = zodToJsonSchema(InvestigationListQuerySchema as any);
+
+export const InvestigationParamsSchema = z.object({
+  caseId: uuidSchema,
+  investigationId: uuidSchema
+});
+export const fastifyInvestigationParamsSchema = zodToJsonSchema(InvestigationParamsSchema as any);
+
+export const CreateInvestigationBodySchema = z.object({
+  title: z.string().min(1).max(255).regex(/\S/, 'Title cannot be empty whitespace'),
+  description: z.string().max(4000).optional()
+}).strict();
+export const fastifyCreateInvestigationBodySchema = zodToJsonSchema(CreateInvestigationBodySchema as any);
+
+export const UpdateInvestigationBodySchema = z.object({
+  title: z.string().min(1).max(255).regex(/\S/, 'Title cannot be empty whitespace').optional(),
+  description: z.string().max(4000).optional()
+}).strict();
+export const fastifyUpdateInvestigationBodySchema = zodToJsonSchema(UpdateInvestigationBodySchema as any);
+
 export const CustodyListQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(100).default(20),
   cursor: z.string().optional()

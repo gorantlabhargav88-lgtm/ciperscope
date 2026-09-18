@@ -3529,3 +3529,128 @@ describe('Case Alerts API (Integration)', () => {
   });
 });
 
+describe('Investigation API (Integration)', () => {
+  const testOrgId = crypto.randomUUID();
+  const testUserId = crypto.randomUUID();
+  let server: FastifyInstance;
+  let testCaseId: string;
+  let testInvestigationId: string;
+
+  beforeAll(async () => {
+    server = Fastify();
+
+    server.decorateRequest('user', null);
+
+    server.addHook('preValidation', async (request: any, reply) => {
+      const orgId = request.headers['x-organization-id'];
+      if (!orgId) return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+      request.user = { sub: testUserId };
+    });
+
+    server.decorate('authenticate', async () => {});
+    server.decorate('requirePermission', (perm: string) => {
+      return async (request: any, reply: any) => {
+        const orgId = request.headers['x-organization-id'];
+        if (orgId !== testOrgId) throw new Error('MOCK_PERMISSION_ERROR');
+      };
+    });
+
+    server.register(caseRoutes, { prefix: '/api/v1/cases' });
+    await server.ready();
+
+    await prisma.organization.create({
+      data: { id: testOrgId, name: 'Investigation Test Org' }
+    });
+
+    await prisma.user.create({
+      data: { id: testUserId, email: `inv-${Date.now()}@test.com`, passwordHash: 'hash' }
+    });
+
+    const c = await prisma.case.create({
+      data: {
+        organizationId: testOrgId,
+        title: 'Inv Test Case',
+        creatorId: testUserId
+      }
+    });
+    testCaseId = c.id;
+
+    const inv = await prisma.investigation.create({
+      data: {
+        caseId: testCaseId,
+        title: 'Initial Investigation'
+      }
+    });
+    testInvestigationId = inv.id;
+  });
+
+  afterAll(async () => {
+    await prisma.investigation.deleteMany({ where: { caseId: testCaseId } });
+    await prisma.case.delete({ where: { id: testCaseId } });
+    await prisma.user.delete({ where: { id: testUserId } });
+    await prisma.organization.delete({ where: { id: testOrgId } });
+    await server.close();
+  });
+
+  it('POST /api/v1/cases/:caseId/investigations should create an investigation', async () => {
+    const res = await server.inject({
+      method: 'POST',
+      url: `/api/v1/cases/${testCaseId}/investigations`,
+      headers: { 'x-organization-id': testOrgId },
+      payload: {
+        title: 'New Forensic Investigation',
+        description: 'Deep dive into logs'
+      }
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.payload);
+    expect(body.title).toBe('New Forensic Investigation');
+    expect(body.description).toBe('Deep dive into logs');
+    expect(body.caseId).toBe(testCaseId);
+  });
+
+  it('GET /api/v1/cases/:caseId/investigations should return list of investigations', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/investigations`,
+      headers: { 'x-organization-id': testOrgId }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.items.length).toBeGreaterThanOrEqual(2); // The initial one + the new one
+  });
+
+  it('GET /api/v1/cases/:caseId/investigations/:investigationId should return specific investigation', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}`,
+      headers: { 'x-organization-id': testOrgId }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.title).toBe('Initial Investigation');
+  });
+
+  it('PATCH /api/v1/cases/:caseId/investigations/:investigationId should update investigation', async () => {
+    const res = await server.inject({
+      method: 'PATCH',
+      url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}`,
+      headers: { 'x-organization-id': testOrgId },
+      payload: { title: 'Updated Title' }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.title).toBe('Updated Title');
+  });
+
+  it('Should enforce tenant isolation for cross-tenant case', async () => {
+    const otherOrgId = crypto.randomUUID();
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/cases/${testCaseId}/investigations`,
+      headers: { 'x-organization-id': otherOrgId }
+    });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+  });
+});
+
