@@ -6,6 +6,7 @@ import { Overview } from './pages/Overview';
 import { EmailAnalysis } from './pages/EmailAnalysis';
 import { PlaceholderPage } from './pages/PlaceholderPage';
 import { AuthProvider } from './features/auth/AuthProvider';
+import { InvestigationWorkspace } from './InvestigationWorkspace';
 
 const router = createBrowserRouter([
   {
@@ -25,7 +26,7 @@ const router = createBrowserRouter([
           { path: 'investigations/:id', element: <PlaceholderPage title="Investigation Details" /> },
           { path: 'alerts', element: <PlaceholderPage title="Alerts" /> },
           { path: 'cases', element: <PlaceholderPage title="Cases" /> },
-          { path: 'cases/:id', element: <PlaceholderPage title="Case Details" /> },
+          { path: 'cases/:caseId/investigations/:investigationId/workspace', element: <InvestigationWorkspace /> },
           { path: 'email-analysis', element: <EmailAnalysis /> },
           { path: 'email-analysis/:id', element: <EmailAnalysis /> },
           { path: 'indicators', element: <PlaceholderPage title="Indicators" /> },
