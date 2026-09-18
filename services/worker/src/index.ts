@@ -11,10 +11,9 @@ import { MLClassifier } from './classifier/MLClassifier';
 import { FusionEngine } from './analyzer/FusionEngine';
 import { EmailThreatAnalysisJobPayload, EmailCtiEnrichmentJobPayload, EmailMlClassificationJobPayload } from '@ciperscope/queue';
 import { createMetricsServer } from './metricsServer';
-import { NullCtiProvider, NullGeoProvider } from './cti/providers/NullProvider';
-import { ReliableCtiProvider } from './cti/providers/ReliableCtiProvider';
-import { ReliableGeoProvider } from './cti/providers/ReliableGeoProvider';
 import { CtiEnrichmentWorker } from './cti/CtiEnrichmentWorker';
+import { processCTIJob } from './cti-worker';
+import { CTIEnrichmentJob } from '@ciperscope/queue';
 
 const redisUrl = env.REDIS_URL;
 
@@ -407,10 +406,14 @@ export async function start() {
     logger.error({ jobId: job?.id, queue: 'email-threat-analysis', err }, 'Threat Analysis Job failed');
   });
 
-  // Setup CTI Enrichment Worker Phase 14.3
-  const ctiProvider = new ReliableCtiProvider(new NullCtiProvider(), idempotencyRedis);
-  const geoProvider = new ReliableGeoProvider(new NullGeoProvider(), idempotencyRedis);
-  const ctiWorkerLogic = new CtiEnrichmentWorker(prisma, ctiProvider, geoProvider);
+  // Setup CTI Enrichment Fan-out Worker Phase 14.3
+  const iocQueue = queueManager.getQueue('ioc-cti-enrichment');
+  const ctiWorkerLogic = new CtiEnrichmentWorker(prisma, async (ioc) => {
+    await iocQueue.add('enrich-ioc', {
+      indicator: ioc.value,
+      indicatorType: ioc.type
+    } as CTIEnrichmentJob);
+  });
 
   const ctiWorker = createTenantScopedWorker<EmailCtiEnrichmentJobPayload, unknown>(
     'email-cti-enrichment',
@@ -495,6 +498,26 @@ export async function start() {
   ctiWorker.on('failed', (job, err) => {
     logger.error({ jobId: job?.id, queue: 'email-cti-enrichment', err }, 'CTI Enrichment Job failed');
   });
+
+  // Setup decoupled IOC CTI Worker Phase 17.3-AG
+  const iocWorker = queueManager.createWorker<CTIEnrichmentJob, unknown>(
+    'ioc-cti-enrichment',
+    async (job) => {
+      return runWithContext(
+        {
+          requestId: job.data.correlationId || generateRequestId(),
+          jobId: job.id as string,
+          traceId: job.data.correlationId,
+        },
+        async () => {
+          logger.info({ indicator: job.data.indicator }, 'Processing decoupled IOC CTI job');
+          await processCTIJob(job.data);
+          return { success: true };
+        }
+      );
+    },
+    5 // Higher concurrency for IOC lookups
+  );
 
   // Setup ML Classification Worker
   const mlClassifier = new MLClassifier(prisma, rawEmailStore);

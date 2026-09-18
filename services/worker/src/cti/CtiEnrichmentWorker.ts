@@ -7,12 +7,11 @@ import { ReliableGeoProvider } from './providers/ReliableGeoProvider';
 export class CtiEnrichmentWorker {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly ctiProvider: ReliableCtiProvider,
-    private readonly geoProvider: ReliableGeoProvider
+    private readonly enqueueIoc: (ioc: NormalizedIoc) => Promise<void>
   ) {}
 
   public async processEmail(emailId: string): Promise<void> {
-    logger.info({ emailId }, 'Starting Phase 14 CTI Enrichment');
+    logger.info({ emailId }, 'Starting Phase 14 CTI Enrichment Fan-out');
 
     const email = await this.prisma.email.findUnique({
       where: { id: emailId },
@@ -72,86 +71,14 @@ export class CtiEnrichmentWorker {
       skippedDomains: Math.max(0, domains.size - 50),
       skippedIps: Math.max(0, ips.size - 10),
       skippedHashes: Math.max(0, hashes.size - 10)
-    }, 'Normalized IOCs for CTI enrichment');
+    }, 'Enqueuing IOCs for CTI enrichment');
 
-    // 3. Concurrently fetch CTI data (chunks of 5)
-    const chunkSize = 5;
-    for (let i = 0; i < iocsToProcess.length; i += chunkSize) {
-      const chunk = iocsToProcess.slice(i, i + chunkSize);
-      await Promise.all(chunk.map(async (ioc) => {
-        // 3a. CTI Lookup
-        let ctiResult;
-        try {
-          ctiResult = await this.ctiProvider.lookup(ioc);
-        } catch (error) {
-          logger.error({ err: error, ioc: ioc.value }, 'Unexpected provider error processing IOC');
-          ctiResult = null;
-        }
-
-        if (ctiResult) {
-          await this.prisma.threatIndicator.upsert({
-            where: {
-              emailId_iocValue_provider: {
-                emailId,
-                iocValue: ioc.value,
-                provider: ctiResult.providerName
-              }
-            },
-            update: {
-              status: ctiResult.status,
-              confidence: ctiResult.confidence ?? null,
-              metadata: (ctiResult.metadata as unknown as Prisma.InputJsonValue) ?? {}
-            },
-            create: {
-              emailId,
-              iocType: ioc.type,
-              iocValue: ioc.value,
-              provider: ctiResult.providerName,
-              status: ctiResult.status,
-              confidence: ctiResult.confidence ?? null,
-              metadata: (ctiResult.metadata as unknown as Prisma.InputJsonValue) ?? {}
-            }
-          });
-        }
-
-        // 3b. GEO Lookup (only for IPs)
-        if (ioc.type === IndicatorType.IP) {
-          let geoResult;
-          try {
-            geoResult = await this.geoProvider.lookup(ioc.value);
-          } catch (error) {
-            logger.error({ err: error, ioc: ioc.value }, 'Unexpected geo provider error processing IOC');
-            geoResult = null;
-          }
-
-          if (geoResult) {
-            await this.prisma.geolocationInfo.upsert({
-              where: {
-                emailId_ipAddress: {
-                  emailId,
-                  ipAddress: ioc.value
-                }
-              },
-              update: {
-                country: geoResult.country ?? null,
-                city: geoResult.city ?? null,
-                asn: geoResult.asn ?? null,
-                isp: geoResult.isp ?? null
-              },
-              create: {
-                emailId,
-                ipAddress: ioc.value,
-                country: geoResult.country ?? null,
-                city: geoResult.city ?? null,
-                asn: geoResult.asn ?? null,
-                isp: geoResult.isp ?? null
-              }
-            });
-          }
-        }
-      }));
+    // 3. Enqueue IOCs for decoupled asynchronous CTI worker
+    for (const ioc of iocsToProcess) {
+      await this.enqueueIoc(ioc);
     }
 
-    logger.info({ emailId }, 'Phase 14 CTI Enrichment completed');
+    logger.info({ emailId, iocCount: iocsToProcess.length }, 'Phase 14 CTI Fan-out completed');
   }
 }
+

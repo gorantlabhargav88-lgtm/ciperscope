@@ -3,6 +3,8 @@ import IORedis from 'ioredis';
 import { logger } from '@ciperscope/logger';
 import { PrismaClient, IdempotencyOperationStatus } from '@ciperscope/database';
 
+export * from './cti-job';
+
 // Standard connection options
 export const createRedisConnection = (url: string) => {
   return new IORedis(url, {

@@ -69,6 +69,20 @@ export async function processCTIJob(jobData: any) {
                observationTime: new Date()
            }
        });
+    } else {
+       const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+       const isStale = Date.now() - existingObservation.observationTime.getTime() > ONE_DAY_MS;
+       if (isStale || existingObservation.verdict !== ctiData.verdict) {
+           await prisma.threatIntelObservation.update({
+               where: { id: existingObservation.id },
+               data: {
+                   verdict: ctiData.verdict || 'UNKNOWN',
+                   confidence: ctiData.confidence || 0,
+                   rawResponse: { status: ctiData.status, latencyMs: ctiData.latencyMs, cached: !!ctiData.fromCache },
+                   observationTime: new Date()
+               }
+           });
+       }
     }
   } catch (dbError: any) {
     logger.error({ error: dbError.message }, 'Failed to persist CTI observation');
