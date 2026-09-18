@@ -1,16 +1,39 @@
 import { CTIEnrichmentJob, validateCTIJob } from '@ciperscope/queue/src/cti-job';
 import { PrismaClient } from '@ciperscope/database';
+// @ts-ignore - Assuming the path or alias is available
+import { ctiProvider } from '../../../api/src/utils/cti';
+import { createLogger } from '@ciperscope/logger';
+
+const logger = createLogger('cti-worker');
 
 export async function processCTIJob(jobData: any) {
+  const startTime = Date.now();
   if (!validateCTIJob(jobData)) {
+    logger.error({ jobData }, 'Malformed CTI job payload');
     throw new Error('Malformed CTI job payload');
   }
 
   const { indicator, indicatorType } = jobData;
-  let verdict: 'CLEAN' | 'MALICIOUS' | 'SUSPICIOUS' | 'UNKNOWN' = 'CLEAN';
+  logger.info({ indicatorType }, 'Starting CTI enrichment job');
 
-  if (indicator.includes('malicious')) {
-     verdict = 'MALICIOUS';
+  let result;
+  try {
+    if (indicatorType === 'IP') {
+      result = await ctiProvider.enrichIp(indicator);
+    } else if (indicatorType === 'DOMAIN') {
+      result = await ctiProvider.enrichDomain(indicator);
+    } else {
+      result = await ctiProvider.enrichHash(indicator);
+    }
+  } catch (error: any) {
+    logger.error({ error: error.message, indicatorType }, 'CTI provider execution failed');
+    throw error;
+  }
+
+  const ctiData = result.data;
+  if (!ctiData) {
+    logger.warn({ status: result.status, indicatorType }, 'CTI provider returned no data');
+    return { status: result.status, verdict: 'UNKNOWN' };
   }
 
   // Use dynamic instantiation to prevent top-level native addon crashes in isolated unit test environments
@@ -26,7 +49,7 @@ export async function processCTIJob(jobData: any) {
        });
     }
 
-    const provider = indicatorType === 'IP' ? 'AbuseIPDB' : 'VirusTotal';
+    const provider = ctiData.provider || 'System';
     
     const existingObservation = await prisma.threatIntelObservation.findFirst({
         where: {
@@ -40,16 +63,28 @@ export async function processCTIJob(jobData: any) {
            data: {
                indicatorId: dbIndicator.id,
                provider,
-               verdict,
-               confidence: 99,
-               rawResponse: { status: 'available', latencyMs: 150, cached: false },
+               verdict: ctiData.verdict || 'UNKNOWN',
+               confidence: ctiData.confidence || 0,
+               rawResponse: { status: ctiData.status, latencyMs: ctiData.latencyMs, cached: !!ctiData.fromCache },
                observationTime: new Date()
            }
        });
     }
+  } catch (dbError: any) {
+    logger.error({ error: dbError.message }, 'Failed to persist CTI observation');
+    throw dbError;
   } finally {
     await prisma.$disconnect();
   }
 
-  return { status: 'available', verdict };
+  const latencyMs = Date.now() - startTime;
+  logger.info({ 
+    indicatorType, 
+    provider: ctiData.provider, 
+    verdict: ctiData.verdict,
+    latencyMs,
+    cacheHit: !!ctiData.fromCache 
+  }, 'CTI enrichment job completed successfully');
+
+  return { status: ctiData.status, verdict: ctiData.verdict };
 }
