@@ -2349,32 +2349,40 @@ export default async function caseRoutes(server: FastifyInstance) {
         }
       }
 
-      // External CTI Enrichment
-      const hashEnrichmentPromises = Array.from(uniqueHashes).slice(0, 50).map(async (hash) => {
-        try {
-          const result = await ctiProvider.enrichHash(hash);
-          if (result.status === 'available' && result.data?.malicious_votes > 0) {
-            // Find emails that had this hash
-            const matchingEmails = emails.filter(e => e.sha256 === hash);
-            matchingEmails.forEach(email => {
-              correlations.push({
-                type: 'CTI_MALICIOUS_HASH',
-                sourceId: email.id,
-                targetId: ctiProvider.name,
-                confidence: result.data.malicious_votes > 10 ? 0.9 : 0.6,
-                reasons: [`CTI provider flagged this hash as malicious (${result.data.malicious_votes} votes)`],
-                provenance: [
-                  { sourceType: 'EMAIL', sourceId: email.id, field: 'sha256' },
-                  { sourceType: 'EXTERNAL_CTI', sourceId: ctiProvider.name }
-                ]
-              });
-            });
-          }
-        } catch (err) {
-          // Swallow and degrade gracefully
+      // Offline Persistent CTI Enrichment
+      const persistedIndicators = await prisma.indicator.findMany({
+        where: {
+          value: { in: Array.from(uniqueHashes) }
+        },
+        include: {
+          observations: true
         }
       });
-      await Promise.all(hashEnrichmentPromises);
+
+      for (const indicator of persistedIndicators) {
+        if (indicator.observations && indicator.observations.length > 0) {
+          const matchingEmails = emails.filter(e => e.sha256 === indicator.value);
+          
+          for (const obs of indicator.observations) {
+            if (obs.verdict === 'MALICIOUS' || obs.verdict === 'SUSPICIOUS') {
+              matchingEmails.forEach(email => {
+                correlations.push({
+                  type: 'CTI_MALICIOUS_HASH',
+                  sourceId: email.id,
+                  targetId: obs.provider,
+                  confidence: obs.confidence ? (obs.confidence / 100) : 0.8,
+                  reasons: [`CTI provider (${obs.provider}) flagged this hash as ${obs.verdict}`],
+                  provenance: [
+                    { sourceType: 'EMAIL', sourceId: email.id, field: 'sha256' },
+                    { sourceType: 'DATABASE_CTI', sourceId: obs.id }
+                  ],
+                  providerStatus: obs.rawResponse ? (obs.rawResponse as any).status : 'unknown'
+                });
+              });
+            }
+          }
+        }
+      }
 
       // Sort and bound correlations
       correlations.sort((a, b) => b.confidence - a.confidence);
