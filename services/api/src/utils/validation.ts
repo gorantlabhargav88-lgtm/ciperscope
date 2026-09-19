@@ -162,6 +162,11 @@ export const EvidenceParamsSchema = z.object({
 });
 export const fastifyEvidenceParamsSchema = zodToJsonSchema(EvidenceParamsSchema as any);
 
+export const GlobalEvidenceParamsSchema = z.object({
+  evidenceId: uuidSchema
+});
+export const fastifyGlobalEvidenceParamsSchema = zodToJsonSchema(GlobalEvidenceParamsSchema as any);
+
 export const InvestigationListQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(100).default(20),
   cursor: z.string().optional()
@@ -173,6 +178,11 @@ export const InvestigationParamsSchema = z.object({
   investigationId: uuidSchema
 });
 export const fastifyInvestigationParamsSchema = zodToJsonSchema(InvestigationParamsSchema as any);
+
+export const GlobalInvestigationParamsSchema = z.object({
+  investigationId: uuidSchema
+});
+export const fastifyGlobalInvestigationParamsSchema = zodToJsonSchema(GlobalInvestigationParamsSchema as any);
 
 export const CreateInvestigationBodySchema = z.object({
   title: z.string().min(1).max(255).regex(/\S/, 'Title cannot be empty whitespace'),
@@ -228,6 +238,11 @@ export const AlertParamsSchema = z.object({
   alertId: uuidSchema
 });
 export const fastifyAlertParamsSchema = zodToJsonSchema(AlertParamsSchema as any);
+
+export const GlobalAlertParamsSchema = z.object({
+  alertId: uuidSchema
+});
+export const fastifyGlobalAlertParamsSchema = zodToJsonSchema(GlobalAlertParamsSchema as any);
 
 export const UpdateAlertBodySchema = z.object({
   isRead: z.boolean()

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../features/auth/AuthContext';
 import { Shield } from 'lucide-react';
+import { api } from '../lib/api';
 
 export const Login = () => {
   const navigate = useNavigate();
@@ -17,29 +18,12 @@ export const Login = () => {
     setLoading(true);
 
     try {
-      const res = await fetch('http://localhost:3000/api/v1/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-        credentials: 'include'
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.message || 'Login failed');
-      }
+      await api.post('/auth/login', { email, password });
 
       // To fully initialize context with organizationId, we need to fetch /me
       // The backend login does not return memberships in the user object
-      const meRes = await fetch('http://localhost:3000/api/v1/auth/me', {
-        credentials: 'include'
-      });
+      const meData = await api.get('/auth/me');
 
-      if (!meRes.ok) {
-        throw new Error('Failed to fetch user context');
-      }
-
-      const meData = await meRes.json();
       const membership = meData.user.memberships?.[0];
 
       login({

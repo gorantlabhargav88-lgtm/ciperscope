@@ -121,18 +121,18 @@ export default async function emailRoutes(server: FastifyInstance) {
     } catch (err: unknown) {
       const error = err as Error;
       if (error.message.includes('Empty file')) {
-         return reply.status(400).send({ error: 'Bad Request', message: 'Empty file uploaded' });
+        return reply.status(400).send({ error: 'Bad Request', message: 'Empty file uploaded' });
       }
       if (error.message.includes('Concurrent ingestion detected')) {
-         return reply.status(409).send({ error: 'Conflict', message: error.message });
+        return reply.status(409).send({ error: 'Conflict', message: error.message });
       }
       const errCode = (error as any).code;
       if (error.message === 'File size limit reached' ||
-          errCode === 'FST_FILES_LIMIT' ||
-          errCode === 'FST_FIELDS_LIMIT' ||
-          errCode === 'FST_PARTS_LIMIT' ||
-          errCode === 'FST_REQ_FILE_TOO_LARGE') {
-          return reply.status(413).send({ error: 'Payload Too Large', message: 'Upload limits exceeded' });
+        errCode === 'FST_FILES_LIMIT' ||
+        errCode === 'FST_FIELDS_LIMIT' ||
+        errCode === 'FST_PARTS_LIMIT' ||
+        errCode === 'FST_REQ_FILE_TOO_LARGE') {
+        return reply.status(413).send({ error: 'Payload Too Large', message: 'Upload limits exceeded' });
       }
       throw err;
     }
@@ -639,7 +639,7 @@ export default async function emailRoutes(server: FastifyInstance) {
         relayHops: true
       }
     });
-    
+
     if (!email) {
       return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
     }

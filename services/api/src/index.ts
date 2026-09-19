@@ -9,6 +9,11 @@ import authRoutes from './modules/auth/auth.routes';
 import rbacPlugin from './plugins/rbac';
 import emailRoutes from './modules/email/email.routes';
 import caseRoutes from './modules/case/case.routes';
+import dashboardRoutes from './modules/dashboard/dashboard.routes';
+import alertRoutes from './modules/alert/alert.routes';
+import investigationRoutes from './modules/investigation/investigation.routes';
+import evidenceRoutes from './modules/evidence/evidence.routes';
+import integrationRoutes from './modules/integration/integration.routes';
 import fastifyMultipart from '@fastify/multipart';
 import { createRedisConnection } from '@ciperscope/queue';
 
@@ -114,6 +119,11 @@ server.get('/readiness', async (request, reply) => {
 server.register(authRoutes, { prefix: '/api/v1/auth' });
 server.register(emailRoutes, { prefix: '/api/v1/emails' });
 server.register(caseRoutes, { prefix: '/api/v1/cases' });
+server.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
+server.register(alertRoutes, { prefix: '/api/v1/alerts' });
+server.register(investigationRoutes, { prefix: '/api/v1/investigations' });
+server.register(evidenceRoutes, { prefix: '/api/v1/evidence' });
+server.register(integrationRoutes, { prefix: '/api/v1/integrations' });
 
 const start = async () => {
   try {

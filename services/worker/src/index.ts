@@ -14,6 +14,7 @@ import { createMetricsServer } from './metricsServer';
 import { CtiEnrichmentWorker } from './cti/CtiEnrichmentWorker';
 import { processCTIJob } from './cti-worker';
 import { CTIEnrichmentJob } from '@ciperscope/queue';
+import { GmailSyncWorker, GmailSyncJobPayload } from './integration/gmail-sync';
 
 const redisUrl = env.REDIS_URL;
 
@@ -592,12 +593,41 @@ export async function start() {
     logger.error({ jobId: job?.id, queue: 'email-ml-classification', err }, 'ML Classification Job failed');
   });
 
+  // Setup Gmail Sync Worker
+  const gmailSyncWorkerLogic = new GmailSyncWorker(rawEmailStore);
+  const gmailSyncWorker = queueManager.createWorker<GmailSyncJobPayload, unknown>(
+    'gmail-sync',
+    async (job) => {
+      return runWithContext(
+        {
+          requestId: generateRequestId(),
+          jobId: job.id as string,
+          tenantId: job.data.organizationId,
+        },
+        async () => {
+          logger.info({ emailAddress: job.data.emailAddress }, 'Processing Gmail sync job');
+          await gmailSyncWorkerLogic.process(job.data);
+          return { success: true };
+        }
+      );
+    },
+    2 // Concurrency
+  );
+
+  gmailSyncWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, queue: 'gmail-sync' }, 'Gmail Sync Job completed successfully');
+  });
+
+  gmailSyncWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, queue: 'gmail-sync', err }, 'Gmail Sync Job failed');
+  });
+
   logger.info('Workers registered and listening for jobs.');
 
   // Start Metrics Server
   const server = createMetricsServer();
 
-  const port = parseInt(env.PORT || '3001', 10);
+  const port = env.WORKER_PORT;
   await server.listen({ port, host: '0.0.0.0' });
   logger.info(`Worker metrics server listening on port ${port}`);
 }

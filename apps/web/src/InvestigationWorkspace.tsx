@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { api } from './lib/api';
 
 interface IntelligenceData {
   investigation: any;
@@ -19,11 +20,7 @@ export const InvestigationWorkspace: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // In a real app, this would use an axios client with authentication
-    fetch(`/api/v1/cases/${caseId}/investigations/${investigationId}/intelligence`, {
-      headers: { 'x-organization-id': 'org-123' } // Mock tenant ID for demo
-    })
-      .then(res => res.json())
+    api.get(`/cases/${caseId}/investigations/${investigationId}/intelligence`)
       .then(d => {
         setData(d);
         setLoading(false);

@@ -11,6 +11,10 @@ declare module 'fastify' {
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requirePermission: (action: string) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
+  interface FastifySchema {
+    tags?: string[];
+    summary?: string;
+  }
 }
 
 declare module '@fastify/jwt' {

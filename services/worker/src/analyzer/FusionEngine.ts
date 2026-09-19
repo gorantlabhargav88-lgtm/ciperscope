@@ -13,8 +13,6 @@ export class FusionEngine {
         authAnalysis: true,
         urls: true,
         attachments: true,
-        threatIndicators: true,
-        geolocationInfo: true,
         inferences: {
           orderBy: { createdAt: 'desc' },
           take: 1
@@ -82,9 +80,10 @@ export class FusionEngine {
     }
 
     // 4. Evaluate CTI Threat Intelligence
-    if (email.threatIndicators && email.threatIndicators.length > 0) {
-      const hasMalicious = email.threatIndicators.some(i => i.status === ThreatVerdict.MALICIOUS);
-      const hasSuspicious = email.threatIndicators.some(i => i.status === ThreatVerdict.SUSPICIOUS);
+    const threatIndicators = (email as any).threatIndicators;
+    if (threatIndicators && threatIndicators.length > 0) {
+      const hasMalicious = threatIndicators.some((i: any) => i.status === ThreatVerdict.MALICIOUS);
+      const hasSuspicious = threatIndicators.some((i: any) => i.status === ThreatVerdict.SUSPICIOUS);
 
       if (hasMalicious) {
         score += 50;
