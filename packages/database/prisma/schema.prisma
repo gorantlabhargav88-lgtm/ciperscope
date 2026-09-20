@@ -144,16 +144,32 @@ model Integration {
   id             String       @id @default(uuid())
   organizationId String
   provider       String
+  // accessToken/refreshToken hold an AES-256-GCM encrypted envelope
+  // ("v1:<ivHex>:<authTagHex>:<ciphertextHex>" — see
+  // packages/config/src/tokenCrypto.ts), never plaintext. Column type is
+  // unchanged (String) since the envelope is itself a string.
   accessToken    String
   refreshToken   String
   emailAddress   String
   historyId      String?
+  // ACTIVE | ERROR | DISCONNECTED — set to ERROR by the sync worker when
+  // Google permanently rejects the stored refresh token (e.g. revoked at
+  // Google's end), and to DISCONNECTED by the disconnect endpoint.
+  status         String       @default("ACTIVE")
   expiresAt      DateTime
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, provider, emailAddress])
+  // A given mailbox can only ever be connected to ONE organization at a
+  // time. This is what makes the Gmail webhook lookup (which Google's own
+  // push-notification payload identifies only by emailAddress, never by
+  // organizationId — a real external protocol constraint, not a choice we
+  // can change) safe: findUnique on this key can never return an
+  // ambiguous cross-tenant match. Enforced at the database level, not just
+  // in application code.
+  @@unique([provider, emailAddress])
 }
 
 model Case {

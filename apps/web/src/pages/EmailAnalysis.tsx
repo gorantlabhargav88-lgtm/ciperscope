@@ -1,123 +1,113 @@
-import { useState, useRef, useEffect } from 'react';
-import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
+import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle, AlertTriangle, ShieldOff } from 'lucide-react';
 import { ForensicTimeline } from '../components/ForensicTimeline';
-import { api } from '../lib/api';
+import { ThreatPriorityExplanation } from '../components/threat/ThreatPriorityExplanation';
+import { ChainOfCustody } from '../components/evidence/ChainOfCustody';
+import { UnifiedForensicTimeline } from '../components/timeline/UnifiedForensicTimeline';
+import { apiClient } from '../lib/apiClient';
+import { aggregateEmailForensics } from '../features/email-forensics/aggregateEmailForensics';
+import type { EmailForensicsData, ThreatPriority } from '@ciperscope/types';
+
+const PRIORITY_STYLES: Record<ThreatPriority, string> = {
+  P1: 'bg-rose-500/20 text-rose-400 border-rose-500/30',
+  P2: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  P3: 'bg-slate-700/50 text-slate-300 border-slate-600/50',
+};
+
+const SEVERITY_STYLES: Record<string, string> = {
+  CRITICAL: 'bg-rose-500/20 text-rose-500 border-rose-500/30',
+  HIGH: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  MEDIUM: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  LOW: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+};
 
 export const EmailAnalysis = () => {
+  const { id: routeEmailId } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  // GET /emails/:id/analysis now returns the real caseId (Phase 3, Step 2 —
+  // previously a documented missing backend capability). This override
+  // param is only for the rare case a caller wants to force a different
+  // case context than the one recorded on the email itself.
+  const caseIdOverride = searchParams.get('caseId');
+
   const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<{message?: string, error?: string, duplicate?: boolean, emailId?: string} | null>(null);
+  const [uploadResult, setUploadResult] = useState<{ message?: string; error?: string; duplicate?: boolean; emailId?: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [analysis, setAnalysis] = useState<any>(null);
-  const [headers, setHeaders] = useState<any[]>([]);
-  const [hops, setHops] = useState<any[]>([]);
-  const [mimeParts, setMimeParts] = useState<any[]>([]);
-  const [authAnalysis, setAuthAnalysis] = useState<any>(null);
-  const [spf, setSpf] = useState<any[]>([]);
-  const [dkim, setDkim] = useState<any[]>([]);
-  const [dmarc, setDmarc] = useState<any>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null);
+  const [data, setData] = useState<EmailForensicsData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [urls, setUrls] = useState<any[]>([]);
-  const [attachments, setAttachments] = useState<any[]>([]);
-  const [threatIndicators, setThreatIndicators] = useState<any[]>([]);
-  const [geolocation, setGeolocation] = useState<any[]>([]);
+  const activeEmailId = routeEmailId || uploadResult?.emailId;
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setUploading(true);
     setUploadResult(null);
-    setAnalysis(null);
-    setHeaders([]);
-    setHops([]);
-    setMimeParts([]);
-    setAuthAnalysis(null);
-    setSpf([]);
-    setDkim([]);
-    setDmarc(null);
-    setUrls([]);
-    setAttachments([]);
-    setThreatIndicators([]);
-    setGeolocation([]);
+    setData(null);
+    setAnalysisStatus(null);
+    setLoadError(null);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const res = await fetch(import.meta.env.VITE_API_URL?.replace(/\/api\/v1\/?$/, '') + '/api/v1/emails/ingest' || 'http://localhost:3000/api/v1/emails/ingest', {
-        method: 'POST',
-        headers: {
-          'x-organization-id': api.getOrganizationId() || ''
-        },
-        body: formData,
-        credentials: 'include'
-      });
-      const data = await res.json();
-      setUploadResult(res.ok ? data : { error: data.message || 'Upload failed' });
-    } catch (err: any) {
-      setUploadResult({ error: err.message });
+      const result = await apiClient.ingestEmail(file);
+      setUploadResult(result);
+    } catch (err) {
+      setUploadResult({ error: err instanceof Error ? err.message : 'Upload failed' });
     } finally {
       setUploading(false);
     }
   };
 
-  useEffect(() => {
-    let interval: any;
-    if (uploadResult?.emailId) {
-      const fetchDetails = async () => {
-        try {
-          const data = await api.get(`/emails/${uploadResult.emailId}/analysis`);
-          setAnalysis(data);
-
-          if (data.analysisStatus === 'COMPLETED') {
-            clearInterval(interval);
-
-            // Fetch headers
-            api.get(`/emails/${uploadResult.emailId}/headers`).then((d: any) => setHeaders(d.headers || []));
-
-            // Fetch hops
-            api.get(`/emails/${uploadResult.emailId}/received-hops`).then((d: any) => setHops(d.hops || []));
-
-            // Fetch mime
-            api.get(`/emails/${uploadResult.emailId}/mime-parts`).then((d: any) => setMimeParts(d.mimeParts || []));
-
-            // Phase 9 Auth fetching
-            api.get(`/emails/${uploadResult.emailId}/authentication`).then((d: any) => setAuthAnalysis(d.analysis || null));
-
-            api.get(`/emails/${uploadResult.emailId}/spf`).then((d: any) => setSpf(d.spfVerifications || []));
-
-            api.get(`/emails/${uploadResult.emailId}/dkim`).then((d: any) => setDkim(d.dkimVerifications || []));
-
-            api.get(`/emails/${uploadResult.emailId}/dmarc`).then((d: any) => setDmarc(d.dmarcVerification || null));
-
-            // Phase 10
-            api.get(`/emails/${uploadResult.emailId}/urls`).then((d: any) => setUrls(d.urls || []));
-
-            api.get(`/emails/${uploadResult.emailId}/attachments`).then((d: any) => setAttachments(d.attachments || []));
-
-            // Phase 11
-            api.get(`/emails/${uploadResult.emailId}/ai-analysis`).then((d: any) => setAnalysis((prev: any) => ({...prev, mlInference: d.prediction || {status: 'NOT_AVAILABLE'}})));
-
-            // Phase 14.5
-            api.get(`/emails/${uploadResult.emailId}/threat-indicators`).then((d: any) => setThreatIndicators(d.threatIndicators || []));
-
-            api.get(`/emails/${uploadResult.emailId}/geolocation`).then((d: any) => setGeolocation(d.geolocation || []));
-
-          } else if (data.analysisStatus === 'FAILED') {
-            clearInterval(interval);
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      };
-
-      interval = setInterval(fetchDetails, 2000);
-      fetchDetails();
+  const loadForensics = useCallback(async (emailId: string) => {
+    try {
+      const forensics = await aggregateEmailForensics(emailId, caseIdOverride);
+      setData(forensics);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Failed to load email forensics');
     }
-    return () => clearInterval(interval);
-  }, [uploadResult?.emailId]);
+  }, [caseIdOverride]);
 
-  const getHeader = (name: string) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value;
+  useEffect(() => {
+    if (!activeEmailId) return;
+
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval>;
+
+    const poll = async () => {
+      try {
+        const summary = await apiClient.getEmailAnalysis(activeEmailId);
+        if (cancelled) return;
+        setAnalysisStatus(summary.analysisStatus);
+
+        if (summary.analysisStatus === 'COMPLETED') {
+          clearInterval(interval);
+          await loadForensics(activeEmailId);
+        } else if (summary.analysisStatus === 'FAILED') {
+          clearInterval(interval);
+          setLoadError('Analysis failed on the backend.');
+        }
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : 'Failed to load email');
+      }
+    };
+
+    interval = setInterval(poll, 2000);
+    poll();
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeEmailId, loadForensics]);
+
+  const getHeader = (name: string) => data?.headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
+
+  const priority = data?.threat.priority;
+  const severity = data?.threat.score.severity;
 
   return (
     <div className="space-y-6 pb-20">
@@ -126,108 +116,133 @@ export const EmailAnalysis = () => {
         <div>
           <h1 className="text-2xl font-semibold text-slate-100 flex items-center">
             <Mail className="w-6 h-6 mr-3 text-slate-400" />
-            Email Investigation
+            Email Forensics
           </h1>
-          <p className="text-slate-400 mt-1">Detailed forensics and threat analysis of the email artifact.</p>
+          <p className="text-slate-400 mt-1">Detailed forensics, threat scoring, and prioritization for the email artifact.</p>
         </div>
         <div className="flex items-center space-x-4">
-          <div className="flex flex-col items-end">
-            <input
-               type="file"
-               ref={fileInputRef}
-               className="hidden"
-               accept=".eml"
-               onChange={handleFileUpload}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center transition-colors disabled:opacity-50"
-            >
-              {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <UploadCloud className="w-4 h-4 mr-2" />}
-              {uploading ? 'Ingesting...' : 'Ingest Raw Email'}
-            </button>
-            {uploadResult && (
-               <div className={`text-xs mt-2 ${uploadResult.error ? 'text-rose-400' : (uploadResult.duplicate ? 'text-amber-400' : 'text-emerald-400')}`}>
-                 {uploadResult.error || uploadResult.message}
-               </div>
-            )}
-          </div>
-          {analysis && (
+          {!routeEmailId && (
+            <div className="flex flex-col items-end">
+              <input
+                 type="file"
+                 ref={fileInputRef}
+                 className="hidden"
+                 accept=".eml"
+                 onChange={handleFileUpload}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center transition-colors disabled:opacity-50"
+              >
+                {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <UploadCloud className="w-4 h-4 mr-2" />}
+                {uploading ? 'Ingesting...' : 'Ingest Raw Email'}
+              </button>
+              {uploadResult && (
+                 <div className={`text-xs mt-2 ${uploadResult.error ? 'text-rose-400' : (uploadResult.duplicate ? 'text-amber-400' : 'text-emerald-400')}`}>
+                   {uploadResult.error || uploadResult.message}
+                 </div>
+              )}
+            </div>
+          )}
+          {data && priority && (
+            <div className="flex items-center gap-3">
+              <span className={`text-xs px-2.5 py-1.5 rounded font-bold border ${PRIORITY_STYLES[priority.priority]}`} title={priority.reasons.join('; ')}>
+                {priority.priority}
+              </span>
+              {severity && (
+                <span className={`text-xs px-2.5 py-1.5 rounded font-bold border ${SEVERITY_STYLES[severity] ?? SEVERITY_STYLES.LOW}`}>
+                  {severity}
+                </span>
+              )}
+            </div>
+          )}
+          {activeEmailId && !data && (
              <div className="text-right flex items-center gap-3">
                <div className="text-sm font-medium text-slate-400">Status</div>
-               {analysis.analysisStatus === 'PROCESSING' || analysis.analysisStatus === 'PENDING' ? (
+               {analysisStatus === 'PROCESSING' || analysisStatus === 'PENDING' || !analysisStatus ? (
                   <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
-               ) : analysis.analysisStatus === 'COMPLETED' ? (
-                  <CheckCircle className="w-5 h-5 text-emerald-400" />
-               ) : (
+               ) : analysisStatus === 'FAILED' ? (
                   <XCircle className="w-5 h-5 text-rose-500" />
+               ) : (
+                  <CheckCircle className="w-5 h-5 text-emerald-500" />
                )}
              </div>
           )}
         </div>
       </div>
 
-      {!analysis && !uploadResult && (
+      {!activeEmailId && (
         <div className="p-8 text-center text-slate-500 border border-slate-800 rounded-lg border-dashed">
-          Upload an .eml file to begin analysis.
+          Upload an .eml file, or open this page via a link to a specific email, to begin analysis.
         </div>
       )}
 
-      {analysis?.analysisStatus === 'COMPLETED' && (
+      {loadError && (
+        <div className="p-4 text-sm text-rose-400 border border-rose-900/50 bg-rose-950/20 rounded-lg">
+          {loadError}
+        </div>
+      )}
+
+      {data && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
 
-            {/* Phase 13: Risk Assessment */}
-            {analysis.riskAssessment && (
-              <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                  <h2 className="font-medium text-slate-200">Phase 13: Fusion Risk Assessment</h2>
-                  <span className={`text-xs px-2 py-1 rounded font-bold ${
-                    analysis.riskAssessment.riskLevel === 'CRITICAL' ? 'bg-rose-500/20 text-rose-500 border border-rose-500/30' :
-                    analysis.riskAssessment.riskLevel === 'HIGH' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
-                    analysis.riskAssessment.riskLevel === 'MEDIUM' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
-                    'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                  }`}>
-                    {analysis.riskAssessment.riskLevel} (Heuristic Risk Score: {analysis.riskAssessment.overallScore}/100)
+            {/* Threat Assessment */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Threat Assessment</h2>
+                {severity && (
+                  <span className={`text-xs px-2 py-1 rounded font-bold border ${SEVERITY_STYLES[severity] ?? SEVERITY_STYLES.LOW}`}>
+                    {severity} (Score: {data.threat.score.value ?? 'N/A'}/100)
                   </span>
-                </div>
-                <div className="p-5 space-y-4">
-                  <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">Explainable Risk Factors</h3>
-                  {analysis.riskAssessment.factors?.length > 0 ? (
-                    <div className="space-y-3">
-                      {analysis.riskAssessment.factors.map((f: any, i: number) => (
-                        <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-xs flex flex-col space-y-2">
-                          <div className="flex justify-between items-center">
-                            <span className="font-mono text-amber-400 font-semibold">{f.category}</span>
-                            <span className="text-slate-500">+{f.scoreContribution} Score</span>
-                          </div>
-                          <div className="text-slate-300">{f.description}</div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-xs text-slate-500">No elevated risk factors identified.</div>
-                  )}
-                </div>
+                )}
               </div>
-            )}
+              <div className="p-5 space-y-4">
+                {priority && data && (
+                  <ThreatPriorityExplanation
+                    priority={priority}
+                    threatScore={data.threat.score.value}
+                    severity={data.threat.score.severity}
+                    maliciousIndicatorCount={data.threat.maliciousIndicatorCount}
+                    authenticationFailed={data.threat.authenticationFailed}
+                    mlClassification={data.threat.mlClassification}
+                  />
+                )}
+                <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">Explainable Risk Factors</h3>
+                {data.threat.score.factors.length > 0 ? (
+                  <div className="space-y-3">
+                    {data.threat.score.factors.map((f, i) => (
+                      <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-xs flex flex-col space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="font-mono text-amber-400 font-semibold">{f.category}</span>
+                          <span className="text-slate-500">+{f.scoreContribution} Score</span>
+                        </div>
+                        <div className="text-slate-300">{f.description}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-500">No elevated risk factors identified.</div>
+                )}
+              </div>
+            </div>
 
-            {/* Phase 15: Analyst Investigation Timeline */}
+            {/* Timeline */}
             <ForensicTimeline
-              analysis={analysis}
-              headers={headers}
-              spf={spf}
-              dkim={dkim}
-              dmarc={dmarc}
-              urls={urls}
-              mlInference={analysis.mlInference}
+              analysis={data.email}
+              headers={data.headers}
+              spf={data.authentication.spf}
+              dkim={data.authentication.dkim}
+              dmarc={data.authentication.dmarc}
+              urls={data.urls}
+              mlInference={{ status: data.threat.mlStatus, prediction: data.threat.mlClassification }}
             />
 
             {/* Header Forensics */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                <h2 className="font-medium text-slate-200">Header Information</h2>
+                <h2 className="font-medium text-slate-200">Overview</h2>
                 <span className="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded">Parsed</span>
               </div>
               <div className="p-5 space-y-4">
@@ -257,7 +272,7 @@ export const EmailAnalysis = () => {
               </div>
               <div className="p-5">
                 <div className="flex flex-col space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-slate-800">
-                  {hops.map((hop, idx) => (
+                  {data.relayHops.map((hop, idx) => (
                     <div key={idx} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
                       <div className="flex items-center justify-center w-10 h-10 rounded-full border border-slate-700 bg-slate-900 text-slate-400 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2">
                         <Server className="w-5 h-5" />
@@ -271,54 +286,34 @@ export const EmailAnalysis = () => {
                       </div>
                     </div>
                   ))}
-                  {hops.length === 0 && <div className="text-sm text-slate-500 text-center w-full">No Received hops detected.</div>}
+                  {data.relayHops.length === 0 && <div className="text-sm text-slate-500 text-center w-full">No Received hops detected.</div>}
                 </div>
               </div>
             </div>
 
-            {/* Authentication Observations */}
+            {/* Authentication */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                <h2 className="font-medium text-slate-200">Observed Header Claims</h2>
-                <span className="text-xs bg-amber-500/20 text-amber-500 px-2 py-1 rounded">Untrusted</span>
-              </div>
-              <div className="p-5">
-                 {headers.filter(h => h.name.toLowerCase() === 'authentication-results').map((h, i) => (
-                    <div key={i} className="mb-2 p-3 bg-slate-950 border border-slate-800 rounded text-sm text-slate-300 font-mono break-all">
-                      {h.value}
-                    </div>
-                 ))}
-                 {headers.filter(h => h.name.toLowerCase() === 'authentication-results').length === 0 && (
-                   <div className="text-sm text-slate-500">No Authentication-Results headers found.</div>
-                 )}
-              </div>
-            </div>
-
-            {/* Phase 9: Independent Authentication Verification */}
-            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                <h2 className="font-medium text-slate-200">Independent Authentication Verification</h2>
-                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">Phase 9 DNS</span>
+                <h2 className="font-medium text-slate-200">Authentication (SPF / DKIM / DMARC)</h2>
+                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">DNS-based</span>
               </div>
               <div className="p-5 space-y-4">
 
-                 {/* Overall Auth Summary */}
-                 {authAnalysis && (
-                   <div className={`p-4 rounded-lg border ${authAnalysis.isConsistent ? 'border-emerald-900/50 bg-emerald-950/20' : 'border-rose-900/50 bg-rose-950/20'}`}>
+                 {data.authentication.summary && (
+                   <div className={`p-4 rounded-lg border ${data.authentication.summary.isConsistent ? 'border-emerald-900/50 bg-emerald-950/20' : 'border-rose-900/50 bg-rose-950/20'}`}>
                      <div className="flex items-center gap-2 mb-2">
-                       {authAnalysis.isConsistent ? <CheckCircle className="w-5 h-5 text-emerald-500" /> : <XCircle className="w-5 h-5 text-rose-500" />}
+                       {data.authentication.summary.isConsistent ? <CheckCircle className="w-5 h-5 text-emerald-500" /> : <XCircle className="w-5 h-5 text-rose-500" />}
                        <h3 className="font-semibold text-slate-200">Forensic Consistency Check</h3>
                      </div>
-                     <p className="text-sm text-slate-400">{authAnalysis.summary}</p>
+                     <p className="text-sm text-slate-400">{data.authentication.summary.summary}</p>
                    </div>
                  )}
 
-                 {/* Verification Panels */}
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {/* SPF */}
                     <div className="border border-slate-800 bg-slate-950 rounded p-4">
                        <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">SPF</h3>
-                       {spf.length > 0 ? spf.map((s, i) => (
+                       {data.authentication.spf.length > 0 ? data.authentication.spf.map((s, i) => (
                          <div key={i} className="text-xs space-y-1">
                            <div className="flex justify-between">
                              <span className="text-slate-500">Result</span>
@@ -331,14 +326,21 @@ export const EmailAnalysis = () => {
                        )) : <div className="text-xs text-slate-600">No SPF data</div>}
                     </div>
 
-                    {/* DKIM */}
-                    <div className="border border-slate-800 bg-slate-950 rounded p-4">
-                       <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">DKIM</h3>
-                       {dkim.length > 0 ? dkim.map((d, i) => (
+                    {/* DKIM — always shown as NOT cryptographically verified */}
+                    <div className="border border-amber-900/40 bg-slate-950 rounded p-4">
+                       <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2 flex items-center gap-1.5">
+                         DKIM
+                         <ShieldOff className="w-3.5 h-3.5 text-amber-500" />
+                       </h3>
+                       <div className="mb-2 p-2 bg-amber-950/30 border border-amber-900/40 rounded text-[11px] text-amber-400 flex items-start gap-1.5">
+                         <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                         <span>NOT VERIFIED — cryptographic signature verification is unavailable in this build; results below are structural checks only, not proof of authenticity.</span>
+                       </div>
+                       {data.authentication.dkim.length > 0 ? data.authentication.dkim.map((d, i) => (
                          <div key={i} className="text-xs space-y-1 pb-2 mb-2 border-b border-slate-800/50 last:border-0 last:pb-0 last:mb-0">
                            <div className="flex justify-between">
-                             <span className="text-slate-500">Result</span>
-                             <span className={`font-mono font-bold ${d.result === 'PASS' ? 'text-emerald-400' : 'text-rose-400'}`}>{d.result}</span>
+                             <span className="text-slate-500">Structural Result</span>
+                             <span className="font-mono font-bold text-slate-400">{d.result}</span>
                            </div>
                            <div className="flex justify-between"><span className="text-slate-500">Domain</span><span className="text-slate-300 truncate max-w-[120px]">{d.domain || '-'}</span></div>
                            <div className="flex justify-between"><span className="text-slate-500">Selector</span><span className="text-slate-300 truncate max-w-[120px]">{d.selector || '-'}</span></div>
@@ -350,37 +352,35 @@ export const EmailAnalysis = () => {
                     {/* DMARC */}
                     <div className="border border-slate-800 bg-slate-950 rounded p-4">
                        <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2">DMARC</h3>
-                       {dmarc ? (
+                       {data.authentication.dmarc ? (
                          <div className="text-xs space-y-1">
                            <div className="flex justify-between">
                              <span className="text-slate-500">Result</span>
-                             <span className={`font-mono font-bold ${dmarc.result === 'PASS' ? 'text-emerald-400' : (dmarc.result === 'NONE' ? 'text-slate-400' : 'text-rose-400')}`}>{dmarc.result}</span>
+                             <span className={`font-mono font-bold ${data.authentication.dmarc.result === 'PASS' ? 'text-emerald-400' : (data.authentication.dmarc.result === 'NONE' ? 'text-slate-400' : 'text-rose-400')}`}>{data.authentication.dmarc.result}</span>
                            </div>
-                           <div className="flex justify-between"><span className="text-slate-500">Org Domain</span><span className="text-slate-300">{dmarc.orgDomain || '-'}</span></div>
-                           <div className="flex justify-between"><span className="text-slate-500">Policy</span><span className="text-slate-300">{dmarc.policy || '-'}</span></div>
-                           <div className="flex justify-between"><span className="text-slate-500">Alignment</span><span className="text-slate-300">SPF:{dmarc.spfAlignment?.charAt(0).toUpperCase()} DKIM:{dmarc.dkimAlignment?.charAt(0).toUpperCase()}</span></div>
-                           <div className="mt-2 text-slate-500 italic break-words">{dmarc.explanation}</div>
+                           <div className="flex justify-between"><span className="text-slate-500">Org Domain</span><span className="text-slate-300">{data.authentication.dmarc.orgDomain || '-'}</span></div>
+                           <div className="flex justify-between"><span className="text-slate-500">Policy</span><span className="text-slate-300">{data.authentication.dmarc.policy || '-'}</span></div>
+                           <div className="flex justify-between"><span className="text-slate-500">Alignment</span><span className="text-slate-300">SPF:{data.authentication.dmarc.spfAlignment?.charAt(0).toUpperCase()} DKIM:{data.authentication.dmarc.dkimAlignment?.charAt(0).toUpperCase()}</span></div>
+                           <div className="mt-2 text-slate-500 italic break-words">{data.authentication.dmarc.explanation}</div>
                          </div>
                        ) : <div className="text-xs text-slate-600">No DMARC data</div>}
                     </div>
                  </div>
-
               </div>
             </div>
 
-            {/* Phase 10: Threat Analysis */}
+            {/* URL & Attachment Intelligence */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                <h2 className="font-medium text-slate-200">Phase 10: URL & Attachment Threat Analysis</h2>
+                <h2 className="font-medium text-slate-200">URL &amp; Attachment Intelligence</h2>
                 <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-1 rounded border border-rose-500/30">Passive Scan</span>
               </div>
               <div className="p-5 space-y-6">
 
-                {/* URLs */}
                 <div>
-                   <h3 className="text-sm font-medium text-slate-300 mb-3 border-b border-slate-800 pb-2">Extracted URLs ({urls.length})</h3>
+                   <h3 className="text-sm font-medium text-slate-300 mb-3 border-b border-slate-800 pb-2">Extracted URLs ({data.urls.length})</h3>
                    <div className="space-y-3">
-                     {urls.length > 0 ? urls.map((u, i) => (
+                     {data.urls.length > 0 ? data.urls.map((u, i) => (
                        <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-xs flex flex-col space-y-2">
                          <div className="flex justify-between items-start">
                            <div className="font-mono text-slate-300 break-all pr-4">{u.url}</div>
@@ -389,10 +389,10 @@ export const EmailAnalysis = () => {
                          {u.normalizedUrl && u.normalizedUrl !== u.url && (
                            <div className="text-slate-500 font-mono break-all"><span className="text-slate-600 mr-2">NORMALIZED:</span>{u.normalizedUrl}</div>
                          )}
-                         {(u.indicators?.length > 0 || u.isObfuscated) && (
+                         {((u.indicators?.length ?? 0) > 0 || u.isObfuscated) && (
                            <div className="flex gap-2 mt-1 flex-wrap">
                              {u.isObfuscated && <span className="text-rose-400 border border-rose-500/30 bg-rose-500/10 px-1 rounded">OBFUSCATED</span>}
-                             {u.indicators?.map((ind: string, idx: number) => (
+                             {u.indicators?.map((ind, idx) => (
                                <span key={idx} className="text-amber-400 border border-amber-500/30 bg-amber-500/10 px-1 rounded">{ind}</span>
                              ))}
                            </div>
@@ -402,121 +402,73 @@ export const EmailAnalysis = () => {
                    </div>
                 </div>
 
-                {/* Attachments */}
                 <div>
-                   <h3 className="text-sm font-medium text-slate-300 mb-3 border-b border-slate-800 pb-2">Attachment Analysis ({attachments.length})</h3>
+                   <h3 className="text-sm font-medium text-slate-300 mb-3 border-b border-slate-800 pb-2">Attachment Analysis ({data.attachments.length})</h3>
                    <div className="space-y-3">
-                     {attachments.length > 0 ? attachments.map((a, i) => (
+                     {data.attachments.length > 0 ? data.attachments.map((a, i) => (
                        <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-xs flex flex-col space-y-2">
                          <div className="flex justify-between items-center">
                            <div className="font-medium text-slate-200">{a.filename}</div>
                            <div className="text-slate-500">{Math.round(a.sizeBytes / 1024)} KB</div>
                          </div>
-
                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
                             <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Declared MIME</span><span className="text-slate-300">{a.mimeType}</span></div>
                             <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Actual MIME</span><span className={`font-mono ${a.isMismatch ? 'text-rose-400' : 'text-slate-300'}`}>{a.actualMimeType || 'Unknown'}</span></div>
                          </div>
-
                          {a.isMismatch && (
                             <div className="text-rose-400 border border-rose-500/30 bg-rose-500/10 px-2 py-1 rounded w-fit mt-1">
                               SUSPICIOUS: File signature mismatch
                             </div>
                          )}
-
                          {a.sha256 && (
                             <div className="text-slate-500 font-mono"><span className="text-slate-600 mr-2">SHA-256:</span>{a.sha256}</div>
-                         )}
-                         {a.magicBytes && (
-                            <div className="text-slate-500 font-mono"><span className="text-slate-600 mr-2">MAGIC:</span>{a.magicBytes}</div>
-                         )}
-
-                         {a.isArchive && a.archiveMetadata && (
-                           <div className="mt-2 pt-2 border-t border-slate-800">
-                             <div className="text-slate-400 mb-1 font-medium">Archive Safety Inspection</div>
-                             <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                               <div className="flex justify-between"><span className="text-slate-500">Entries</span><span className="text-slate-300">{a.archiveMetadata.entryCount}</span></div>
-                               <div className="flex justify-between"><span className="text-slate-500">Total Uncompressed</span><span className="text-slate-300">{Math.round((a.archiveMetadata.totalUncompressedSize || 0) / 1024)} KB</span></div>
-                               <div className="flex justify-between"><span className="text-slate-500">Path Traversal</span><span className={a.archiveMetadata.hasTraversal ? 'text-rose-400' : 'text-emerald-400'}>{a.archiveMetadata.hasTraversal ? 'DETECTED' : 'None'}</span></div>
-                               <div className="flex justify-between"><span className="text-slate-500">Nested Archive</span><span className={a.archiveMetadata.hasNestedArchive ? 'text-amber-400' : 'text-emerald-400'}>{a.archiveMetadata.hasNestedArchive ? 'DETECTED (Blocked)' : 'None'}</span></div>
-                             </div>
-                             {a.archiveMetadata.error && (
-                                <div className="text-rose-400 border border-rose-500/30 bg-rose-500/10 px-2 py-1 rounded mt-2">
-                                  {a.archiveMetadata.error}
-                                </div>
-                             )}
-                           </div>
                          )}
                        </div>
                      )) : <div className="text-xs text-slate-600">No attachments found</div>}
                    </div>
                 </div>
-
               </div>
             </div>
 
-            {/* Phase 11: AI/NLP Threat Classification */}
-            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mt-6">
+            {/* AI Explanation */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                <h2 className="font-medium text-slate-200">Phase 11: AI / NLP ANALYSIS</h2>
-                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">ML Inference</span>
+                <h2 className="font-medium text-slate-200">AI / ML Explanation</h2>
+                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">DistilBERT Inference</span>
               </div>
               <div className="p-5 space-y-4">
-                {!analysis.mlInference || analysis.mlInference.status === 'NOT_AVAILABLE' ? (
+                {!data.threat.mlStatus || data.threat.mlStatus === 'NOT_AVAILABLE' ? (
                   <div className="bg-slate-950 border border-slate-800 rounded p-4 text-sm flex flex-col space-y-2">
                     <div className="flex justify-between items-center mb-2">
                       <span className="text-slate-400 font-medium">Status</span>
                       <span className="text-amber-400 font-mono">MODEL NOT AVAILABLE</span>
                     </div>
-                    <div className="text-slate-500 italic">
-                      Message: No verified classification model is currently configured.
-                    </div>
+                    <div className="text-slate-500 italic">No verified classification model is currently configured.</div>
                   </div>
                 ) : (
                   <div className="bg-slate-950 border border-slate-800 rounded p-4 text-sm flex flex-col space-y-2">
                     <div className="flex justify-between items-center border-b border-slate-800/50 pb-2 mb-2">
                       <span className="text-slate-400 font-medium">Classification</span>
-                      <span className={`font-bold ${analysis.mlInference.prediction === 'PHISHING' || analysis.mlInference.prediction === 'BEC' ? 'text-rose-400' : 'text-emerald-400'}`}>{analysis.mlInference.prediction || 'UNKNOWN'}</span>
+                      <span className={`font-bold ${data.threat.mlClassification === 'PHISHING' || data.threat.mlClassification === 'BEC' ? 'text-rose-400' : 'text-emerald-400'}`}>{data.threat.mlClassification || 'UNKNOWN'}</span>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500">Model Score</span>
-                      <span className="text-slate-200 font-mono">{analysis.mlInference.modelScore}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500">Model</span>
-                      <span className="text-slate-300">{analysis.mlInference.modelName}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500">Version</span>
-                      <span className="text-slate-300">{analysis.mlInference.modelVersion}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500">Artifact SHA-256</span>
-                      <span className="text-slate-300 font-mono text-xs">{analysis.mlInference.artifactSha256}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500">Status</span>
-                      <span className="text-slate-300">{analysis.mlInference.status}</span>
+                    <div className="text-xs text-slate-500">
+                      This is an automated model assessment, not independent confirmation. See Threat Assessment above for the explainable risk factors that also feed the priority calculation.
                     </div>
                   </div>
                 )}
-
-                <div className="text-xs text-slate-500 text-center mt-4">
-                  Automated model assessment. Not independent confirmation.
-                </div>
               </div>
             </div>
 
-            {/* Phase 14.5: Forensic Threat Intelligence */}
-            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mt-6">
+            {/* Threat Intelligence / CTI */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                <h2 className="font-medium text-slate-200">Forensic Threat Intelligence</h2>
-                <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-1 rounded border border-rose-500/30">External CTI</span>
+                <h2 className="font-medium text-slate-200">Indicators &amp; Threat Intelligence (CTI)</h2>
+                <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-1 rounded border border-rose-500/30">AbuseIPDB / VirusTotal</span>
               </div>
               <div className="p-5">
-                 {threatIndicators.length > 0 ? (
+                 {data.indicators.length > 0 ? (
                    <div className="space-y-3">
-                     {threatIndicators.map((ti: any, i: number) => (
+                     {data.indicators.map((ti, i) => (
                        <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-sm flex flex-col space-y-2">
                          <div className="flex justify-between items-center border-b border-slate-800/50 pb-2 mb-1">
                            <span className="font-mono text-slate-300 break-all">{ti.iocValue}</span>
@@ -524,7 +476,7 @@ export const EmailAnalysis = () => {
                          </div>
                          <div className="grid grid-cols-2 gap-2 text-xs">
                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Type</span><span className="text-slate-300">{ti.iocType}</span></div>
-                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Provider</span><span className="text-slate-300">{ti.provider}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Source</span><span className="text-slate-300">{ti.provider}</span></div>
                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Confidence</span><span className="text-slate-300">{ti.confidence ? `${ti.confidence}%` : 'N/A'}</span></div>
                          </div>
                        </div>
@@ -536,16 +488,16 @@ export const EmailAnalysis = () => {
               </div>
             </div>
 
-            {/* Phase 14.5: Network Geolocation */}
-            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden mt-6">
+            {/* Geolocation */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
                 <h2 className="font-medium text-slate-200">Network Geolocation</h2>
                 <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">GEO</span>
               </div>
               <div className="p-5">
-                 {geolocation.length > 0 ? (
+                 {data.geolocation.length > 0 ? (
                    <div className="space-y-3">
-                     {geolocation.map((geo: any, i: number) => (
+                     {data.geolocation.map((geo, i) => (
                        <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-sm flex flex-col space-y-2">
                          <div className="flex justify-between items-center border-b border-slate-800/50 pb-2 mb-1">
                            <span className="font-mono text-slate-300">{geo.ipAddress}</span>
@@ -554,7 +506,7 @@ export const EmailAnalysis = () => {
                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Country</span><span className="text-slate-300">{geo.country || 'Unknown'}</span></div>
                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">City</span><span className="text-slate-300">{geo.city || 'Unknown'}</span></div>
                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">ASN</span><span className="text-slate-300">{geo.asn || 'Unknown'}</span></div>
-                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">ISP</span><span className="text-slate-300 truncate pl-2" title={geo.isp}>{geo.isp || 'Unknown'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">ISP</span><span className="text-slate-300 truncate pl-2" title={geo.isp ?? undefined}>{geo.isp || 'Unknown'}</span></div>
                          </div>
                        </div>
                      ))}
@@ -562,6 +514,88 @@ export const EmailAnalysis = () => {
                  ) : (
                    <div className="text-sm text-slate-500 text-center py-2">No Geolocation data available</div>
                  )}
+              </div>
+            </div>
+
+            {/* Evidence & Chain of Custody */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50">
+                <h2 className="font-medium text-slate-200">Evidence &amp; Chain of Custody</h2>
+              </div>
+              <div className="p-5">
+                {data.evidence === null || !data.email.caseId ? (
+                  <div className="text-sm text-slate-500 text-center py-2">
+                    This email is not yet linked to a case, so there is no evidence to show.
+                  </div>
+                ) : data.evidence.length > 0 ? (
+                  <div className="space-y-3">
+                    {data.evidence.map((ev) => (
+                      <ChainOfCustody key={ev.id} caseId={data.email.caseId as string} evidence={ev} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-500 text-center py-2">No evidence recorded for this case yet.</div>
+                )}
+              </div>
+            </div>
+
+            {/* Forensic Timeline (Case) */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50">
+                <h2 className="font-medium text-slate-200">Forensic Timeline (Case Activity)</h2>
+              </div>
+              <div className="p-5">
+                {data.email.caseId ? (
+                  <UnifiedForensicTimeline caseId={data.email.caseId} />
+                ) : (
+                  <div className="text-sm text-slate-500 text-center py-2">
+                    This email is not yet linked to a case, so there is no case timeline to show.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Investigation Context */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50">
+                <h2 className="font-medium text-slate-200">Investigation Context</h2>
+              </div>
+              <div className="p-5">
+                {data.investigationContext === null ? (
+                  <div className="text-sm text-slate-500 text-center py-2">
+                    This email is not yet linked to a case.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {data.investigationContext.case && (
+                      <div className="bg-slate-950 border border-slate-800 rounded p-3 text-xs space-y-1">
+                        <div className="flex justify-between"><span className="text-slate-500">Case ID</span><span className="text-slate-300 font-mono truncate max-w-[220px]" title={data.investigationContext.case.id}>{data.investigationContext.case.id}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Case</span><span className="text-slate-200 font-medium">{data.investigationContext.case.title}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Status</span><span className="text-slate-300">{data.investigationContext.case.status}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Priority</span><span className="text-slate-300">{data.investigationContext.case.priority}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Owner/Assignee</span><span className="text-slate-300">{data.investigationContext.case.assignedUserId ?? 'Unassigned'}</span></div>
+                      </div>
+                    )}
+                    <div>
+                      <h3 className="text-xs font-medium text-slate-400 mb-2">Investigations ({data.investigationContext.investigations.length})</h3>
+                      {data.investigationContext.investigations.length > 0 ? (
+                        <div className="space-y-2">
+                          {data.investigationContext.investigations.map((inv) => (
+                            <a
+                              key={inv.id}
+                              href={`/cases/${inv.caseId}/investigations/${inv.id}/workspace`}
+                              className="block bg-slate-950 border border-slate-800 rounded p-3 text-xs text-slate-300 hover:border-indigo-500/50 transition-colors"
+                            >
+                              {inv.title}
+                            </a>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-600">No investigations opened for this case yet.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -575,7 +609,7 @@ export const EmailAnalysis = () => {
                 MIME Tree
               </h2>
               <div className="space-y-3">
-                {mimeParts.map((part, i) => (
+                {data.mimeParts.map((part, i) => (
                   <div key={i} className="p-3 bg-slate-950 border border-slate-800 rounded flex flex-col items-start">
                     <div className="text-sm font-medium text-slate-200 flex items-center w-full justify-between">
                        <span>{part.partIndex}. {part.filename || 'Part'}</span>
@@ -587,7 +621,7 @@ export const EmailAnalysis = () => {
                     </div>
                   </div>
                 ))}
-                {mimeParts.length === 0 && (
+                {data.mimeParts.length === 0 && (
                    <div className="text-sm text-slate-500">No MIME parts detected.</div>
                 )}
               </div>

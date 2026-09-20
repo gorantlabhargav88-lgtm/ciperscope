@@ -178,6 +178,7 @@ export default async function emailRoutes(server: FastifyInstance) {
 
     return reply.send({
       id: email.id,
+      caseId: email.caseId,
       analysisStatus: email.analysisStatus || 'UNKNOWN',
 
       classification: email.classification,

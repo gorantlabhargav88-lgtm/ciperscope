@@ -11,3 +11,6 @@ coverage
 
 .data/
 query.sql
+
+# Local database dumps
+*.sql

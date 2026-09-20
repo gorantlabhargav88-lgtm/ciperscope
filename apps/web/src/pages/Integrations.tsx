@@ -3,12 +3,15 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { useSearchParams } from 'react-router-dom';
-import { Mail, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Mail, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { apiClient } from '../lib/apiClient';
 
 export default function Integrations() {
   const [searchParams] = useSearchParams();
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
   useEffect(() => {
     const integrationStatus = searchParams.get('integration');
@@ -18,6 +21,20 @@ export default function Integrations() {
       setStatus('error');
     }
   }, [searchParams]);
+
+  const handleDisconnect = async () => {
+    if (disconnecting) return;
+    setDisconnecting(true);
+    setDisconnectError(null);
+    try {
+      await apiClient.disconnectGmail();
+      setStatus('idle');
+    } catch (err) {
+      setDisconnectError(err instanceof Error ? err.message : 'Failed to disconnect Gmail');
+    } finally {
+      setDisconnecting(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -71,11 +88,23 @@ export default function Integrations() {
               <li className="flex items-center"><CheckCircle2 className="mr-2 h-4 w-4 text-emerald-500" /> Tenant isolated</li>
             </ul>
           </CardContent>
-          <CardFooter>
+          <CardFooter className="flex-col gap-2 items-stretch">
             {status === 'success' ? (
-              <Button variant="outline" className="w-full" disabled>
-                Connected
-              </Button>
+              <>
+                <Button variant="outline" className="w-full" disabled>
+                  Connected
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="w-full"
+                  disabled={disconnecting}
+                  onClick={handleDisconnect}
+                >
+                  {disconnecting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+                </Button>
+                {disconnectError && <p className="text-xs text-destructive">{disconnectError}</p>}
+              </>
             ) : (
               <Button 
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:shadow-[0_0_25px_rgba(37,99,235,0.5)] transition-all duration-300"

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Shield, ShieldAlert, ShieldCheck, Link, Mail, Server, Fingerprint, Activity, Clock, AlertTriangle, Info } from 'lucide-react';
 import { defangUrl } from '../lib/utils';
+import { isAuthResultPass } from '@ciperscope/types';
 
 interface TimelineEvent {
   id: string;
@@ -48,7 +49,7 @@ export const ForensicTimeline: React.FC<ForensicTimelineProps> = ({
 
   // 2. Authentication Checks
   if (spf.length > 0) {
-    const isPass = spf.some(s => s.result === 'pass');
+    const isPass = spf.some(s => isAuthResultPass(s.result));
     events.push({
       id: 'spf_check',
       type: 'SPF_CHECKED',
@@ -61,7 +62,7 @@ export const ForensicTimeline: React.FC<ForensicTimelineProps> = ({
   }
 
   if (dkim.length > 0) {
-    const isPass = dkim.some(d => d.result === 'pass');
+    const isPass = dkim.some(d => isAuthResultPass(d.result));
     events.push({
       id: 'dkim_check',
       type: 'DKIM_CHECKED',
@@ -74,7 +75,7 @@ export const ForensicTimeline: React.FC<ForensicTimelineProps> = ({
   }
 
   if (dmarc) {
-    const isPass = dmarc.result === 'pass';
+    const isPass = isAuthResultPass(dmarc.result);
     events.push({
       id: 'dmarc_check',
       type: 'DMARC_CHECKED',

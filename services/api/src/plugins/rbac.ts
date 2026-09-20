@@ -19,7 +19,14 @@ declare module 'fastify' {
 
 declare module '@fastify/jwt' {
   interface FastifyJWT {
-    payload: { sub: string; orgs: string[]; sid: string }; // payload type is used for sign and verify
+    // Widened (Phase 7B) to also accept the short-lived Gmail OAuth-state
+    // token shape (services/api/src/modules/integration/oauthState.ts),
+    // which reuses this same signed-JWT mechanism/secret rather than
+    // inventing a second one. `user` (below) is unaffected — it's only
+    // ever populated from the real session-token shape via `authenticate`.
+    payload:
+      | { sub: string; orgs: string[]; sid: string }
+      | { sub: string; orgId: string; nonce: string; purpose: 'gmail_oauth_state' };
     user: {
       sub: string;
       orgs: string[];

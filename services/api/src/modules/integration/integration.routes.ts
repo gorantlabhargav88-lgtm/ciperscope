@@ -1,9 +1,11 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@ciperscope/database';
-import { env } from '@ciperscope/config';
+import { env, encryptToken, decryptToken, requireGmailTokenEncryptionKey } from '@ciperscope/config';
 import { google } from 'googleapis';
 import { QueueManager } from '@ciperscope/queue';
+import { logAuditEvent } from '../../utils/audit';
+import { issueGmailOAuthState, verifyAndConsumeGmailOAuthState, OAuthStateError } from './oauthState';
 
 const CallbackQuerySchema = z.object({
   code: z.string(),
@@ -35,13 +37,21 @@ export default async function integrationRoutes(server: FastifyInstance) {
       summary: 'Start Gmail OAuth Flow'
     }
   }, async (request, reply) => {
-    const oauth2Client = getOauth2Client();
     const organizationId = (request.query as any).organizationId || request.user.orgs?.[0];
     if (!organizationId) {
       return reply.code(400).send({ error: 'Missing organizationId' });
     }
-    const stateObj = { organizationId };
-    const stateToken = Buffer.from(JSON.stringify(stateObj)).toString('base64');
+    // Tenant safety: never let the caller bind the OAuth flow to an
+    // organization they don't actually belong to, regardless of what the
+    // ?organizationId query param says.
+    if (!request.user.orgs?.includes(organizationId)) {
+      return reply.code(403).send({ error: 'Forbidden', message: 'Tenant isolation violation' });
+    }
+
+    requireGmailTokenEncryptionKey(); // fail fast, before starting a flow we couldn't complete
+
+    const oauth2Client = getOauth2Client();
+    const stateToken = issueGmailOAuthState(server, request.user.sub, organizationId);
 
     const url = oauth2Client.generateAuthUrl({
       access_type: 'offline',
@@ -59,21 +69,39 @@ export default async function integrationRoutes(server: FastifyInstance) {
       summary: 'Gmail OAuth Callback'
     }
   }, async (request, reply) => {
+    const frontendUrl = (status: 'success' | 'error') => {
+      const url = new URL('/settings/integrations', env.CORS_ORIGIN || 'http://localhost:5173');
+      url.searchParams.set('integration', status);
+      return url.toString();
+    };
+
     const query = CallbackQuerySchema.safeParse(request.query);
     if (!query.success) {
       server.log.error({ err: query.error }, 'Invalid callback query parameters');
-      return reply.code(400).send({ error: 'Invalid parameters' });
+      return reply.redirect(302, frontendUrl('error'));
+    }
+
+    let organizationId: string;
+    let initiatingUserId: string;
+    try {
+      const verified = await verifyAndConsumeGmailOAuthState(server, query.data.state);
+      organizationId = verified.organizationId;
+      initiatingUserId = verified.userId;
+    } catch (err) {
+      const message = err instanceof OAuthStateError ? err.message : 'OAuth state verification failed';
+      server.log.warn({ err: message }, 'Rejected Gmail OAuth callback: invalid state');
+      await logAuditEvent({
+        action: 'INTEGRATION_GMAIL_OAUTH_REJECTED',
+        resource: 'Integration',
+        status: 'DENIED',
+        metadata: { reason: message },
+        req: request
+      });
+      return reply.redirect(302, frontendUrl('error'));
     }
 
     try {
-      const stateStr = Buffer.from(query.data.state, 'base64').toString('utf-8');
-      const stateObj = JSON.parse(stateStr);
-      const organizationId = stateObj.organizationId;
-
-      if (!organizationId) {
-        throw new Error('Missing organizationId in state');
-      }
-
+      const encryptionKey = requireGmailTokenEncryptionKey();
       const oauth2Client = getOauth2Client();
       const { tokens } = await oauth2Client.getToken(query.data.code);
       oauth2Client.setCredentials(tokens);
@@ -84,6 +112,30 @@ export default async function integrationRoutes(server: FastifyInstance) {
 
       if (!emailAddress) {
         throw new Error('Failed to get email address from Gmail profile');
+      }
+      if (!tokens.access_token) {
+        throw new Error('Google did not return an access token');
+      }
+
+      // A mailbox can only ever be connected to ONE organization at a time
+      // (enforced by the Integration.provider_emailAddress unique index —
+      // see packages/database/prisma/schema.prisma). Reject rather than
+      // silently reassigning ownership if another org already owns it.
+      const existingElsewhere = await prisma.integration.findUnique({
+        where: { provider_emailAddress: { provider: 'GMAIL', emailAddress } }
+      });
+      if (existingElsewhere && existingElsewhere.organizationId !== organizationId) {
+        server.log.warn({ emailAddress }, 'Rejected Gmail connect: mailbox already connected to a different organization');
+        await logAuditEvent({
+          action: 'INTEGRATION_GMAIL_OAUTH_REJECTED',
+          resource: 'Integration',
+          actorId: initiatingUserId,
+          organizationId,
+          status: 'DENIED',
+          metadata: { reason: 'mailbox_already_connected_to_another_org' },
+          req: request
+        });
+        return reply.redirect(302, frontendUrl('error'));
       }
 
       await prisma.integration.upsert({
@@ -98,15 +150,17 @@ export default async function integrationRoutes(server: FastifyInstance) {
           organizationId,
           provider: 'GMAIL',
           emailAddress,
-          accessToken: tokens.access_token!,
-          refreshToken: tokens.refresh_token!,
+          accessToken: encryptToken(tokens.access_token, encryptionKey),
+          refreshToken: encryptToken(tokens.refresh_token ?? '', encryptionKey),
           expiresAt: new Date(tokens.expiry_date!),
-          historyId: profile.data.historyId?.toString()
+          historyId: profile.data.historyId?.toString(),
+          status: 'ACTIVE'
         },
         update: {
-          accessToken: tokens.access_token!,
-          ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
-          expiresAt: new Date(tokens.expiry_date!)
+          accessToken: encryptToken(tokens.access_token, encryptionKey),
+          ...(tokens.refresh_token ? { refreshToken: encryptToken(tokens.refresh_token, encryptionKey) } : {}),
+          expiresAt: new Date(tokens.expiry_date!),
+          status: 'ACTIVE'
         }
       });
 
@@ -121,15 +175,21 @@ export default async function integrationRoutes(server: FastifyInstance) {
         server.log.info({ organizationId, emailAddress }, 'Successfully subscribed to Gmail push notifications');
       }
 
-      const frontendUrl = new URL('/settings/integrations', env.CORS_ORIGIN || 'http://localhost:5173');
-      frontendUrl.searchParams.set('integration', 'success');
-      return reply.redirect(302, frontendUrl.toString());
+      await logAuditEvent({
+        action: 'INTEGRATION_GMAIL_CONNECTED',
+        resource: 'Integration',
+        actorId: initiatingUserId,
+        organizationId,
+        status: 'SUCCESS',
+        metadata: { emailAddress },
+        req: request
+      });
+
+      return reply.redirect(302, frontendUrl('success'));
 
     } catch (error) {
       server.log.error({ err: error }, 'Failed to process Gmail callback');
-      const frontendUrl = new URL('/settings/integrations', env.CORS_ORIGIN || 'http://localhost:5173');
-      frontendUrl.searchParams.set('integration', 'error');
-      return reply.redirect(302, frontendUrl.toString());
+      return reply.redirect(302, frontendUrl('error'));
     }
   });
 
@@ -144,7 +204,7 @@ export default async function integrationRoutes(server: FastifyInstance) {
     try {
       const body = WebhookBodySchema.parse(request.body);
       const dataStr = Buffer.from(body.message.data, 'base64').toString('utf-8');
-      const data = JSON.parse(dataStr); 
+      const data = JSON.parse(dataStr);
 
       const emailAddress = data.emailAddress;
       const newHistoryId = data.historyId;
@@ -154,11 +214,14 @@ export default async function integrationRoutes(server: FastifyInstance) {
         return;
       }
 
-      const integration = await prisma.integration.findFirst({
-        where: {
-          provider: 'GMAIL',
-          emailAddress
-        }
+      // Google's Gmail push-notification payload identifies the mailbox
+      // only by emailAddress — it never carries our organizationId (a real
+      // external protocol constraint). This lookup is safe from
+      // cross-tenant ambiguity because Integration.(provider, emailAddress)
+      // is a database-enforced unique key: a given mailbox can only ever
+      // belong to one organization's connection record at a time.
+      const integration = await prisma.integration.findUnique({
+        where: { provider_emailAddress: { provider: 'GMAIL', emailAddress } }
       });
 
       if (!integration) {
@@ -166,9 +229,14 @@ export default async function integrationRoutes(server: FastifyInstance) {
         return;
       }
 
+      if (integration.status !== 'ACTIVE') {
+        server.log.warn({ emailAddress, status: integration.status }, 'Ignoring webhook for inactive/disconnected integration');
+        return;
+      }
+
       const queueManager = new QueueManager(env.REDIS_URL);
       const syncQueue = queueManager.getQueue('gmail-sync');
-      
+
       await syncQueue.add(
         'sync-history',
         {
@@ -177,9 +245,9 @@ export default async function integrationRoutes(server: FastifyInstance) {
           emailAddress,
           newHistoryId
         },
-        { 
+        {
           priority: 3,
-          jobId: `sync-${integration.id}-${newHistoryId}` 
+          jobId: `sync-${integration.id}-${newHistoryId}`
         }
       );
 
@@ -188,5 +256,90 @@ export default async function integrationRoutes(server: FastifyInstance) {
     } catch (error) {
       server.log.error({ err: error }, 'Failed to process Gmail webhook');
     }
+  });
+
+  server.delete('/gmail/connection', {
+    preValidation: [server.authenticate, server.requirePermission('INTEGRATION_MANAGE')],
+    schema: {
+      tags: ['Integrations'],
+      summary: 'Disconnect Gmail integration'
+    }
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+
+    const activeConnections = await prisma.integration.findMany({
+      where: { organizationId, provider: 'GMAIL', status: 'ACTIVE' }
+    });
+
+    if (activeConnections.length === 0) {
+      // Idempotent: calling disconnect when nothing is connected is a
+      // no-op success, not an error.
+      return reply.code(200).send({ status: 'not_connected' });
+    }
+
+    const encryptionKey = requireGmailTokenEncryptionKey();
+
+    for (const integration of activeConnections) {
+      let refreshToken: string | null = null;
+      let accessToken: string | null = null;
+      try {
+        refreshToken = decryptToken(integration.refreshToken, encryptionKey) || null;
+        accessToken = decryptToken(integration.accessToken, encryptionKey) || null;
+      } catch (err) {
+        server.log.warn({ err, integrationId: integration.id }, 'Could not decrypt stored Gmail tokens during disconnect; proceeding with local cleanup only');
+      }
+
+      const oauth2Client = getOauth2Client();
+
+      // Best-effort revocation at Google. A failure here (e.g. already
+      // revoked by the user from their Google Account settings) must never
+      // block local cleanup.
+      if (refreshToken) {
+        try {
+          await oauth2Client.revokeToken(refreshToken);
+        } catch (err) {
+          server.log.warn({ err, integrationId: integration.id }, 'Gmail token revocation at Google failed (continuing with local disconnect)');
+        }
+      }
+
+      // Best-effort stop of push notifications.
+      if (accessToken) {
+        try {
+          oauth2Client.setCredentials({ access_token: accessToken });
+          const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+          await gmail.users.stop({ userId: 'me' });
+        } catch (err) {
+          server.log.warn({ err, integrationId: integration.id }, 'Gmail watch-stop failed (continuing with local disconnect)');
+        }
+      }
+
+      // Local invalidation: clear the stored credentials (never leave a
+      // usable token at rest) and mark the connection DISCONNECTED so the
+      // webhook handler and sync worker will never act on it again, while
+      // preserving the row itself as a forensic record that this mailbox
+      // was once connected.
+      await prisma.integration.update({
+        where: { id: integration.id },
+        data: {
+          status: 'DISCONNECTED',
+          accessToken: encryptToken('', encryptionKey),
+          refreshToken: encryptToken('', encryptionKey)
+        }
+      });
+
+      await logAuditEvent({
+        action: 'INTEGRATION_GMAIL_DISCONNECTED',
+        resource: 'Integration',
+        resourceId: integration.id,
+        actorId: userId,
+        organizationId,
+        status: 'SUCCESS',
+        metadata: { emailAddress: integration.emailAddress },
+        req: request
+      });
+    }
+
+    return reply.code(200).send({ status: 'disconnected', count: activeConnections.length });
   });
 }

@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import { prisma } from '@ciperscope/database';
-import { env } from '@ciperscope/config';
+import { env, decryptToken, encryptToken, requireGmailTokenEncryptionKey } from '@ciperscope/config';
 import { logger, generateRequestId } from '@ciperscope/logger';
 import { RawEmailStore } from '@ciperscope/storage';
 import { QueueManager, EmailIngestionJobPayload } from '@ciperscope/queue';
@@ -32,6 +32,13 @@ export class GmailSyncWorker {
       throw new Error(`Integration ${integrationId} not found`);
     }
 
+    if (integration.status !== 'ACTIVE') {
+      logger.warn({ integrationId, status: integration.status }, 'Skipping sync for a non-active Gmail connection');
+      return;
+    }
+
+    const encryptionKey = requireGmailTokenEncryptionKey();
+
     const oauth2Client = new google.auth.OAuth2(
       env.GOOGLE_CLIENT_ID,
       env.GOOGLE_CLIENT_SECRET,
@@ -39,16 +46,16 @@ export class GmailSyncWorker {
     );
 
     oauth2Client.setCredentials({
-      access_token: integration.accessToken,
-      refresh_token: integration.refreshToken
+      access_token: decryptToken(integration.accessToken, encryptionKey),
+      refresh_token: decryptToken(integration.refreshToken, encryptionKey)
     });
 
     oauth2Client.on('tokens', async (tokens) => {
       await prisma.integration.update({
         where: { id: integrationId },
         data: {
-          accessToken: tokens.access_token!,
-          ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
+          accessToken: encryptToken(tokens.access_token!, encryptionKey),
+          ...(tokens.refresh_token ? { refreshToken: encryptToken(tokens.refresh_token, encryptionKey) } : {}),
           ...(tokens.expiry_date ? { expiresAt: new Date(tokens.expiry_date) } : {})
         }
       });
@@ -64,11 +71,29 @@ export class GmailSyncWorker {
         historyTypes: ['messageAdded']
       });
     } catch (error: any) {
-      if (error.code === 404 || error.message.includes('HistoryId is invalid')) {
+      if (error.code === 404 || (error.message && error.message.includes('HistoryId is invalid'))) {
         logger.warn({ integrationId }, 'History ID expired or invalid, performing full sync (not fully implemented) - updating to new historyId');
         await prisma.integration.update({
           where: { id: integrationId },
           data: { historyId: newHistoryId }
+        });
+        return;
+      }
+      // Google permanently rejecting the refresh token (revoked by the
+      // user at their Google Account, or the app's access was removed)
+      // manifests as invalid_grant / a 401. This connection can never
+      // succeed again without the user reconnecting — mark it so the
+      // webhook handler stops enqueueing sync jobs for it, rather than
+      // retrying forever against a dead credential.
+      const isPermanentAuthFailure =
+        error.code === 401 ||
+        error.response?.data?.error === 'invalid_grant' ||
+        (error.message && error.message.includes('invalid_grant'));
+      if (isPermanentAuthFailure) {
+        logger.error({ integrationId }, 'Gmail credential permanently invalid (revoked?); marking connection ERROR');
+        await prisma.integration.update({
+          where: { id: integrationId },
+          data: { status: 'ERROR' }
         });
         return;
       }

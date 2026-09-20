@@ -1,4 +1,5 @@
 import { PrismaClient, CaseStatus, Priority, IndicatorType, ThreatVerdict, EvidenceType, CustodyAction } from '@prisma/client';
+import { SYSTEM_ENFORCED_PERMISSIONS } from '../src/permissions';
 
 const prisma = new PrismaClient();
 
@@ -33,27 +34,21 @@ async function main() {
     });
   }
 
-  const caseCreatePermission = await prisma.permission.upsert({
-    where: { action: 'CASE_CREATE' },
-    update: {},
-    create: { action: 'CASE_CREATE', description: 'Create cases' }
-  });
-
-  const caseReadPermission = await prisma.permission.upsert({
-    where: { action: 'CASE_READ' },
-    update: {},
-    create: { action: 'CASE_READ', description: 'Read cases' }
-  });
-
-  const caseManageEvidencePermission = await prisma.permission.upsert({
-    where: { action: 'CASE_MANAGE_EVIDENCE' },
-    update: {},
-    create: { action: 'CASE_MANAGE_EVIDENCE', description: 'Manage case evidence' }
-  });
+  // Grant SYSTEM_ADMIN every permission the API actually enforces
+  // (SYSTEM_ENFORCED_PERMISSIONS is the single source of truth shared with
+  // services/api's route requirePermission() call sites and the RBAC seed test).
+  const seededPermissions = [];
+  for (const p of SYSTEM_ENFORCED_PERMISSIONS) {
+    const permission = await prisma.permission.upsert({
+      where: { action: p.action },
+      update: {},
+      create: { action: p.action, description: p.description }
+    });
+    seededPermissions.push(permission);
+  }
 
   // Idempotent RolePermissions
-  const permissions = [caseCreatePermission, caseReadPermission, caseManageEvidencePermission];
-  for (const p of permissions) {
+  for (const p of seededPermissions) {
     await prisma.rolePermission.upsert({
       where: { roleId_permissionId: { roleId: systemAdminRole.id, permissionId: p.id } },
       update: {},

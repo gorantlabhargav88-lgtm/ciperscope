@@ -18,6 +18,13 @@ export const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_OAUTH_REDIRECT_URI: z.string().optional(),
   GOOGLE_PUBSUB_TOPIC: z.string().optional(),
+  // Encrypts Gmail OAuth access/refresh tokens at rest (AES-256-GCM — see
+  // ./tokenCrypto.ts). Required whenever Gmail integration is used; kept
+  // optional at the schema level (like the other GOOGLE_* vars) so
+  // environments that don't use Gmail aren't forced to set it, but
+  // services/api and services/worker's Gmail code paths fail fast if this
+  // is missing when actually needed.
+  GMAIL_TOKEN_ENCRYPTION_KEY: z.string().min(32, 'GMAIL_TOKEN_ENCRYPTION_KEY must be at least 32 characters long').optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -29,3 +36,15 @@ if (!parsed.success && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
 }
 
 export const env = parsed.success ? parsed.data : (process.env as any);
+
+export * from './tokenCrypto';
+
+/** Throws a clear, actionable error at the exact point Gmail token encryption is needed, rather than failing app-wide startup for an optional feature. */
+export function requireGmailTokenEncryptionKey(): string {
+  if (!env.GMAIL_TOKEN_ENCRYPTION_KEY) {
+    throw new Error(
+      'GMAIL_TOKEN_ENCRYPTION_KEY is not configured. Set it to a random 32+ character secret before using Gmail integration (see .env.example).'
+    );
+  }
+  return env.GMAIL_TOKEN_ENCRYPTION_KEY;
+}

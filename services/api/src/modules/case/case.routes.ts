@@ -4,6 +4,7 @@ import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCasePar
 import { z } from 'zod';
 import { AuditAction, logAuditEvent } from '../../utils/audit';
 import { ctiProvider } from '@ciperscope/providers';
+import { calculateThreatPriority, ForensicTimelineEvent, ForensicTimelineCategory } from '@ciperscope/types';
 
 export default async function caseRoutes(server: FastifyInstance) {
   server.post('/', {
@@ -1261,6 +1262,490 @@ export default async function caseRoutes(server: FastifyInstance) {
       }
       throw err;
     }
+  });
+
+  // ==========================================================================
+  // UNIFIED FORENSIC TIMELINE (Phase 5)
+  //
+  // Correlates REAL persisted records across Case, Email,
+  // EmailAuthenticationAnalysis, RiskAssessment, MLInference,
+  // Indicator/ThreatIntelObservation, Investigation, Evidence,
+  // ChainOfCustodyEvent, and the analyst-decision AuditLog trail.
+  //
+  // The background worker (services/worker) does not write AuditLog
+  // entries for forensic processing steps (verified by repository search),
+  // so this endpoint uses each record's OWN timestamp
+  // (createdAt/observationTime/timestamp/collectionTime) as the event
+  // time rather than inventing one. Every query below is bounded and
+  // batched by `IN (...)` clauses — no N+1 fan-out regardless of how many
+  // emails/evidence/investigations the case has.
+  // ==========================================================================
+
+  server.get('/:caseId/forensic-timeline', {
+    schema: { params: fastifyCaseParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('CASE_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const userId = request.user?.sub;
+    const { caseId } = request.params as { caseId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const caseRecord = await prisma.case.findUnique({
+      where: { id_organizationId: { id: caseId, organizationId } },
+      select: { id: true, title: true, createdAt: true }
+    });
+    if (!caseRecord) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Case not found' });
+    }
+
+    const EVENT_CAP = 200; // bounds emails/evidence/investigations fetched per case, not a cursor — see Phase 5 known limitations
+
+    const [emails, investigations, evidenceItems] = await Promise.all([
+      prisma.email.findMany({
+        where: { caseId, organizationId },
+        select: { id: true, subject: true, senderAddress: true, createdAt: true, riskScore: true, classification: true },
+        take: EVENT_CAP,
+        orderBy: { createdAt: 'asc' }
+      }),
+      prisma.investigation.findMany({
+        where: { caseId },
+        select: { id: true, title: true, createdAt: true, updatedAt: true },
+        take: EVENT_CAP,
+        orderBy: { createdAt: 'asc' }
+      }),
+      prisma.evidence.findMany({
+        where: { caseId, status: { not: 'DELETED' } },
+        select: { id: true, type: true, filename: true, sha256: true, collectionTime: true },
+        take: EVENT_CAP,
+        orderBy: { collectionTime: 'asc' }
+      })
+    ]);
+
+    const emailIds = emails.map(e => e.id);
+    const investigationIds = investigations.map(i => i.id);
+    const evidenceIds = evidenceItems.map(e => e.id);
+
+    const [authAnalyses, riskAssessments, mlInferences, urls, attachments, relayHops, custodyEvents, caseAuditEvents, decisionAuditEvents] = await Promise.all([
+      emailIds.length
+        ? prisma.emailAuthenticationAnalysis.findMany({ where: { emailId: { in: emailIds } } })
+        : Promise.resolve([]),
+      emailIds.length
+        ? prisma.riskAssessment.findMany({ where: { emailId: { in: emailIds } }, orderBy: { createdAt: 'desc' } })
+        : Promise.resolve([]),
+      emailIds.length
+        ? prisma.mLInference.findMany({ where: { emailId: { in: emailIds } }, orderBy: { createdAt: 'desc' } })
+        : Promise.resolve([]),
+      emailIds.length
+        ? prisma.emailUrl.findMany({ where: { emailId: { in: emailIds } }, select: { emailId: true, url: true } })
+        : Promise.resolve([]),
+      emailIds.length
+        ? prisma.emailAttachment.findMany({ where: { emailId: { in: emailIds } }, select: { emailId: true, sha256: true } })
+        : Promise.resolve([]),
+      emailIds.length
+        ? prisma.relayHop.findMany({ where: { emailId: { in: emailIds } }, select: { emailId: true, sourceIp: true } })
+        : Promise.resolve([]),
+      evidenceIds.length
+        ? prisma.chainOfCustodyEvent.findMany({
+            where: { evidenceId: { in: evidenceIds } },
+            include: { actor: { select: { id: true, email: true, firstName: true, lastName: true } } },
+            take: 500,
+            orderBy: { timestamp: 'asc' }
+          })
+        : Promise.resolve([]),
+      prisma.auditLog.findMany({
+        where: {
+          organizationId,
+          resource: 'Case',
+          resourceId: caseId,
+          action: {
+            in: ['CASE_UPDATED', 'CASE_ASSIGNED', 'CASE_EMAIL_LINKED', 'CASE_EMAIL_UNLINKED', 'CASE_NOTE_ADDED', 'CASE_NOTE_UPDATED', 'CASE_NOTE_DELETED', 'CASE_EVIDENCE_ADDED', 'CASE_EVIDENCE_DELETED', 'CASE_REPORT_CREATED', 'CASE_REPORT_DELETED', 'CASE_ALERT_UPDATED']
+          }
+        },
+        take: 300,
+        orderBy: { createdAt: 'asc' }
+      }),
+      investigationIds.length
+        ? prisma.auditLog.findMany({
+            where: {
+              organizationId,
+              resource: 'InvestigationIntelligence',
+              resourceId: { in: investigationIds },
+              action: 'CASE_INVESTIGATION_DECISION_RECORDED'
+            },
+            take: 300,
+            orderBy: { createdAt: 'asc' }
+          })
+        : Promise.resolve([])
+    ]);
+
+    // Resolve IOC -> emailId(s) using the same extraction logic as
+    // GET /emails/:emailId/threat-indicators (hostname from URL, attachment
+    // SHA-256, relay-hop source IP), batched across every email at once.
+    const iocToEmailIds = new Map<string, Set<string>>();
+    const addIoc = (value: string | null | undefined, emailId: string) => {
+      if (!value) return;
+      if (!iocToEmailIds.has(value)) iocToEmailIds.set(value, new Set());
+      iocToEmailIds.get(value)!.add(emailId);
+    };
+    for (const u of urls) {
+      try {
+        addIoc(new URL(u.url).hostname, u.emailId);
+      } catch {
+        addIoc(u.url, u.emailId);
+      }
+    }
+    for (const a of attachments) addIoc(a.sha256, a.emailId);
+    for (const h of relayHops) addIoc(h.sourceIp, h.emailId);
+
+    const indicators = iocToEmailIds.size
+      ? await prisma.indicator.findMany({
+          where: { value: { in: Array.from(iocToEmailIds.keys()) } },
+          include: { observations: true }
+        })
+      : [];
+
+    // Batched actor enrichment for AuditLog-sourced events (custody events already include `actor` via the relation above).
+    const auditActorIds = Array.from(new Set([...caseAuditEvents, ...decisionAuditEvents].map(e => e.actorId).filter((id): id is string => Boolean(id))));
+    const auditActors = auditActorIds.length
+      ? await prisma.user.findMany({ where: { id: { in: auditActorIds } }, select: { id: true, email: true, firstName: true, lastName: true } })
+      : [];
+    const auditActorMap = new Map(auditActors.map(a => [a.id, a]));
+
+    const authByEmail = new Map(authAnalyses.map(a => [a.emailId, a]));
+    const latestRiskByEmail = new Map<string, typeof riskAssessments[number]>();
+    for (const ra of riskAssessments) if (!latestRiskByEmail.has(ra.emailId)) latestRiskByEmail.set(ra.emailId, ra);
+    const latestMlByEmail = new Map<string, typeof mlInferences[number]>();
+    for (const ml of mlInferences) if (!latestMlByEmail.has(ml.emailId)) latestMlByEmail.set(ml.emailId, ml);
+
+    const events: ForensicTimelineEvent[] = [];
+
+    events.push({
+      id: `case-created:${caseRecord.id}`,
+      timestamp: caseRecord.createdAt.toISOString(),
+      category: 'SYSTEM',
+      action: 'CASE_CREATED',
+      title: 'Case created',
+      description: caseRecord.title,
+      severity: null,
+      priority: null,
+      source: 'CiperScope',
+      resourceType: 'Case',
+      resourceId: caseRecord.id,
+      caseId: caseRecord.id,
+      emailId: null,
+      investigationId: null,
+      evidenceId: null,
+      actor: null,
+      metadata: null
+    });
+
+    for (const email of emails) {
+      const auth = authByEmail.get(email.id) || null;
+      const risk = latestRiskByEmail.get(email.id) || null;
+      const ml = latestMlByEmail.get(email.id) || null;
+      const mlAvailable = ml && ml.status !== 'NOT_AVAILABLE';
+
+      const matchedObservations: { indicatorValue: string; provider: string; verdict: string; confidence: number | null; observationTime: Date }[] = [];
+      for (const [iocValue, ids] of iocToEmailIds.entries()) {
+        if (!ids.has(email.id)) continue;
+        const indicator = indicators.find(i => i.value === iocValue);
+        if (!indicator) continue;
+        for (const obs of indicator.observations) {
+          matchedObservations.push({ indicatorValue: iocValue, provider: obs.provider, verdict: obs.verdict, confidence: obs.confidence, observationTime: obs.observationTime });
+        }
+      }
+      const maliciousIndicatorCount = matchedObservations.filter(o => o.verdict === 'MALICIOUS' || o.verdict === 'SUSPICIOUS').length;
+      const authenticationFailed = auth ? (auth.spf === 'FAIL' || auth.dmarc === 'FAIL') : false;
+
+      const priority = calculateThreatPriority({
+        severity: risk?.riskLevel ?? null,
+        threatScore: risk?.overallScore ?? email.riskScore ?? null,
+        maliciousIndicatorCount,
+        authenticationFailed,
+        mlClassification: mlAvailable ? (ml!.prediction ?? null) : null
+      });
+
+      events.push({
+        id: `email-ingested:${email.id}`,
+        timestamp: email.createdAt.toISOString(),
+        category: 'EMAIL',
+        action: 'EMAIL_INGESTED',
+        title: 'Email ingested',
+        description: email.subject,
+        severity: risk?.riskLevel ?? null,
+        priority,
+        source: 'CiperScope',
+        resourceType: 'Email',
+        resourceId: email.id,
+        caseId: caseRecord.id,
+        emailId: email.id,
+        investigationId: null,
+        evidenceId: null,
+        actor: null,
+        metadata: { senderAddress: email.senderAddress, classification: email.classification }
+      });
+
+      if (auth) {
+        events.push({
+          id: `email-auth:${email.id}`,
+          timestamp: auth.createdAt.toISOString(),
+          category: 'AUTHENTICATION',
+          action: 'AUTHENTICATION_ANALYZED',
+          title: 'Authentication analyzed (SPF/DKIM/DMARC)',
+          description: auth.summary,
+          severity: risk?.riskLevel ?? null,
+          priority,
+          source: 'CiperScope',
+          resourceType: 'Email',
+          resourceId: email.id,
+          caseId: caseRecord.id,
+          emailId: email.id,
+          investigationId: null,
+          evidenceId: null,
+          actor: null,
+          metadata: { spf: auth.spf, dkim: auth.dkim, dmarc: auth.dmarc, isConsistent: auth.isConsistent, dkimCryptographicallyVerified: false }
+        });
+      }
+
+      if (risk) {
+        events.push({
+          id: `email-risk:${email.id}:${risk.version}`,
+          timestamp: risk.createdAt.toISOString(),
+          category: 'THREAT_INTELLIGENCE',
+          action: 'THREAT_SCORE_CALCULATED',
+          title: `Threat score calculated (${risk.overallScore})`,
+          description: null,
+          severity: risk.riskLevel,
+          priority,
+          source: 'CiperScope FusionEngine',
+          resourceType: 'Email',
+          resourceId: email.id,
+          caseId: caseRecord.id,
+          emailId: email.id,
+          investigationId: null,
+          evidenceId: null,
+          actor: null,
+          metadata: { overallScore: risk.overallScore, riskLevel: risk.riskLevel }
+        });
+      }
+
+      if (mlAvailable) {
+        events.push({
+          id: `email-ml:${email.id}:${ml!.id}`,
+          timestamp: ml!.createdAt.toISOString(),
+          category: 'ML',
+          action: 'ML_CLASSIFIED',
+          title: `ML classification: ${ml!.prediction ?? 'unknown'}`,
+          description: ml!.explanation,
+          severity: risk?.riskLevel ?? null,
+          priority,
+          source: ml!.modelName ?? 'CiperScope ML',
+          resourceType: 'Email',
+          resourceId: email.id,
+          caseId: caseRecord.id,
+          emailId: email.id,
+          investigationId: null,
+          evidenceId: null,
+          actor: null,
+          metadata: { modelScore: ml!.modelScore, modelVersion: ml!.modelVersion, artifactSha256: ml!.artifactSha256 }
+        });
+      }
+
+      for (const obs of matchedObservations) {
+        events.push({
+          id: `email-cti:${email.id}:${obs.indicatorValue}:${obs.provider}`,
+          timestamp: obs.observationTime.toISOString(),
+          category: 'THREAT_INTELLIGENCE',
+          action: 'CTI_ENRICHED',
+          title: `CTI: ${obs.indicatorValue} — ${obs.verdict}`,
+          description: null,
+          severity: risk?.riskLevel ?? null,
+          priority,
+          source: obs.provider,
+          resourceType: 'Indicator',
+          resourceId: obs.indicatorValue,
+          caseId: caseRecord.id,
+          emailId: email.id,
+          investigationId: null,
+          evidenceId: null,
+          actor: null,
+          metadata: { verdict: obs.verdict, confidence: obs.confidence }
+        });
+      }
+    }
+
+    for (const inv of investigations) {
+      events.push({
+        id: `investigation-created:${inv.id}`,
+        timestamp: inv.createdAt.toISOString(),
+        category: 'INVESTIGATION',
+        action: 'INVESTIGATION_CREATED',
+        title: `Investigation opened: ${inv.title}`,
+        description: null,
+        severity: null,
+        priority: null,
+        source: 'CiperScope',
+        resourceType: 'Investigation',
+        resourceId: inv.id,
+        caseId: caseRecord.id,
+        emailId: null,
+        investigationId: inv.id,
+        evidenceId: null,
+        actor: null,
+        metadata: null
+      });
+      if (inv.updatedAt.getTime() !== inv.createdAt.getTime()) {
+        events.push({
+          id: `investigation-updated:${inv.id}:${inv.updatedAt.toISOString()}`,
+          timestamp: inv.updatedAt.toISOString(),
+          category: 'INVESTIGATION',
+          action: 'INVESTIGATION_UPDATED',
+          title: `Investigation updated: ${inv.title}`,
+          description: null,
+          severity: null,
+          priority: null,
+          source: 'CiperScope',
+          resourceType: 'Investigation',
+          resourceId: inv.id,
+          caseId: caseRecord.id,
+          emailId: null,
+          investigationId: inv.id,
+          evidenceId: null,
+          actor: null,
+          metadata: null
+        });
+      }
+    }
+
+    const evidenceById = new Map(evidenceItems.map(e => [e.id, e]));
+    const evidenceWithCustody = new Set<string>();
+    for (const custody of custodyEvents) {
+      evidenceWithCustody.add(custody.evidenceId);
+      const ev = evidenceById.get(custody.evidenceId);
+      events.push({
+        id: `custody:${custody.id}`,
+        timestamp: custody.timestamp.toISOString(),
+        category: 'EVIDENCE',
+        action: custody.action,
+        title: `Evidence ${custody.action.toLowerCase().replace(/_/g, ' ')}${ev ? `: ${ev.filename ?? ev.type}` : ''}`,
+        description: custody.description,
+        severity: null,
+        priority: null,
+        source: 'CiperScope',
+        resourceType: 'Evidence',
+        resourceId: custody.evidenceId,
+        caseId: caseRecord.id,
+        emailId: null,
+        investigationId: null,
+        evidenceId: custody.evidenceId,
+        actor: custody.actor,
+        metadata: null
+      });
+    }
+    for (const ev of evidenceItems) {
+      if (evidenceWithCustody.has(ev.id)) continue; // real custody entries already cover this evidence's history
+      events.push({
+        id: `evidence-collected:${ev.id}`,
+        timestamp: ev.collectionTime.toISOString(),
+        category: 'EVIDENCE',
+        action: 'EVIDENCE_COLLECTED',
+        title: `Evidence collected: ${ev.filename ?? ev.type}`,
+        description: null,
+        severity: null,
+        priority: null,
+        source: 'CiperScope',
+        resourceType: 'Evidence',
+        resourceId: ev.id,
+        caseId: caseRecord.id,
+        emailId: null,
+        investigationId: null,
+        evidenceId: ev.id,
+        actor: null,
+        metadata: { sha256: ev.sha256 }
+      });
+    }
+
+    const CASE_ACTION_CATEGORY: Record<string, ForensicTimelineCategory> = {
+      CASE_UPDATED: 'ANALYST',
+      CASE_ASSIGNED: 'ANALYST',
+      CASE_EMAIL_LINKED: 'EMAIL',
+      CASE_EMAIL_UNLINKED: 'EMAIL',
+      CASE_NOTE_ADDED: 'ANALYST',
+      CASE_NOTE_UPDATED: 'ANALYST',
+      CASE_NOTE_DELETED: 'ANALYST',
+      CASE_EVIDENCE_ADDED: 'EVIDENCE',
+      CASE_EVIDENCE_DELETED: 'EVIDENCE',
+      CASE_REPORT_CREATED: 'SYSTEM',
+      CASE_REPORT_DELETED: 'SYSTEM',
+      CASE_ALERT_UPDATED: 'SYSTEM'
+    };
+    for (const audit of caseAuditEvents) {
+      events.push({
+        id: `audit:${audit.id}`,
+        timestamp: audit.createdAt.toISOString(),
+        category: CASE_ACTION_CATEGORY[audit.action] ?? 'SYSTEM',
+        action: audit.action,
+        title: audit.action.replace(/_/g, ' '),
+        description: null,
+        severity: null,
+        priority: null,
+        source: 'CiperScope',
+        resourceType: 'AuditLog',
+        resourceId: audit.id,
+        caseId: caseRecord.id,
+        emailId: null,
+        investigationId: null,
+        evidenceId: null,
+        actor: audit.actorId ? auditActorMap.get(audit.actorId) ?? null : null,
+        metadata: (audit.metadata as Record<string, unknown> | null) ?? null
+      });
+    }
+
+    for (const decision of decisionAuditEvents) {
+      const metadata = decision.metadata as Record<string, unknown> | null;
+      events.push({
+        id: `decision:${decision.id}`,
+        timestamp: decision.createdAt.toISOString(),
+        category: 'ANALYST',
+        action: 'ANALYST_DECISION',
+        title: `Analyst decision: ${metadata?.decision ?? 'recorded'}`,
+        description: (metadata?.reason as string | undefined) ?? null,
+        severity: null,
+        priority: null,
+        source: 'CiperScope',
+        resourceType: 'AuditLog',
+        resourceId: decision.id,
+        caseId: caseRecord.id,
+        emailId: null,
+        investigationId: decision.resourceId,
+        evidenceId: null,
+        actor: decision.actorId ? auditActorMap.get(decision.actorId) ?? null : null,
+        metadata
+      });
+    }
+
+    events.sort((a, b) => {
+      if (a.timestamp === null && b.timestamp === null) return 0;
+      if (a.timestamp === null) return 1;
+      if (b.timestamp === null) return -1;
+      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+    });
+
+    await logAuditEvent({
+      action: 'CASE_FORENSIC_TIMELINE_VIEWED',
+      resource: 'Case',
+      resourceId: caseId,
+      actorId: userId,
+      organizationId,
+      status: 'SUCCESS',
+      metadata: { eventCount: events.length },
+      req: request
+    });
+
+    return reply.status(200).send({ items: events });
   });
 
   // ==========================================================================

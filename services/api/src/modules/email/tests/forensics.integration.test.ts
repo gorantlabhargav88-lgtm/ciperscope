@@ -12,6 +12,8 @@ describe('Email Forensics API (Integration)', () => {
   let otherOrgId: string;
   let testEmailId: string;
   let otherEmailId: string;
+  let testIndicatorId: string;
+  let testGeoLocationIp: string;
 
   beforeAll(async () => {
     server = Fastify();
@@ -62,13 +64,23 @@ describe('Email Forensics API (Integration)', () => {
 
     // Seed Indicator and ThreatIntelObservation
     const randomDomain = `malicious-${crypto.randomUUID()}.com`;
-    const randomIp = `1.2.3.${Math.floor(Math.random() * 255)}`;
+    // GeoLocation.ipAddress carries a globally unique DB constraint, so a
+    // low-entropy value (e.g. one octet out of 255) collides across
+    // repeated live test runs against a persistent database. Derive all
+    // four octets from crypto.randomBytes instead — ~4.29 billion possible
+    // values makes collision practically impossible, and every octet is
+    // clamped to a real 0-255 byte so the value stays a well-formed IPv4
+    // address (test assertions below still expect a plain dotted-quad string).
+    const ipOctets = crypto.randomBytes(4);
+    const randomIp = Array.from(ipOctets).join('.');
     const indicator = await prisma.indicator.create({
       data: {
         type: 'DOMAIN',
         value: randomDomain
       }
     });
+    testIndicatorId = indicator.id;
+    testGeoLocationIp = randomIp;
 
     await prisma.threatIntelObservation.create({
       data: {
@@ -115,6 +127,14 @@ describe('Email Forensics API (Integration)', () => {
   });
 
   afterAll(async () => {
+    // Email/EmailUrl/RelayHop cascade-delete from Organization (schema
+    // relations are onDelete: Cascade), but Indicator and GeoLocation are
+    // global, non-tenant-scoped models with their own unique constraints
+    // and are NOT reachable via that cascade — clean them up explicitly by
+    // the exact ids/values this test created. Deleting the Indicator also
+    // cascades its ThreatIntelObservation (onDelete: Cascade on that relation).
+    await prisma.indicator.deleteMany({ where: { id: testIndicatorId } });
+    await prisma.geoLocation.deleteMany({ where: { ipAddress: testGeoLocationIp } });
     await prisma.organization.deleteMany({
       where: { id: { in: [testOrgId, otherOrgId] } }
     });
