@@ -12,6 +12,8 @@ export interface ThreatPriorityExplanationProps {
   severity: Severity | null;
   maliciousIndicatorCount: number;
   authenticationFailed: boolean;
+  /** Real DKIM cryptographic result (Phase 8). Shown for analyst visibility only — see the doc comment on EmailForensicsData['threat']['dkimFailed']; not part of the priority calculation. */
+  dkimFailed: boolean;
   mlClassification: string | null;
 }
 
@@ -36,6 +38,7 @@ export function ThreatPriorityExplanation({
   severity,
   maliciousIndicatorCount,
   authenticationFailed,
+  dkimFailed,
   mlClassification,
 }: ThreatPriorityExplanationProps) {
   return (
@@ -50,6 +53,7 @@ export function ThreatPriorityExplanation({
         <Row label="Severity" value={severity ?? 'Not available'} />
         <Row label="Malicious/Suspicious Indicators" value={maliciousIndicatorCount} />
         <Row label="Authentication Failure (SPF/DMARC)" value={authenticationFailed ? 'Yes' : 'No'} />
+        <Row label="DKIM Signature Failure" value={dkimFailed ? 'Yes' : 'No'} />
         <Row label="ML Classification" value={mlClassification ?? 'Not available'} />
       </div>
 
@@ -63,8 +67,9 @@ export function ThreatPriorityExplanation({
       </div>
 
       <div className="mt-3 pt-2 border-t border-white/10 text-[10px] opacity-60">
-        Deterministic CiperScope operational policy — not a scientifically validated prediction. DKIM is deliberately
-        excluded from this calculation because it is not cryptographically verified.
+        Deterministic CiperScope operational policy — not a scientifically validated prediction. DKIM signature
+        failures are cryptographically real (RFC 6376) but are shown for analyst visibility only — they do not
+        directly affect this priority; DKIM only affects it indirectly, through DMARC alignment.
       </div>
     </div>
   );

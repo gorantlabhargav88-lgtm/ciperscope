@@ -6,12 +6,17 @@
  * EmailAuthenticationAnalysis rows. Field names are kept as-is (result, domain,
  * explanation, ...) since renaming them here would provide no contract benefit.
  *
- * IMPORTANT — DKIM honesty requirement (see CIPERSCOPE_NEXT_PHASE_AUDIT.md and
- * services/worker/src/verifier/DkimVerifier.ts:67-110): CiperScope's DKIM
- * "verification" is a length-based simulation, not real cryptographic
- * signature verification. `DkimResult.cryptographicallyVerified` is always
- * `false` today so the UI has a single, impossible-to-forget place to check
- * before ever displaying a DKIM result as trustworthy.
+ * IMPORTANT — DKIM honesty requirement (Phase 8, see
+ * services/worker/src/verifier/DkimVerifier.ts and
+ * services/worker/src/verifier/dkim/verifyCryptography.ts): DKIM verification
+ * performs real RFC 6376 cryptographic signature verification (body hash +
+ * header signature, via Node's crypto module, against the DNS-retrieved
+ * public key). `DkimResult.cryptographicallyVerified` is derived at the
+ * api-client layer as `result === 'PASS'` (packages/api-client/src/client.ts)
+ * — the backend's `result` field can only be `'PASS'` when that cryptographic
+ * verification actually succeeded, never from signature presence, length, or
+ * syntactic validity alone. This field remains the single place the UI should
+ * check before ever displaying a DKIM result as trustworthy.
  */
 
 export type AuthResultStatus =
@@ -65,8 +70,8 @@ export interface DkimResult {
   domain: string | null;
   selector: string | null;
   explanation: string | null;
-  /** Always false — CiperScope does not perform real cryptographic DKIM verification yet. */
-  cryptographicallyVerified: false;
+  /** True only when `result === 'PASS'` — i.e. only after a real RFC 6376 cryptographic verification succeeded. */
+  cryptographicallyVerified: boolean;
 }
 
 export interface DmarcResult {

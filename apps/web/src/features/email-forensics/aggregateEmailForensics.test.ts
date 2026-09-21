@@ -135,14 +135,50 @@ describe('aggregateEmailForensics', () => {
     });
   });
 
-  it('injects DKIM cryptographicallyVerified: false via the client mapping, unchanged by the aggregator', async () => {
+  it('computes dkimFailed from any FAILed DKIM signature, separately from authenticationFailed (Phase 8C)', async () => {
     mockClient.getEmailDkim.mockResolvedValue({
-      dkimVerifications: [{ result: 'PASS', domain: 'example.com', selector: 's1', explanation: null, cryptographicallyVerified: false }],
+      dkimVerifications: [{ result: 'FAIL', domain: 'example.com', selector: 's1', explanation: null, cryptographicallyVerified: false }],
+    });
+    mockClient.getEmailSpf.mockResolvedValue({ spfVerifications: [{ result: 'PASS', domain: 'example.com', evaluatedIp: '1.2.3.4', matchedMechanism: null, explanation: null }] });
+    mockClient.getEmailDmarc.mockResolvedValue({ dmarcVerification: { result: 'PASS', orgDomain: 'example.com', policy: 'reject', subdomainPolicy: null, spfAlignment: 'aligned', dkimAlignment: 'unaligned', explanation: null } });
+
+    const result = await aggregateEmailForensics('email-1');
+
+    expect(result.threat.dkimFailed).toBe(true);
+    expect(result.threat.authenticationFailed).toBe(false);
+  });
+
+  it('does not let dkimFailed change the priority calculation, even when true alongside CRITICAL severity (no duplicate scoring contribution)', async () => {
+    mockClient.getEmailAnalysis.mockResolvedValue(
+      baseEmail({ riskAssessment: { overallScore: 30, riskLevel: 'CRITICAL', version: '1.0', factors: [] } })
+    );
+    mockClient.getEmailDkim.mockResolvedValue({
+      dkimVerifications: [{ result: 'FAIL', domain: 'example.com', selector: 's1', explanation: null, cryptographicallyVerified: false }],
+    });
+
+    const withDkimFail = await aggregateEmailForensics('email-1');
+
+    mockClient.getEmailDkim.mockResolvedValue({ dkimVerifications: [] });
+    const withoutDkimFail = await aggregateEmailForensics('email-1');
+
+    expect(withDkimFail.threat.dkimFailed).toBe(true);
+    expect(withoutDkimFail.threat.dkimFailed).toBe(false);
+    // Same severity/score/no other signals -> same priority regardless of dkimFailed.
+    expect(withDkimFail.threat.priority).toEqual(withoutDkimFail.threat.priority);
+  });
+
+  it('passes through the client-derived DKIM cryptographicallyVerified flag unchanged, whether true or false', async () => {
+    mockClient.getEmailDkim.mockResolvedValue({
+      dkimVerifications: [
+        { result: 'PASS', domain: 'example.com', selector: 's1', explanation: null, cryptographicallyVerified: true },
+        { result: 'FAIL', domain: 'example.org', selector: 's2', explanation: null, cryptographicallyVerified: false },
+      ],
     });
 
     const result = await aggregateEmailForensics('email-1');
 
-    expect(result.authentication.dkim[0].cryptographicallyVerified).toBe(false);
+    expect(result.authentication.dkim[0].cryptographicallyVerified).toBe(true);
+    expect(result.authentication.dkim[1].cryptographicallyVerified).toBe(false);
   });
 
   it('propagates an unauthorized (401) failure from any underlying call rather than swallowing it', async () => {

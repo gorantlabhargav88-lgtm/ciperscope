@@ -1,16 +1,16 @@
-import { PrismaClient, IndicatorType, Prisma } from '@ciperscope/database';
+import { PrismaClient, IndicatorType } from '@ciperscope/database';
 import { logger } from '@ciperscope/logger';
 import { IocNormalizer, NormalizedIoc } from './IocNormalizer';
-import { ReliableCtiProvider } from './providers/ReliableCtiProvider';
-import { ReliableGeoProvider } from './providers/ReliableGeoProvider';
+import { CtiReevaluationCoordinator } from './CtiReevaluationCoordinator';
 
 export class CtiEnrichmentWorker {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly enqueueIoc: (ioc: NormalizedIoc) => Promise<void>
+    private readonly enqueueIoc: (ioc: NormalizedIoc, emailId: string, organizationId: string) => Promise<void>,
+    private readonly reevalCoordinator: CtiReevaluationCoordinator
   ) {}
 
-  public async processEmail(emailId: string): Promise<void> {
+  public async processEmail(emailId: string, organizationId: string): Promise<void> {
     logger.info({ emailId }, 'Starting Phase 14 CTI Enrichment Fan-out');
 
     const email = await this.prisma.email.findUnique({
@@ -73,9 +73,14 @@ export class CtiEnrichmentWorker {
       skippedHashes: Math.max(0, hashes.size - 10)
     }, 'Enqueuing IOCs for CTI enrichment');
 
-    // 3. Enqueue IOCs for decoupled asynchronous CTI worker
+    // 3. Record how many IOC jobs this email is waiting on (Phase 7D) *before*
+    // enqueueing any of them, so the first one to finish can never race ahead
+    // of the counter being initialized.
+    await this.reevalCoordinator.initPending(emailId, iocsToProcess.length);
+
+    // 4. Enqueue IOCs for decoupled asynchronous CTI worker
     for (const ioc of iocsToProcess) {
-      await this.enqueueIoc(ioc);
+      await this.enqueueIoc(ioc, emailId, organizationId);
     }
 
     logger.info({ emailId, iocCount: iocsToProcess.length }, 'Phase 14 CTI Fan-out completed');

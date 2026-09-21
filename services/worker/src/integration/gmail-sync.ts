@@ -14,6 +14,15 @@ export interface GmailSyncJobPayload {
   newHistoryId: string;
 }
 
+// Shape of the Gaxios/Google API error thrown by googleapis calls, limited to
+// the fields this worker actually reads (googleapis re-exports gaxios errors
+// without a first-class type for them).
+interface GoogleApiError {
+  code?: number;
+  message?: string;
+  response?: { data?: { error?: string } };
+}
+
 export class GmailSyncWorker {
   private queueManager: QueueManager;
 
@@ -70,8 +79,9 @@ export class GmailSyncWorker {
         startHistoryId: integration.historyId || undefined,
         historyTypes: ['messageAdded']
       });
-    } catch (error: any) {
-      if (error.code === 404 || (error.message && error.message.includes('HistoryId is invalid'))) {
+    } catch (error: unknown) {
+      const gmailError = error as GoogleApiError;
+      if (gmailError.code === 404 || (gmailError.message && gmailError.message.includes('HistoryId is invalid'))) {
         logger.warn({ integrationId }, 'History ID expired or invalid, performing full sync (not fully implemented) - updating to new historyId');
         await prisma.integration.update({
           where: { id: integrationId },
@@ -86,9 +96,9 @@ export class GmailSyncWorker {
       // webhook handler stops enqueueing sync jobs for it, rather than
       // retrying forever against a dead credential.
       const isPermanentAuthFailure =
-        error.code === 401 ||
-        error.response?.data?.error === 'invalid_grant' ||
-        (error.message && error.message.includes('invalid_grant'));
+        gmailError.code === 401 ||
+        gmailError.response?.data?.error === 'invalid_grant' ||
+        (gmailError.message && gmailError.message.includes('invalid_grant'));
       if (isPermanentAuthFailure) {
         logger.error({ integrationId }, 'Gmail credential permanently invalid (revoked?); marking connection ERROR');
         await prisma.integration.update({

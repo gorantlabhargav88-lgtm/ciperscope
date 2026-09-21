@@ -1,11 +1,11 @@
 import { CTIEnrichmentJob, validateCTIJob } from '@ciperscope/queue/src/cti-job';
-import { PrismaClient } from '@ciperscope/database';
+import { PrismaClient, IndicatorType } from '@ciperscope/database';
 import { ctiProvider } from '@ciperscope/providers';
 import { createLogger } from '@ciperscope/logger';
 
 const logger = createLogger('cti-worker');
 
-export async function processCTIJob(jobData: any) {
+export async function processCTIJob(jobData: CTIEnrichmentJob) {
   const startTime = Date.now();
   if (!validateCTIJob(jobData)) {
     logger.error({ jobData }, 'Malformed CTI job payload');
@@ -24,8 +24,8 @@ export async function processCTIJob(jobData: any) {
     } else {
       result = await ctiProvider.enrichHash(indicator);
     }
-  } catch (error: any) {
-    logger.error({ error: error.message, indicatorType }, 'CTI provider execution failed');
+  } catch (error: unknown) {
+    logger.error({ error: error instanceof Error ? error.message : 'Unknown error', indicatorType }, 'CTI provider execution failed');
     throw error;
   }
 
@@ -42,7 +42,7 @@ export async function processCTIJob(jobData: any) {
     if (!dbIndicator) {
        dbIndicator = await prisma.indicator.create({
            data: {
-               type: indicatorType as any,
+               type: indicatorType as IndicatorType,
                value: indicator,
            }
        });
@@ -83,8 +83,8 @@ export async function processCTIJob(jobData: any) {
            });
        }
     }
-  } catch (dbError: any) {
-    logger.error({ error: dbError.message }, 'Failed to persist CTI observation');
+  } catch (dbError: unknown) {
+    logger.error({ error: dbError instanceof Error ? dbError.message : 'Unknown error' }, 'Failed to persist CTI observation');
     throw dbError;
   } finally {
     await prisma.$disconnect();

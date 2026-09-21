@@ -1506,7 +1506,19 @@ export default async function caseRoutes(server: FastifyInstance) {
           investigationId: null,
           evidenceId: null,
           actor: null,
-          metadata: { spf: auth.spf, dkim: auth.dkim, dmarc: auth.dmarc, isConsistent: auth.isConsistent, dkimCryptographicallyVerified: false }
+          // dkimCryptographicallyVerified/dkimFailed derive from auth.dkim, which can only be 'PASS' or 'FAIL'
+          // after a real RFC 6376 cryptographic verification (services/worker/src/verifier/DkimVerifier.ts) —
+          // never from signature presence, length, or syntactic validity alone. dkimFailed is deliberately NOT
+          // folded into the authenticationFailed signal that feeds calculateThreatPriority() above (see the
+          // dkimFailed doc comment in packages/types/src/email-forensics.ts) — analyst-facing visibility only.
+          metadata: {
+            spf: auth.spf,
+            dkim: auth.dkim,
+            dmarc: auth.dmarc,
+            isConsistent: auth.isConsistent,
+            dkimCryptographicallyVerified: auth.dkim === 'PASS',
+            dkimFailed: auth.dkim === 'FAIL'
+          }
         });
       }
 

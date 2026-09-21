@@ -71,9 +71,16 @@ export interface ThreatPrioritySignals {
   /** Count of ThreatIndicator entries with status MALICIOUS or SUSPICIOUS. */
   maliciousIndicatorCount: number;
   /**
-   * True when SPF or DMARC evaluated to FAIL. DKIM is deliberately excluded —
-   * CiperScope's DKIM check is not cryptographically verified (see
-   * authentication.ts) so it must never contribute to an urgency decision.
+   * True when SPF or DMARC evaluated to FAIL. DKIM is deliberately excluded
+   * from this specific signal — not because it isn't real (DKIM performs
+   * genuine RFC 6376 cryptographic verification, see authentication.ts), but
+   * because raw DKIM failures are materially noisier than SPF/DMARC
+   * hard-fails: mailing lists and forwarders routinely break DKIM signatures
+   * on entirely legitimate mail. DKIM already affects this indirectly
+   * through DMARC alignment (services/worker/src/verifier/DmarcVerifier.ts),
+   * which is the RFC 7489-correct way to weigh it. Raw DKIM pass/fail is
+   * still surfaced to analysts as a separate, non-scoring signal — see
+   * EmailForensicsData['threat']['dkimFailed'] in email-forensics.ts.
    */
   authenticationFailed: boolean;
   /** MLInference.prediction, when available (e.g. PHISHING, BEC, MALWARE). */

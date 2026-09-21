@@ -12,6 +12,9 @@ import { FusionEngine } from './analyzer/FusionEngine';
 import { EmailThreatAnalysisJobPayload, EmailCtiEnrichmentJobPayload, EmailMlClassificationJobPayload } from '@ciperscope/queue';
 import { createMetricsServer } from './metricsServer';
 import { CtiEnrichmentWorker } from './cti/CtiEnrichmentWorker';
+import { CtiReevaluationCoordinator } from './cti/CtiReevaluationCoordinator';
+import { scheduleCtiReevaluationIfComplete, isTerminalIocFailure } from './cti/scheduleCtiReevaluation';
+import { runMlEvaluationStage } from './analyzer/mlEvaluationStage';
 import { processCTIJob } from './cti-worker';
 import { CTIEnrichmentJob } from '@ciperscope/queue';
 import { GmailSyncWorker, GmailSyncJobPayload } from './integration/gmail-sync';
@@ -236,7 +239,7 @@ export async function start() {
   });
 
   // Setup Authentication Verification Worker
-  const authVerifier = new AuthenticationVerifier(prisma);
+  const authVerifier = new AuthenticationVerifier(prisma, rawEmailStore);
   const authWorker = createTenantScopedWorker<EmailAuthenticationVerificationJobPayload, unknown>(
     'email-authentication',
     idempotencyRedis,
@@ -409,12 +412,19 @@ export async function start() {
 
   // Setup CTI Enrichment Fan-out Worker Phase 14.3
   const iocQueue = queueManager.getQueue('ioc-cti-enrichment');
-  const ctiWorkerLogic = new CtiEnrichmentWorker(prisma, async (ioc) => {
-    await iocQueue.add('enrich-ioc', {
-      indicator: ioc.value,
-      indicatorType: ioc.type
-    } as CTIEnrichmentJob);
-  });
+  const ctiReevalCoordinator = new CtiReevaluationCoordinator(idempotencyRedis);
+  const ctiWorkerLogic = new CtiEnrichmentWorker(
+    prisma,
+    async (ioc, emailId, organizationId) => {
+      await iocQueue.add('enrich-ioc', {
+        indicator: ioc.value,
+        indicatorType: ioc.type,
+        emailId,
+        organizationId
+      } as CTIEnrichmentJob);
+    },
+    ctiReevalCoordinator
+  );
 
   const ctiWorker = createTenantScopedWorker<EmailCtiEnrichmentJobPayload, unknown>(
     'email-cti-enrichment',
@@ -450,7 +460,7 @@ export async function start() {
           }
 
           try {
-            await ctiWorkerLogic.processEmail(job.data.resourceId);
+            await ctiWorkerLogic.processEmail(job.data.resourceId, job.data.organizationId);
 
             await idempotencyManager.markCompleted(
               job.data.organizationId,
@@ -520,6 +530,34 @@ export async function start() {
     5 // Higher concurrency for IOC lookups
   );
 
+  // Phase 7D: once every IOC job fanned out for an email has reached a
+  // terminal state (succeeded, or exhausted its retries), schedule exactly
+  // one CTI re-evaluation of that email so real observations can still reach
+  // its risk score even though ML/Fusion may have already run once before
+  // CTI enrichment finished. This never re-enqueues CTI work, so it cannot loop.
+  const triggerCtiReevaluation = (job: { data: CTIEnrichmentJob; id?: string }) =>
+    scheduleCtiReevaluationIfComplete(
+      job.data.emailId,
+      job.data.organizationId,
+      job.id as string,
+      ctiReevalCoordinator,
+      queueManager.getQueue('email-ml-classification')
+    );
+
+  iocWorker.on('completed', (job) => {
+    void triggerCtiReevaluation(job);
+  });
+
+  iocWorker.on('failed', (job, err) => {
+    if (!job) return;
+    if (!isTerminalIocFailure(job.attemptsMade, job.opts.attempts ?? 1)) {
+      // More retries remain for this IOC job; not a terminal outcome yet.
+      return;
+    }
+    logger.warn({ jobId: job.id, indicator: job.data.indicator, err }, 'IOC CTI job permanently failed');
+    void triggerCtiReevaluation(job);
+  });
+
   // Setup ML Classification Worker
   const mlClassifier = new MLClassifier(prisma, rawEmailStore);
   const mlWorker = createTenantScopedWorker<EmailMlClassificationJobPayload, unknown>(
@@ -556,11 +594,15 @@ export async function start() {
           }
 
           try {
-            await mlClassifier.classifyEmail(job.data.resourceId);
-
-            // Phase 13: Fusion Engine to create Risk Assessment
+            // Phase 13: ML classification, then Fusion Engine to create Risk
+            // Assessment. Phase 7D: a CTI-triggered re-evaluation skips
+            // re-classification (see runMlEvaluationStage) since only the CTI
+            // observations available to FusionEngine have changed.
             const fusionEngine = new FusionEngine(prisma);
-            await fusionEngine.evaluate(job.data.resourceId);
+            await runMlEvaluationStage(job.data.resourceId, job.data.operation, {
+              classifyEmail: (emailId) => mlClassifier.classifyEmail(emailId),
+              evaluateFusion: (emailId) => fusionEngine.evaluate(emailId)
+            });
 
             await idempotencyManager.markCompleted(
               job.data.organizationId,

@@ -62,6 +62,9 @@ export async function aggregateEmailForensics(
 
   const authenticationFailed =
     spfRes.spfVerifications.some((s) => s.result === 'FAIL') || dmarcRes.dmarcVerification?.result === 'FAIL';
+  // Deliberately separate from authenticationFailed — see the dkimFailed doc
+  // comment in packages/types/src/email-forensics.ts for why.
+  const dkimFailed = dkimRes.dkimVerifications.some((d) => d.result === 'FAIL');
 
   const mlPrediction = aiAnalysisRes.prediction;
   const mlStatus = aiAnalysisRes.status ?? mlPrediction?.status ?? null;
@@ -166,6 +169,7 @@ export async function aggregateEmailForensics(
       mlStatus,
       maliciousIndicatorCount,
       authenticationFailed,
+      dkimFailed,
     },
     urls: urlsRes.urls,
     attachments: attachmentsRes.attachments,

@@ -1,5 +1,6 @@
 import { PrismaClient, AuthResultStatus, EmailClassification, ThreatVerdict } from '@ciperscope/database';
 import { logger } from '@ciperscope/logger';
+import { IocNormalizer } from '../cti/IocNormalizer';
 
 export class FusionEngine {
   constructor(private prisma: PrismaClient) {}
@@ -13,6 +14,7 @@ export class FusionEngine {
         authAnalysis: true,
         urls: true,
         attachments: true,
+        relayHops: true,
         inferences: {
           orderBy: { createdAt: 'desc' },
           take: 1
@@ -80,26 +82,57 @@ export class FusionEngine {
     }
 
     // 4. Evaluate CTI Threat Intelligence
-    const threatIndicators = (email as any).threatIndicators;
-    if (threatIndicators && threatIndicators.length > 0) {
-      const hasMalicious = threatIndicators.some((i: any) => i.status === ThreatVerdict.MALICIOUS);
-      const hasSuspicious = threatIndicators.some((i: any) => i.status === ThreatVerdict.SUSPICIOUS);
-
-      if (hasMalicious) {
-        score += 50;
-        factors.push({
-          category: 'THREAT_INTELLIGENCE',
-          description: 'Known malicious threat intelligence indicator detected.',
-          scoreContribution: 50
-        });
-      } else if (hasSuspicious) {
-        score += 20;
-        factors.push({
-          category: 'THREAT_INTELLIGENCE',
-          description: 'Suspicious threat intelligence indicator detected.',
-          scoreContribution: 20
-        });
+    // There is no direct relation from Email to CTI data (Indicator/ThreatIntelObservation
+    // are a global, email-independent cache keyed by indicator value — see
+    // packages/database/prisma/schema.prisma). Correlate by re-deriving the same
+    // indicator values CtiEnrichmentWorker extracted for this email (same IocNormalizer,
+    // same sources) and looking up any observations already persisted for them.
+    // CTI enrichment runs on a decoupled queue, so observations may not exist yet for a
+    // freshly-processed email — that is not treated as an error, just as no signal.
+    const indicatorValues = new Set<string>();
+    for (const u of email.urls) {
+      const normalizedUrl = IocNormalizer.normalizeUrl(u.url);
+      if (normalizedUrl) indicatorValues.add(normalizedUrl.value);
+    }
+    for (const hop of email.relayHops) {
+      if (hop.sourceIp) {
+        const normalizedIp = IocNormalizer.normalizeIp(hop.sourceIp);
+        if (normalizedIp) indicatorValues.add(normalizedIp.value);
       }
+    }
+    for (const attachment of email.attachments) {
+      if (attachment.sha256) {
+        const normalizedHash = IocNormalizer.normalizeHash(attachment.sha256);
+        if (normalizedHash) indicatorValues.add(normalizedHash.value);
+      }
+    }
+
+    let hasMalicious = false;
+    let hasSuspicious = false;
+    if (indicatorValues.size > 0) {
+      const indicators = await this.prisma.indicator.findMany({
+        where: { value: { in: Array.from(indicatorValues) } },
+        include: { observations: true }
+      });
+      const observations = indicators.flatMap(indicator => indicator.observations);
+      hasMalicious = observations.some(o => o.verdict === ThreatVerdict.MALICIOUS);
+      hasSuspicious = observations.some(o => o.verdict === ThreatVerdict.SUSPICIOUS);
+    }
+
+    if (hasMalicious) {
+      score += 50;
+      factors.push({
+        category: 'THREAT_INTELLIGENCE',
+        description: 'Known malicious threat intelligence indicator detected.',
+        scoreContribution: 50
+      });
+    } else if (hasSuspicious) {
+      score += 20;
+      factors.push({
+        category: 'THREAT_INTELLIGENCE',
+        description: 'Suspicious threat intelligence indicator detected.',
+        scoreContribution: 20
+      });
     }
 
     // Default to a 0-100 bound

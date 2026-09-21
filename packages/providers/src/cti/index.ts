@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import { HttpClient } from '@ciperscope/http-client';
 
 export type CTIStatus = 'available' | 'unavailable' | 'degraded' | 'not_found' | 'rate_limited' | 'unauthorized' | 'timeout' | 'provider_error' | 'not_configured';
 export type IndicatorType = 'IP' | 'DOMAIN' | 'URL' | 'HASH' | 'EMAIL_ADDRESS' | 'ASN';
@@ -58,53 +59,67 @@ class RealRedisCache {
   }
 }
 
+/**
+ * Narrow, dependency-free structural guard for the shape of error we can
+ * receive from HttpClient's underlying axios request: either a real HTTP
+ * response with a status code (`response.status`), a network-level axios
+ * error code (e.g. 'ECONNABORTED' on timeout), or a plain Error thrown by
+ * HttpClient's own SSRF guards (`validateUrl`/`safeLookup`) or by the
+ * opossum circuit breaker ("Breaker is open") — none of which carry a
+ * `response`. Avoids depending on axios's own types just for this check.
+ */
+interface HttpClientErrorShape {
+  response?: { status?: number };
+  code?: string;
+  message?: string;
+}
+
+function asHttpClientError(e: unknown): HttpClientErrorShape {
+  return typeof e === 'object' && e !== null ? (e as HttpClientErrorShape) : {};
+}
+
 export class ProductionCTILayer implements ThreatIntelligenceProvider {
   name = 'ProductionCTI_VT_AbuseIPDB';
   private redis = new RealRedisCache();
   private TTL = 3600;
   private TIMEOUT_MS = 5000;
+  private readonly abuseIpdbClient: HttpClient;
+  private readonly virusTotalClient: HttpClient;
+
+  /**
+   * Both CTI providers route through the existing SSRF-hardened
+   * HttpClient (packages/http-client) rather than raw fetch(). Separate
+   * named client instances per provider so a circuit-breaker trip on one
+   * provider's outages can never fail-fast requests to the other.
+   * Injectable for tests — production code always uses the defaults.
+   */
+  constructor(deps?: { abuseIpdbClient?: HttpClient; virusTotalClient?: HttpClient }) {
+    this.abuseIpdbClient = deps?.abuseIpdbClient ?? new HttpClient('AbuseIPDB', { timeout: this.TIMEOUT_MS });
+    this.virusTotalClient = deps?.virusTotalClient ?? new HttpClient('VirusTotal', { timeout: this.TIMEOUT_MS });
+  }
 
   async isAvailable() { return true; }
 
-  private async executeFetch(
-    url: string, 
-    headers: Record<string, string>, 
-    providerName: string, 
-    indicator: string, 
+  private async executeRequest(
+    client: HttpClient,
+    url: string,
+    headers: Record<string, string>,
+    providerName: string,
+    indicator: string,
     type: IndicatorType
   ): Promise<CTINormalizedResult> {
     const start = Date.now();
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), this.TIMEOUT_MS);
 
     try {
-      const response = await fetch(url, { headers, signal: controller.signal });
-      clearTimeout(id);
-      
+      // HttpClient.get() already returns the parsed response body (axios
+      // auto-parses JSON) and enforces SSRF protections (private/loopback/
+      // link-local IP blocking, DNS-rebinding-safe lookup, protocol
+      // allowlist, redirect re-validation, no embedded credentials) before
+      // the request is ever sent — see packages/http-client/src/index.ts.
+      const data = await client.get<any>(url, { headers });
       const latencyMs = Date.now() - start;
 
-      if (response.status === 401 || response.status === 403) {
-        return {
-          provider: providerName, indicator, indicatorType: type, status: 'unauthorized', verdict: 'UNKNOWN',
-          queriedAt: new Date().toISOString(), latencyMs, retryable: false, provenance: 'API Integration'
-        };
-      }
-      if (response.status === 429) {
-        return {
-          provider: providerName, indicator, indicatorType: type, status: 'rate_limited', verdict: 'UNKNOWN',
-          queriedAt: new Date().toISOString(), latencyMs, retryable: true, provenance: 'API Integration'
-        };
-      }
-      if (!response.ok) {
-         return {
-          provider: providerName, indicator, indicatorType: type, status: 'provider_error', verdict: 'UNKNOWN',
-          queriedAt: new Date().toISOString(), latencyMs, retryable: response.status >= 500, provenance: 'API Integration'
-        };
-      }
-
-      const data = await response.json();
-      
-      // Basic normalization logic based on provider
+      // Basic normalization logic based on provider (unchanged)
       let verdict: ThreatVerdict = 'UNKNOWN';
       let confidence = 0;
       if (providerName === 'AbuseIPDB') {
@@ -129,15 +144,44 @@ export class ProductionCTILayer implements ThreatIntelligenceProvider {
           queriedAt: new Date().toISOString(), latencyMs, retryable: false, provenance: 'API Integration'
       };
 
-    } catch (e: any) {
-      clearTimeout(id);
+    } catch (rawError: unknown) {
       const latencyMs = Date.now() - start;
-      if (e.name === 'AbortError') {
+      const e = asHttpClientError(rawError);
+      const status = e.response?.status;
+
+      // Unlike fetch(), axios (which HttpClient wraps) rejects on any
+      // non-2xx response rather than returning a response object with
+      // .ok/.status — so the same 401/403/429/5xx classification that
+      // used to read response.status now reads err.response.status.
+      if (status === 401 || status === 403) {
+        return {
+          provider: providerName, indicator, indicatorType: type, status: 'unauthorized', verdict: 'UNKNOWN',
+          queriedAt: new Date().toISOString(), latencyMs, retryable: false, provenance: 'API Integration'
+        };
+      }
+      if (status === 429) {
+        return {
+          provider: providerName, indicator, indicatorType: type, status: 'rate_limited', verdict: 'UNKNOWN',
+          queriedAt: new Date().toISOString(), latencyMs, retryable: true, provenance: 'API Integration'
+        };
+      }
+      if (typeof status === 'number' && status >= 400) {
+         return {
+          provider: providerName, indicator, indicatorType: type, status: 'provider_error', verdict: 'UNKNOWN',
+          queriedAt: new Date().toISOString(), latencyMs, retryable: status >= 500, provenance: 'API Integration'
+        };
+      }
+      if (e.code === 'ECONNABORTED' || /timeout/i.test(e.message ?? '')) {
          return {
           provider: providerName, indicator, indicatorType: type, status: 'timeout', verdict: 'UNKNOWN',
           queriedAt: new Date().toISOString(), latencyMs, retryable: true, provenance: 'API Integration'
         };
       }
+      // Catches everything else, including HttpClient's own SSRF-guard
+      // rejections (e.g. "SSRF attempt blocked: ...") and an open
+      // circuit breaker ("Breaker is open") — both are network-level
+      // failures from the CTI caller's point of view, never surfaced as
+      // fabricated threat-intel data.
       return {
           provider: providerName, indicator, indicatorType: type, status: 'unavailable', verdict: 'UNKNOWN',
           queriedAt: new Date().toISOString(), latencyMs, retryable: true, provenance: 'API Integration'
@@ -151,7 +195,7 @@ export class ProductionCTILayer implements ThreatIntelligenceProvider {
        if (!key) {
          return { provider: 'AbuseIPDB', indicator, indicatorType: type, status: 'not_configured', verdict: 'UNKNOWN', queriedAt: new Date().toISOString(), latencyMs: 0, retryable: false, provenance: 'System' };
        }
-       return this.executeFetch(`https://api.abuseipdb.com/api/v2/check?ipAddress=${encodeURIComponent(indicator)}`, { 'Key': key, 'Accept': 'application/json' }, 'AbuseIPDB', indicator, type);
+       return this.executeRequest(this.abuseIpdbClient, `https://api.abuseipdb.com/api/v2/check?ipAddress=${encodeURIComponent(indicator)}`, { 'Key': key, 'Accept': 'application/json' }, 'AbuseIPDB', indicator, type);
     } else {
        // VirusTotal for domains and hashes
        const key = process.env.VIRUSTOTAL_API_KEY;
@@ -159,7 +203,7 @@ export class ProductionCTILayer implements ThreatIntelligenceProvider {
          return { provider: 'VirusTotal', indicator, indicatorType: type, status: 'not_configured', verdict: 'UNKNOWN', queriedAt: new Date().toISOString(), latencyMs: 0, retryable: false, provenance: 'System' };
        }
        const endpoint = type === 'DOMAIN' ? 'domains' : 'files';
-       return this.executeFetch(`https://www.virustotal.com/api/v3/${endpoint}/${encodeURIComponent(indicator)}`, { 'x-apikey': key }, 'VirusTotal', indicator, type);
+       return this.executeRequest(this.virusTotalClient, `https://www.virustotal.com/api/v3/${endpoint}/${encodeURIComponent(indicator)}`, { 'x-apikey': key }, 'VirusTotal', indicator, type);
     }
   }
 

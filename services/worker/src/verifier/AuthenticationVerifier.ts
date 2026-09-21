@@ -1,12 +1,41 @@
 import { PrismaClient, AuthResultStatus } from '@ciperscope/database';
+import { RawEmailStore } from '@ciperscope/storage';
 import { DnsResolver } from './DnsResolver';
 import { SpfVerifier } from './SpfVerifier';
 import { DkimVerifier, DkimResult } from './DkimVerifier';
 import { DmarcVerifier } from './DmarcVerifier';
+import { splitRawMessage, RawHeader } from './dkim/rawMessage';
 import { logger } from '@ciperscope/logger';
 
 export class AuthenticationVerifier {
-  constructor(private prisma: PrismaClient) {}
+  constructor(
+    private prisma: PrismaClient,
+    private rawEmailStore: RawEmailStore
+  ) {}
+
+  /**
+   * Fetches and splits the raw message so DKIM can be verified against the
+   * exact original bytes. Returns null (rather than throwing) when the raw
+   * message isn't available — DKIM verification then honestly reports
+   * PERMERROR instead of silently skipping or fabricating a result; SPF/DMARC
+   * are unaffected since they don't need the raw bytes.
+   */
+  private async loadRawMessage(rawStorageKey: string | null): Promise<{ headers: RawHeader[]; body: Buffer } | null> {
+    if (!rawStorageKey) return null;
+    try {
+      const exists = await this.rawEmailStore.exists(rawStorageKey);
+      if (!exists) return null;
+      const stream = await this.rawEmailStore.get(rawStorageKey);
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return splitRawMessage(Buffer.concat(chunks));
+    } catch (err) {
+      logger.warn({ err }, 'Failed to load raw message for DKIM verification');
+      return null;
+    }
+  }
 
   public async verifyEmail(emailId: string): Promise<void> {
     const resolver = new DnsResolver(50, 5000); // Max 50 lookups, 5s timeout per lookup
@@ -64,14 +93,35 @@ export class AuthenticationVerifier {
       spfResult = await spfVerifier.verify(spfDomain, evaluatedIp);
     }
 
-    // 3. Determine DKIM Inputs
-    const dkimHeaders = email.headers.filter(h => h.name.toLowerCase() === 'dkim-signature');
+    // 3. Determine DKIM Inputs — cryptographic verification needs the exact
+    // original message bytes, not the parsed/decoded EmailHeader rows.
+    const rawMessage = await this.loadRawMessage(email.rawStorageKey);
+    const claimedDkimHeaderCount = email.headers.filter(h => h.name.toLowerCase() === 'dkim-signature').length;
+    const dkimSignatureHeaders = rawMessage
+      ? rawMessage.headers.filter(h => h.name.trim().toLowerCase() === 'dkim-signature')
+      : [];
+
     const dkimResults: DkimResult[] = [];
     let bestDkimResult: AuthResultStatus = 'NONE';
     let dkimDomain = null;
 
-    for (const dkimHeader of dkimHeaders) {
-      const result = await dkimVerifier.verify(dkimHeader.value);
+    if (claimedDkimHeaderCount > 0 && !rawMessage) {
+      // The message claims to carry DKIM-Signature header(s) but the raw
+      // bytes needed to verify them are unavailable — this is an honest
+      // "could not verify", never a silent skip or a fabricated pass.
+      dkimResults.push({
+        result: 'PERMERROR',
+        domain: null,
+        selector: null,
+        algorithm: null,
+        bodyHashResult: 'NONE',
+        explanation: 'Raw message unavailable; cannot cryptographically verify DKIM signature'
+      });
+      bestDkimResult = 'PERMERROR';
+    }
+
+    for (const dkimHeader of dkimSignatureHeaders) {
+      const result = await dkimVerifier.verify(dkimHeader, rawMessage!.headers, rawMessage!.body);
       dkimResults.push(result);
       if (result.result === 'PASS') {
         bestDkimResult = 'PASS';

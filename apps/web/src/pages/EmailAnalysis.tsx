@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle, AlertTriangle, ShieldOff } from 'lucide-react';
+import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle, AlertTriangle, ShieldOff, ShieldCheck } from 'lucide-react';
 import { ForensicTimeline } from '../components/ForensicTimeline';
 import { ThreatPriorityExplanation } from '../components/threat/ThreatPriorityExplanation';
 import { ChainOfCustody } from '../components/evidence/ChainOfCustody';
@@ -206,6 +206,7 @@ export const EmailAnalysis = () => {
                     severity={data.threat.score.severity}
                     maliciousIndicatorCount={data.threat.maliciousIndicatorCount}
                     authenticationFailed={data.threat.authenticationFailed}
+                    dkimFailed={data.threat.dkimFailed}
                     mlClassification={data.threat.mlClassification}
                   />
                 )}
@@ -326,21 +327,32 @@ export const EmailAnalysis = () => {
                        )) : <div className="text-xs text-slate-600">No SPF data</div>}
                     </div>
 
-                    {/* DKIM — always shown as NOT cryptographically verified */}
-                    <div className="border border-amber-900/40 bg-slate-950 rounded p-4">
+                    {/* DKIM — badge and banner reflect each signature's REAL cryptographicallyVerified flag (Phase 8) */}
+                    <div className={`border rounded p-4 bg-slate-950 ${data.authentication.dkim.some(d => d.cryptographicallyVerified) ? 'border-emerald-900/40' : 'border-slate-800'}`}>
                        <h3 className="text-sm font-medium text-slate-300 mb-2 border-b border-slate-800 pb-2 flex items-center gap-1.5">
                          DKIM
-                         <ShieldOff className="w-3.5 h-3.5 text-amber-500" />
+                         {data.authentication.dkim.some(d => d.cryptographicallyVerified) ? (
+                           <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                         ) : (
+                           <ShieldOff className="w-3.5 h-3.5 text-amber-500" />
+                         )}
                        </h3>
-                       <div className="mb-2 p-2 bg-amber-950/30 border border-amber-900/40 rounded text-[11px] text-amber-400 flex items-start gap-1.5">
-                         <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                         <span>NOT VERIFIED — cryptographic signature verification is unavailable in this build; results below are structural checks only, not proof of authenticity.</span>
-                       </div>
                        {data.authentication.dkim.length > 0 ? data.authentication.dkim.map((d, i) => (
                          <div key={i} className="text-xs space-y-1 pb-2 mb-2 border-b border-slate-800/50 last:border-0 last:pb-0 last:mb-0">
+                           {d.cryptographicallyVerified ? (
+                             <div className="mb-1 p-2 bg-emerald-950/30 border border-emerald-900/40 rounded text-[11px] text-emerald-400 flex items-start gap-1.5">
+                               <ShieldCheck className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                               <span>CRYPTOGRAPHICALLY VERIFIED — the signature was independently validated against the signer's published public key.</span>
+                             </div>
+                           ) : (
+                             <div className="mb-1 p-2 bg-amber-950/30 border border-amber-900/40 rounded text-[11px] text-amber-400 flex items-start gap-1.5">
+                               <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                               <span>NOT VERIFIED — cryptographic signature verification did not succeed; this is not proof of authenticity.</span>
+                             </div>
+                           )}
                            <div className="flex justify-between">
-                             <span className="text-slate-500">Structural Result</span>
-                             <span className="font-mono font-bold text-slate-400">{d.result}</span>
+                             <span className="text-slate-500">Result</span>
+                             <span className={`font-mono font-bold ${d.result === 'PASS' ? 'text-emerald-400' : (d.result === 'NONE' ? 'text-slate-400' : 'text-rose-400')}`}>{d.result}</span>
                            </div>
                            <div className="flex justify-between"><span className="text-slate-500">Domain</span><span className="text-slate-300 truncate max-w-[120px]">{d.domain || '-'}</span></div>
                            <div className="flex justify-between"><span className="text-slate-500">Selector</span><span className="text-slate-300 truncate max-w-[120px]">{d.selector || '-'}</span></div>

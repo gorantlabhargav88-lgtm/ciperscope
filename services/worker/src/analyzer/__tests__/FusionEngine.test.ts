@@ -23,15 +23,19 @@ describe('FusionEngine', () => {
       authAnalysis: null,
       urls: [],
       attachments: [],
-      inferences: [],
-      threatIndicators: [],
-      geolocationInfo: []
+      relayHops: [],
+      inferences: []
     };
 
     prismaMock = {
       email: {
         findUnique: vi.fn().mockResolvedValue(mockEmail),
         update: vi.fn().mockResolvedValue({})
+      },
+      indicator: {
+        // No CTI observations persisted for this email's indicators by default —
+        // FusionEngine must not fabricate a threat-intelligence signal when this is empty.
+        findMany: vi.fn().mockResolvedValue([])
       },
       $transaction: vi.fn().mockImplementation(async (callback) => {
         // Execute the callback with the mock Prisma client (which has riskAssessment mocked)
@@ -157,12 +161,49 @@ describe('FusionEngine', () => {
     );
   });
 
-  // --- Phase 14.4 CTI Integration Tests ---
+  // --- Phase 7C.3 CTI Fusion Integration Tests ---
+  //
+  // FusionEngine has no direct Prisma relation from Email to CTI data — Indicator and
+  // ThreatIntelObservation are a global cache keyed by indicator value (see
+  // packages/database/prisma/schema.prisma). These tests exercise the real wiring:
+  // indicators are re-derived from the email's urls/relayHops/attachments (same
+  // IocNormalizer used by CtiEnrichmentWorker) and looked up via prisma.indicator.findMany.
 
-  it('adds +50 score and THREAT_INTELLIGENCE factor for MALICIOUS CTI', async () => {
-    mockEmail.threatIndicators = [
-      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' }
-    ];
+  it('does not query CTI observations when no indicators can be extracted from the email', async () => {
+    // No urls, relayHops, or attachments -> nothing to look up.
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.indicator.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ overallScore: 0 })
+      })
+    );
+  });
+
+  it('does not fabricate a score when indicators are extracted but no CTI observations exist for them', async () => {
+    mockEmail.urls = [{ url: 'https://bad.com/phish', indicators: null }];
+    prismaMock.indicator.findMany.mockResolvedValue([]);
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.indicator.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { value: { in: ['bad.com'] } }
+      })
+    );
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ overallScore: 0 })
+      })
+    );
+  });
+
+  it('adds +50 score and THREAT_INTELLIGENCE factor for a MALICIOUS CTI observation on an extracted indicator', async () => {
+    mockEmail.urls = [{ url: 'https://bad.com/phish', indicators: null }];
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: 'bad.com', observations: [{ verdict: ThreatVerdict.MALICIOUS, provider: 'AbuseIPDB' }] }
+    ]);
 
     await fusionEngine.evaluate('email-1');
 
@@ -180,11 +221,15 @@ describe('FusionEngine', () => {
     );
   });
 
-  it('contributes exactly +50 for multiple MALICIOUS indicators, without artificial fan-out inflation', async () => {
-    mockEmail.threatIndicators = [
-      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' },
-      { status: ThreatVerdict.MALICIOUS, iocValue: 'worse.com', provider: 'Mock' }
+  it('contributes exactly +50 for multiple MALICIOUS observations, without artificial fan-out inflation', async () => {
+    mockEmail.urls = [
+      { url: 'https://bad.com/phish', indicators: null },
+      { url: 'https://worse.com/phish', indicators: null }
     ];
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: 'bad.com', observations: [{ verdict: ThreatVerdict.MALICIOUS, provider: 'AbuseIPDB' }] },
+      { id: 'ind-2', value: 'worse.com', observations: [{ verdict: ThreatVerdict.MALICIOUS, provider: 'VirusTotal' }] }
+    ]);
 
     await fusionEngine.evaluate('email-1');
 
@@ -195,10 +240,11 @@ describe('FusionEngine', () => {
     );
   });
 
-  it('adds +20 score and factor for SUSPICIOUS CTI when no MALICIOUS indicators exist', async () => {
-    mockEmail.threatIndicators = [
-      { status: ThreatVerdict.SUSPICIOUS, iocValue: 'sus.com', provider: 'Mock' }
-    ];
+  it('adds +20 score and factor for SUSPICIOUS CTI when no MALICIOUS observations exist', async () => {
+    mockEmail.urls = [{ url: 'https://sus.com/phish', indicators: null }];
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: 'sus.com', observations: [{ verdict: ThreatVerdict.SUSPICIOUS, provider: 'AbuseIPDB' }] }
+    ]);
 
     await fusionEngine.evaluate('email-1');
 
@@ -217,10 +263,14 @@ describe('FusionEngine', () => {
   });
 
   it('MALICIOUS takes precedence over SUSPICIOUS for CTI scoring', async () => {
-    mockEmail.threatIndicators = [
-      { status: ThreatVerdict.SUSPICIOUS, iocValue: 'sus.com', provider: 'Mock' },
-      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' }
+    mockEmail.urls = [
+      { url: 'https://sus.com/phish', indicators: null },
+      { url: 'https://bad.com/phish', indicators: null }
     ];
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: 'sus.com', observations: [{ verdict: ThreatVerdict.SUSPICIOUS, provider: 'AbuseIPDB' }] },
+      { id: 'ind-2', value: 'bad.com', observations: [{ verdict: ThreatVerdict.MALICIOUS, provider: 'VirusTotal' }] }
+    ]);
 
     await fusionEngine.evaluate('email-1');
 
@@ -231,10 +281,11 @@ describe('FusionEngine', () => {
     );
   });
 
-  it('contributes +0 for CLEAN indicators and creates no threat-intelligence factor', async () => {
-    mockEmail.threatIndicators = [
-      { status: ThreatVerdict.CLEAN, iocValue: 'good.com', provider: 'Mock' }
-    ];
+  it('contributes +0 for CLEAN observations and creates no threat-intelligence factor', async () => {
+    mockEmail.urls = [{ url: 'https://good.com/phish', indicators: null }];
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: 'good.com', observations: [{ verdict: ThreatVerdict.CLEAN, provider: 'AbuseIPDB' }] }
+    ]);
 
     await fusionEngine.evaluate('email-1');
 
@@ -245,16 +296,38 @@ describe('FusionEngine', () => {
     );
   });
 
-  it('contributes +0 for UNKNOWN/missing indicators and creates no threat-intelligence factor', async () => {
-    mockEmail.threatIndicators = [
-      { status: ThreatVerdict.UNKNOWN, iocValue: 'unknown.com', provider: 'Mock' }
-    ];
+  it('contributes +0 for UNKNOWN observations and creates no threat-intelligence factor', async () => {
+    mockEmail.urls = [{ url: 'https://unknown.com/phish', indicators: null }];
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: 'unknown.com', observations: [{ verdict: ThreatVerdict.UNKNOWN, provider: 'AbuseIPDB' }] }
+    ]);
 
     await fusionEngine.evaluate('email-1');
 
     expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({ overallScore: 0 })
+      })
+    );
+  });
+
+  it('correlates indicators extracted from relay hop source IPs and attachment hashes, not just URLs', async () => {
+    mockEmail.relayHops = [{ sourceIp: '203.0.113.5' }];
+    mockEmail.attachments = [{ sha256: 'a'.repeat(64) }];
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: '203.0.113.5', observations: [{ verdict: ThreatVerdict.MALICIOUS, provider: 'AbuseIPDB' }] }
+    ]);
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.indicator.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { value: { in: expect.arrayContaining(['203.0.113.5', 'a'.repeat(64)]) } }
+      })
+    );
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ overallScore: 50 })
       })
     );
   });
@@ -266,9 +339,10 @@ describe('FusionEngine', () => {
       prediction: 'LEGITIMATE',
       modelScore: 0.1
     }];
-    mockEmail.threatIndicators = [
-      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' }
-    ];
+    mockEmail.urls = [{ url: 'https://bad.com/phish', indicators: null }];
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: 'bad.com', observations: [{ verdict: ThreatVerdict.MALICIOUS, provider: 'AbuseIPDB' }] }
+    ]);
 
     await fusionEngine.evaluate('email-1');
 
@@ -286,11 +360,11 @@ describe('FusionEngine', () => {
       dkim: AuthResultStatus.FAIL
     }; // +40
     mockEmail.urls = [
-      { indicators: ['OBFUSCATED'] }
-    ]; // +40
-    mockEmail.threatIndicators = [
-      { status: ThreatVerdict.MALICIOUS, iocValue: 'bad.com', provider: 'Mock' }
-    ]; // +50
+      { url: 'https://bad.com/phish', indicators: ['OBFUSCATED'] }
+    ]; // +40 (URL anomaly) + CTI lookup
+    prismaMock.indicator.findMany.mockResolvedValue([
+      { id: 'ind-1', value: 'bad.com', observations: [{ verdict: ThreatVerdict.MALICIOUS, provider: 'AbuseIPDB' }] }
+    ]); // +50
 
     await fusionEngine.evaluate('email-1');
 

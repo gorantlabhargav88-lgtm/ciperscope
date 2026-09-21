@@ -206,6 +206,9 @@ importers:
 
   packages/providers:
     dependencies:
+      '@ciperscope/http-client':
+        specifier: workspace:*
+        version: link:../http-client
       ioredis:
         specifier: ^6.0.0
         version: 6.0.0
@@ -216,6 +219,9 @@ importers:
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.43)(lightningcss@1.33.0)
 
   packages/queue:
     dependencies:

@@ -61,11 +61,11 @@ describe('CiperscopeApiClient — request plumbing', () => {
 });
 
 describe('CiperscopeApiClient — DKIM honesty mapping', () => {
-  it('injects cryptographicallyVerified: false on every DKIM row regardless of backend result', async () => {
+  it('derives cryptographicallyVerified: true only when the backend result is PASS', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         dkimVerifications: [
-          { result: 'PASS', domain: 'example.com', selector: 's1', explanation: 'structural check only' },
+          { result: 'PASS', domain: 'example.com', selector: 's1', explanation: 'Signature cryptographically verified using key at s1._domainkey.example.com' },
         ],
       })
     );
@@ -75,8 +75,24 @@ describe('CiperscopeApiClient — DKIM honesty mapping', () => {
 
     expect(dkimVerifications).toHaveLength(1);
     expect(dkimVerifications[0].result).toBe('PASS');
-    expect(dkimVerifications[0].cryptographicallyVerified).toBe(false);
+    expect(dkimVerifications[0].cryptographicallyVerified).toBe(true);
   });
+
+  it.each(['FAIL', 'PERMERROR', 'TEMPERROR', 'NONE', 'NEUTRAL', 'SOFTFAIL'] as const)(
+    'derives cryptographicallyVerified: false for a non-PASS backend result (%s) — presence/syntax is never enough',
+    async (result) => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        jsonResponse({
+          dkimVerifications: [{ result, domain: 'example.com', selector: 's1', explanation: 'not a real pass' }],
+        })
+      );
+      const client = makeClient(fetchMock as unknown as typeof fetch);
+
+      const { dkimVerifications } = await client.getEmailDkim('e1');
+
+      expect(dkimVerifications[0].cryptographicallyVerified).toBe(false);
+    }
+  );
 
   it('handles an empty DKIM list without throwing', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ dkimVerifications: [] }));

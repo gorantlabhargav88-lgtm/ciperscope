@@ -124,19 +124,21 @@ export class CiperscopeApiClient {
   }
 
   /**
-   * Backend mapping (Phase 2C): raw DkimVerification rows have no field
-   * disclosing that CiperScope's DKIM check is simulated, not cryptographic
-   * (services/worker/src/verifier/DkimVerifier.ts:67-110). This method
-   * injects `cryptographicallyVerified: false` on every row so callers can
-   * never accidentally display a DKIM result as trustworthy — the backend
-   * field names themselves are left untouched.
+   * Backend mapping (Phase 8): raw DkimVerification rows carry a `result`
+   * field that can only be `'PASS'` when services/worker/src/verifier's
+   * DkimVerifier performed a real RFC 6376 cryptographic verification
+   * (services/worker/src/verifier/dkim/verifyCryptography.ts) — never from
+   * signature presence, length, or syntactic validity alone. This method
+   * derives `cryptographicallyVerified` from that honest `result` field
+   * rather than trusting a separate backend-supplied flag, so callers have
+   * one place to check before ever displaying a DKIM result as trustworthy.
    */
   async getEmailDkim(emailId: string): Promise<{ dkimVerifications: DkimResult[] }> {
     const raw = await this.request<{ dkimVerifications: Omit<DkimResult, 'cryptographicallyVerified'>[] }>(
       `/emails/${emailId}/dkim`
     );
     return {
-      dkimVerifications: raw.dkimVerifications.map((v) => ({ ...v, cryptographicallyVerified: false as const })),
+      dkimVerifications: raw.dkimVerifications.map((v) => ({ ...v, cryptographicallyVerified: v.result === 'PASS' })),
     };
   }
 

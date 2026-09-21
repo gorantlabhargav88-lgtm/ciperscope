@@ -33,6 +33,18 @@ export interface EmailForensicsData {
     /** Same signals passed into calculateThreatPriority() — exposed so the UI never recomputes or duplicates the priority logic. */
     maliciousIndicatorCount: number;
     authenticationFailed: boolean;
+    /**
+     * True when any DKIM signature cryptographically FAILed (Phase 8 —
+     * real RFC 6376 verification). Deliberately NOT part of
+     * `authenticationFailed` and NOT passed into calculateThreatPriority():
+     * raw DKIM failures are materially noisier than SPF/DMARC hard-fails
+     * (mailing lists and forwarders routinely break DKIM on legitimate
+     * mail), so DKIM only affects priority indirectly, through DMARC
+     * alignment (services/worker/src/verifier/DmarcVerifier.ts), which is
+     * the RFC 7489-correct way to weigh it. This field is analyst-facing
+     * visibility only, pending an explicit decision to fold it into scoring.
+     */
+    dkimFailed: boolean;
   };
   urls: EmailUrlEntry[];
   attachments: EmailAttachmentEntry[];

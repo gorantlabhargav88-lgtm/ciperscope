@@ -37,8 +37,12 @@ export function EventDetailPanel({ event, decision }: { event: ForensicTimelineE
           <>
             <Row label="SPF" value={(meta.spf as string) ?? null} />
             <Row label="DMARC" value={(meta.dmarc as string) ?? null} />
-            <Row label="DKIM (structural only)" value={(meta.dkim as string) ?? null} />
-            <div className="mt-1 text-amber-500">DKIM cryptographic verification is NOT available in this build.</div>
+            <Row label="DKIM" value={(meta.dkim as string) ?? null} />
+            {meta.dkimCryptographicallyVerified ? (
+              <div className="mt-1 text-emerald-500">DKIM signature cryptographically verified.</div>
+            ) : (
+              <div className="mt-1 text-amber-500">DKIM cryptographic verification did not succeed.</div>
+            )}
           </>
         )}
 
