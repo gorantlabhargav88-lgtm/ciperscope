@@ -7,6 +7,7 @@ import rbacPlugin from '../plugins/rbac';
 import alertRoutes from '../modules/alert/alert.routes';
 import investigationRoutes from '../modules/investigation/investigation.routes';
 import evidenceRoutes from '../modules/evidence/evidence.routes';
+import dashboardRoutes from '../modules/dashboard/dashboard.routes';
 
 /**
  * Applies the exact idempotent upsert pattern used by
@@ -49,6 +50,7 @@ describe('RBAC seed regression (SYSTEM_ENFORCED_PERMISSIONS)', () => {
     server.register(alertRoutes, { prefix: '/api/v1/alerts' });
     server.register(investigationRoutes, { prefix: '/api/v1/investigations' });
     server.register(evidenceRoutes, { prefix: '/api/v1/evidence' });
+    server.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
     await server.ready();
 
     orgId = crypto.randomUUID();
@@ -124,14 +126,15 @@ describe('RBAC seed regression (SYSTEM_ENFORCED_PERMISSIONS)', () => {
     expect(rolePermissions.length).toBe(SYSTEM_ENFORCED_PERMISSIONS.length);
   });
 
-  // These three routes (alert, investigation, evidence) had zero real-RBAC integration
-  // coverage before this file — case/email permission enforcement is already covered by
-  // services/api/src/modules/case/tests/case.integration.test.ts and is intentionally not
-  // duplicated here.
+  // These four routes (alert, investigation, evidence, dashboard) had zero real-RBAC
+  // integration coverage before this file (Phase 10A) — case/email permission enforcement
+  // is already covered by services/api/src/modules/case/tests/case.integration.test.ts
+  // and is intentionally not duplicated here.
   const realRouteChecks: Array<{ action: PermissionAction; url: string }> = [
     { action: 'ALERT_READ', url: '/api/v1/alerts' },
     { action: 'INVESTIGATION_READ', url: '/api/v1/investigations' },
     { action: 'EVIDENCE_READ', url: '/api/v1/evidence' },
+    { action: 'CASE_READ', url: '/api/v1/dashboard/overview' },
   ];
 
   for (const check of realRouteChecks) {

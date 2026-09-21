@@ -2,6 +2,22 @@ import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
 import { fastifyEvidenceListQuerySchema, fastifyGlobalEvidenceParamsSchema } from '../../utils/validation';
 
+// storageKey is the raw backend storage path/key for the evidence file — treated as
+// sensitive and never returned to API clients, matching the established convention
+// for the analogous Email.rawStorageKey field (see services/api/src/modules/case/case.routes.ts).
+const EVIDENCE_SAFE_SELECT = {
+  id: true,
+  caseId: true,
+  type: true,
+  filename: true,
+  mimeType: true,
+  sizeBytes: true,
+  sha256: true,
+  status: true,
+  collectionTime: true,
+  collectedById: true
+} as const;
+
 export default async function evidenceRoutes(server: FastifyInstance) {
   server.get('/', {
     schema: { querystring: fastifyEvidenceListQuerySchema },
@@ -29,6 +45,7 @@ export default async function evidenceRoutes(server: FastifyInstance) {
     try {
       const items = await prisma.evidence.findMany({
         where: { case: { organizationId } },
+        select: EVIDENCE_SAFE_SELECT,
         take: limit + 1,
         skip: cursorOpt ? 1 : 0,
         cursor: cursorOpt,
@@ -69,6 +86,7 @@ export default async function evidenceRoutes(server: FastifyInstance) {
 
     const evidence = await prisma.evidence.findFirst({
       where: { id: evidenceId, case: { organizationId } },
+      select: EVIDENCE_SAFE_SELECT,
     });
 
     if (!evidence) {
