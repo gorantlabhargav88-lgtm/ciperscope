@@ -248,3 +248,34 @@ export const UpdateAlertBodySchema = z.object({
   isRead: z.boolean()
 });
 export const fastifyUpdateAlertBodySchema = zodToJsonSchema(UpdateAlertBodySchema as any);
+
+// Phase 2: outbound webhook management
+export const WEBHOOK_EVENT_TYPES = ['THREAT_ANALYSIS_COMPLETED'] as const;
+
+export const CreateWebhookBodySchema = z.object({
+  url: z.string().url('Invalid webhook URL'),
+  events: z.array(z.enum(WEBHOOK_EVENT_TYPES)).min(1, 'At least one event type is required'),
+  enabled: z.boolean().optional().default(true),
+});
+export const fastifyCreateWebhookBodySchema = zodToJsonSchema(CreateWebhookBodySchema as any);
+
+export const UpdateWebhookBodySchema = z.object({
+  url: z.string().url('Invalid webhook URL').optional(),
+  events: z.array(z.enum(WEBHOOK_EVENT_TYPES)).min(1).optional(),
+  enabled: z.boolean().optional(),
+}).refine((v) => v.url !== undefined || v.events !== undefined || v.enabled !== undefined, {
+  message: 'At least one field must be provided',
+});
+export const fastifyUpdateWebhookBodySchema = zodToJsonSchema(UpdateWebhookBodySchema as any);
+
+export const WebhookParamsSchema = z.object({
+  webhookId: uuidSchema,
+});
+export const fastifyWebhookParamsSchema = zodToJsonSchema(WebhookParamsSchema as any);
+
+// Phase J: email-centric forensic PDF reports (distinct from the
+// case-centric ReportParamsSchema/createReportBodySchema above).
+export const GlobalForensicReportParamsSchema = z.object({
+  reportId: uuidSchema,
+});
+export const fastifyGlobalForensicReportParamsSchema = zodToJsonSchema(GlobalForensicReportParamsSchema as any);

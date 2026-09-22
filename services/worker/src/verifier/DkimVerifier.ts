@@ -76,8 +76,30 @@ export class DkimVerifier {
         return this.permError(domain, selector, algorithm, `No public key found at ${dnsQuery}`);
       }
 
-      const keyRecord = txtRecords.join('');
-      const keyTags = parseTagList(keyRecord);
+      // A selector name can carry more than one TXT resource record (e.g. an
+      // unrelated verification/ownership record coexisting alongside the real
+      // DKIM key). Blindly joining every record together corrupts the tag
+      // list. Instead, each record is parsed independently and only records
+      // that look like a DKIM key record (a present, if empty, "p" tag, and
+      // — when a "v" tag is present at all — "v=DKIM1" per RFC 6376 §3.6.1)
+      // are treated as candidates. Exactly one candidate is required: zero
+      // means no usable key was published, and RFC 6376 §3.6.2.2 leaves the
+      // outcome of multiple TXT records "undefined by this specification",
+      // so more than one candidate is rejected rather than picking one
+      // arbitrarily (fail-closed, deterministic, independent of DNS response
+      // ordering).
+      const candidates = txtRecords
+        .map(record => parseTagList(record))
+        .filter(tags => tags.has('p') && (!tags.has('v') || tags.get('v') === 'DKIM1'));
+
+      if (candidates.length === 0) {
+        return this.permError(domain, selector, algorithm, `No public key found at ${dnsQuery}`);
+      }
+      if (candidates.length > 1) {
+        return this.permError(domain, selector, algorithm, `Multiple ambiguous DKIM key records found at ${dnsQuery}`);
+      }
+
+      const keyTags = candidates[0];
       const keyType = (keyTags.get('k') || 'rsa') as DkimKeyType;
 
       if (keyType !== 'rsa' && keyType !== 'ed25519') {

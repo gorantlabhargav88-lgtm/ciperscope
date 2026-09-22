@@ -147,6 +147,41 @@ export class DnsResolver {
     }
   }
 
+  /** Reverse DNS (PTR) lookup for an IP address. Purely informational
+   *  forensic context (e.g. "does this relay IP have a PTR record, and
+   *  what does it claim to be") — the result is attacker-influenceable
+   *  (anyone can set up a PTR record) and must never be treated as a
+   *  verified identity, only as an additional data point alongside
+   *  Received-header parsing and CTI/geo results. */
+  public async resolvePtr(ip: string): Promise<string[]> {
+    this.incrementLookup();
+    const cacheKey = `PTR:${ip}`;
+    if (this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey) as string[];
+    }
+
+    const start = Date.now();
+    try {
+      const records = await this.withTimeout(dns.reverse(ip), this.DEFAULT_TIMEOUT_MS);
+      const duration = Date.now() - start;
+      this.recordObservation(ip, 'PTR', JSON.stringify(records), 'NOERROR', duration);
+
+      this.cache.set(cacheKey, records);
+      return records;
+    } catch (err: unknown) {
+      const duration = Date.now() - start;
+      const error = err as { code?: string; message?: string };
+      const code = error.code || error.message || 'UNKNOWN';
+      this.recordObservation(ip, 'PTR', null, code, duration);
+
+      if (code === 'ENOTFOUND' || code === 'ENODATA') {
+        this.cache.set(cacheKey, []);
+        return [];
+      }
+      throw err;
+    }
+  }
+
   public async resolveMx(domain: string): Promise<{ exchange: string; priority: number }[]> {
     this.incrementLookup();
     const cacheKey = `MX:${domain}`;

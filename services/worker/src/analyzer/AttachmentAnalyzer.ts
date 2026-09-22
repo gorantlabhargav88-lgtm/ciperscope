@@ -3,6 +3,10 @@ import { fromBuffer } from 'file-type';
 import * as crypto from 'crypto';
 import * as yauzl from 'yauzl';
 import { logger } from '@ciperscope/logger';
+import { analyzeApk, ApkStaticAnalysis } from './apk/ApkAnalyzer';
+import { calculateEntropy } from './AttachmentThreatIndicators';
+
+const ZIP_LOCAL_FILE_HEADER_MAGIC = 0x04034b50;
 
 export interface ArchiveMetadata {
   entryCount: number;
@@ -23,6 +27,8 @@ export interface AttachmentAnalysisResult {
   isArchive: boolean;
   archiveMetadata: ArchiveMetadata | null;
   sizeBytes: number;
+  entropy: number | null;
+  apkAnalysis: ApkStaticAnalysis | null;
 }
 
 export class AttachmentAnalyzer {
@@ -125,21 +131,38 @@ export class AttachmentAnalyzer {
            }
         }
 
+        // Detect zip structure by real magic bytes, not just file-type's mime
+        // guess — APKs and other zip-based formats are still zips even when
+        // `file-type` reports a more specific mime for them.
+        const isZipByMagic = !!firstChunk && (firstChunk as Buffer).length >= 4 &&
+          (firstChunk as Buffer).readUInt32LE(0) === ZIP_LOCAL_FILE_HEADER_MAGIC;
+
         let isArchive = false;
         let archiveMetadata: ArchiveMetadata | null = null;
 
-        if (actualMimeType === 'application/zip' && fullBuffer) {
+        if ((actualMimeType === 'application/zip' || isZipByMagic) && fullBuffer) {
            isArchive = true;
            try {
              archiveMetadata = await this.inspectZipMetadata(fullBuffer);
            } catch (e: unknown) {
              const errorMsg = e instanceof Error ? e.message : 'Unknown error';
-             archiveMetadata = { 
-               entryCount: 0, totalUncompressedSize: 0, hasTraversal: false, 
-               hasNestedArchive: false, suspiciousEntries: [], files: [], error: errorMsg || 'Failed to parse ZIP' 
+             archiveMetadata = {
+               entryCount: 0, totalUncompressedSize: 0, hasTraversal: false,
+               hasNestedArchive: false, suspiciousEntries: [], files: [], error: errorMsg || 'Failed to parse ZIP'
              };
            }
         }
+
+        let apkAnalysis: ApkStaticAnalysis | null = null;
+        if (isZipByMagic && fullBuffer) {
+          try {
+            apkAnalysis = await analyzeApk(fullBuffer);
+          } catch (e: unknown) {
+            logger.warn({ err: e }, 'APK analysis failed; treating attachment as a non-APK archive');
+          }
+        }
+
+        const entropy = firstChunk ? calculateEntropy(firstChunk as Buffer) : null;
 
         resolve({
           sha256,
@@ -149,7 +172,9 @@ export class AttachmentAnalyzer {
           magicBytes: magicBytesHex,
           isArchive,
           archiveMetadata,
-          sizeBytes: totalBytes
+          sizeBytes: totalBytes,
+          entropy,
+          apkAnalysis,
         });
       });
     });

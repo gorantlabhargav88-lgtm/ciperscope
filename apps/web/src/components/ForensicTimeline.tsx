@@ -103,14 +103,17 @@ export const ForensicTimeline: React.FC<ForensicTimelineProps> = ({
   }
 
   // 4. ML Classification
+  // mlInference here is { status, prediction } (see EmailAnalysis.tsx) — no
+  // numeric probability/confidence is currently surfaced by the aggregated
+  // API data, so this never fabricates one; it honestly reports the
+  // classification label only.
   if (mlInference && mlInference.status !== 'NOT_AVAILABLE') {
-    const isHighRisk = mlInference.probability > 0.5;
     events.push({
       id: 'ml_classified',
       type: 'ML_CLASSIFIED',
       title: 'ML Classification (DistilBERT)',
-      description: `Probability of threat: ${(mlInference.probability * 100).toFixed(1)}%`,
-      severity: isHighRisk ? 'critical' : 'success',
+      description: mlInference.prediction ? `Classified as: ${mlInference.prediction}` : 'Classification completed',
+      severity: mlInference.prediction && mlInference.prediction !== 'BENIGN' ? 'critical' : 'success',
       details: mlInference,
       icon: Activity
     });
@@ -225,8 +228,10 @@ export const ForensicTimeline: React.FC<ForensicTimelineProps> = ({
                     )}
                     {event.type === 'ML_CLASSIFIED' && (
                       <div className="flex justify-between items-center bg-slate-900/50 p-2 rounded">
-                        <span className="text-slate-400">Class: {event.details.label}</span>
-                        <span className="text-slate-300 font-mono">{(event.details.probability).toFixed(4)}</span>
+                        <span className="text-slate-400">Class: {event.details.prediction ?? 'Unknown'}</span>
+                        <span className="text-slate-300 font-mono">
+                          {typeof event.details.probability === 'number' ? event.details.probability.toFixed(4) : 'N/A'}
+                        </span>
                       </div>
                     )}
                   </div>

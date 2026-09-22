@@ -16,6 +16,7 @@ const mockClient = {
   getEmailAiAnalysis: vi.fn(),
   getEmailThreatIndicators: vi.fn(),
   getEmailGeolocation: vi.fn(),
+  getEmailEvidenceGraph: vi.fn(),
   getCase: vi.fn(),
   getCaseEvidenceList: vi.fn(),
   getCaseInvestigations: vi.fn(),
@@ -55,6 +56,12 @@ function setupDefaults() {
   mockClient.getEmailAiAnalysis.mockResolvedValue({ status: 'NOT_AVAILABLE', prediction: { status: 'NOT_AVAILABLE' } });
   mockClient.getEmailThreatIndicators.mockResolvedValue({ threatIndicators: [] });
   mockClient.getEmailGeolocation.mockResolvedValue({ geolocation: [] });
+  mockClient.getEmailEvidenceGraph.mockResolvedValue({
+    emailId: 'email-1',
+    nodes: [],
+    edges: [],
+    metadata: { generatedAt: '2026-01-01T00:00:00.000Z', nodeCount: 0, edgeCount: 0, truncated: false },
+  });
   mockClient.getCase.mockResolvedValue(null);
   mockClient.getCaseEvidenceList.mockResolvedValue({ items: [], nextCursor: null });
   mockClient.getCaseInvestigations.mockResolvedValue({ items: [] });

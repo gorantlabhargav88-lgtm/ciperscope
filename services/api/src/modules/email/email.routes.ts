@@ -3,11 +3,14 @@ import { EmailIngestionService } from './ingestion.service';
 import { prisma } from '@ciperscope/database';
 import { LocalRawEmailStore, S3RawEmailStore, RawEmailStore } from '@ciperscope/storage';
 import { QueueManager, IdempotencyManager, createRedisConnection } from '@ciperscope/queue';
-import { env } from '@ciperscope/config';
+import { env, defaultRawEmailStoragePath } from '@ciperscope/config';
 import { getRequestContext } from '@ciperscope/logger';
+import { classifyIp } from '@ciperscope/http-client';
+import { buildEvidenceGraph } from './evidenceGraph';
 import { multiRateLimit } from '../../middleware/rateLimiter';
 import { logAuditEvent } from '../../utils/audit';
 import { fastifyEmailParamsSchema, fastifyAttachmentParamsSchema } from '../../utils/validation';
+import { toPublicForensicReport } from '../report/reportSerializer';
 
 export default async function emailRoutes(server: FastifyInstance) {
   // Setup dependencies for the route
@@ -15,7 +18,7 @@ export default async function emailRoutes(server: FastifyInstance) {
   if (env.S3_BUCKET) {
     storage = new S3RawEmailStore(env.S3_BUCKET, env.S3_REGION || 'us-east-1', env.S3_ENDPOINT);
   } else {
-    storage = new LocalRawEmailStore();
+    storage = new LocalRawEmailStore(defaultRawEmailStoragePath);
   }
   const redisConnection = createRedisConnection(env.REDIS_URL || 'redis://127.0.0.1:6379');
   const queueManager = new QueueManager(env.REDIS_URL || 'redis://127.0.0.1:6379');
@@ -655,9 +658,14 @@ export default async function emailRoutes(server: FastifyInstance) {
         id: true,
         ipAddress: true,
         country: true,
+        region: true,
         city: true,
+        latitude: true,
+        longitude: true,
         asn: true,
-        isp: true
+        isp: true,
+        provider: true,
+        updatedAt: true
       }
     });
 
@@ -670,5 +678,314 @@ export default async function emailRoutes(server: FastifyInstance) {
     });
 
     return reply.send({ geolocation });
+  });
+
+  // Phase H: a single, narrowly-scoped view combining relay-hop IP
+  // classification, GeoIP/ASN enrichment, and CTI reputation — everything
+  // already persisted by the existing pipeline, joined for the forensic
+  // investigation UI. Never queries an external provider itself; this is a
+  // read of already-collected evidence, tenant-scoped like every other
+  // route in this file.
+  server.get('/:emailId/intelligence', {
+    schema: { params: fastifyEmailParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({
+      where: { id: emailId, organizationId },
+      include: {
+        relayHops: true,
+        urls: true,
+      }
+    });
+
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const uniqueIps = Array.from(new Set(email.relayHops.map(h => h.sourceIp).filter(Boolean) as string[]));
+
+    const [geoRows, indicatorRows] = await Promise.all([
+      prisma.geoLocation.findMany({
+        where: { ipAddress: { in: uniqueIps } },
+        select: {
+          ipAddress: true, country: true, region: true, city: true,
+          latitude: true, longitude: true, asn: true, isp: true, provider: true, updatedAt: true
+        }
+      }),
+      uniqueIps.length > 0
+        ? prisma.indicator.findMany({
+            where: { value: { in: uniqueIps } },
+            include: { observations: { orderBy: { observationTime: 'desc' }, take: 1 } }
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const geoByIp = new Map(geoRows.map(g => [g.ipAddress, g]));
+    const observationByIp = new Map(
+      indicatorRows
+        .filter(i => i.observations.length > 0)
+        .map(i => [i.value, i.observations[0]])
+    );
+
+    // Each classification is deterministic and computed here, never stored
+    // separately — RelayHop.sourceIp remains the single source of truth.
+    const ipIntelligence = uniqueIps.map((ip) => {
+      const classification = classifyIp(ip);
+      const geo = geoByIp.get(ip) ?? null;
+      const observation = observationByIp.get(ip) ?? null;
+
+      return {
+        ip,
+        source: 'RECEIVED_HEADER' as const,
+        version: classification.version,
+        classification: classification.category,
+        isRoutablePublic: classification.isRoutablePublic,
+        geolocation: geo ? {
+          country: geo.country, region: geo.region, city: geo.city,
+          latitude: geo.latitude, longitude: geo.longitude,
+          asn: geo.asn, isp: geo.isp, provider: geo.provider, updatedAt: geo.updatedAt,
+        } : null,
+        reputation: observation ? {
+          verdict: observation.verdict, confidence: observation.confidence,
+          provider: observation.provider, observedAt: observation.observationTime,
+        } : null,
+      };
+    });
+
+    // Domain summary — reuses EmailUrl.domain (Phase H population fix),
+    // never a second extraction pass.
+    const domainCounts = new Map<string, number>();
+    for (const u of email.urls) {
+      if (!u.domain) continue;
+      domainCounts.set(u.domain, (domainCounts.get(u.domain) ?? 0) + 1);
+    }
+    const domains = Array.from(domainCounts.entries()).map(([domain, urlCount]) => ({ domain, urlCount }));
+
+    await logAuditEvent({
+      action: 'EMAIL_INTELLIGENCE_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
+    return reply.send({ ipIntelligence, domains });
+  });
+
+  // Phase I: deterministic Evidence Graph — a read-only correlation of
+  // already-persisted evidence (relay IPs, URLs/domains, attachments/
+  // hashes/APK/QR, CTI observations, GeoIP). Never queries an external
+  // provider and never returns raw email body/attachment bytes/credentials
+  // — see evidenceGraph.ts's buildEvidenceGraph() for the actual logic,
+  // kept as a pure, independently-testable function.
+  server.get('/:emailId/evidence-graph', {
+    schema: { params: fastifyEmailParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({
+      where: { id: emailId, organizationId },
+      include: {
+        relayHops: true,
+        urls: true,
+        attachments: true,
+      }
+    });
+
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const uniqueIps = Array.from(new Set(email.relayHops.map(h => h.sourceIp).filter(Boolean) as string[]));
+    const uniqueDomains = Array.from(new Set(email.urls.map(u => u.domain).filter(Boolean) as string[]));
+    const uniqueHashes = Array.from(new Set(email.attachments.map(a => a.sha256).filter(Boolean) as string[]));
+    const ctiLookupValues = [...uniqueIps, ...uniqueDomains, ...uniqueHashes];
+
+    const [geoRows, indicatorRows] = await Promise.all([
+      uniqueIps.length > 0
+        ? prisma.geoLocation.findMany({
+            where: { ipAddress: { in: uniqueIps } },
+            select: { ipAddress: true, country: true, city: true, asn: true, isp: true, provider: true }
+          })
+        : Promise.resolve([]),
+      ctiLookupValues.length > 0
+        ? prisma.indicator.findMany({
+            where: { value: { in: ctiLookupValues } },
+            include: { observations: { orderBy: { observationTime: 'desc' }, take: 1 } }
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const indicatorObservations = indicatorRows
+      .filter(i => i.observations.length > 0)
+      .map(i => ({
+        value: i.value,
+        type: i.type,
+        verdict: i.observations[0].verdict,
+        confidence: i.observations[0].confidence,
+        provider: i.observations[0].provider,
+        observationTime: i.observations[0].observationTime,
+      }));
+
+    const graph = buildEvidenceGraph({
+      emailId: email.id,
+      organizationId,
+      senderAddress: email.senderAddress,
+      relayHops: email.relayHops.map(h => ({ sourceIp: h.sourceIp, hopOrder: h.hopOrder, receivedHeader: h.receivedHeader })),
+      urls: email.urls.map(u => ({
+        id: u.id, url: u.url, normalizedUrl: u.normalizedUrl, domain: u.domain, source: u.source, indicators: u.indicators,
+      })),
+      attachments: email.attachments.map(a => ({
+        id: a.id, filename: a.filename, sha256: a.sha256, apkMetadata: a.apkMetadata, qrFindings: a.qrFindings, threatIndicators: a.threatIndicators,
+      })),
+      geoLocations: geoRows,
+      indicatorObservations,
+    });
+
+    await logAuditEvent({
+      action: 'EMAIL_EVIDENCE_GRAPH_VIEWED',
+      resource: 'Email',
+      resourceId: email.id,
+      status: 'SUCCESS',
+      req: request
+    });
+
+    return reply.send(graph);
+  });
+
+  // Phase J: forensic PDF report generation. The route only creates the
+  // ForensicReport row and enqueues the worker job — it never generates the
+  // PDF synchronously, per the phase's architecture requirement. Idempotent
+  // under concurrent requests via the partial unique index on
+  // ForensicReport(emailId) WHERE status IN (QUEUED, GENERATING) — see
+  // migration 20260922130000_phase_j_report_inflight_unique.
+  server.post('/:emailId/reports', {
+    schema: { params: fastifyEmailParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const priorReportCount = await prisma.forensicReport.count({ where: { emailId } });
+    const reportVersion = `${priorReportCount + 1}.0`;
+
+    let report;
+    let created = true;
+    try {
+      report = await prisma.forensicReport.create({
+        data: {
+          organizationId,
+          emailId,
+          reportVersion,
+          requestedById: request.user?.sub,
+        },
+      });
+    } catch (err: any) {
+      // Unique-violation on the partial in-flight index: another request
+      // already queued/is generating a report for this email — return that
+      // one instead of creating a duplicate. Deliberately not filtered to
+      // QUEUED/GENERATING here: by the time this fallback query runs, the
+      // winning report may have already finished (or failed) generation —
+      // the P2002 alone proves a report existed for this email at INSERT
+      // time, so the most recent row is still the correct idempotent
+      // response, not a 500.
+      if (err.code === 'P2002') {
+        created = false;
+        report = await prisma.forensicReport.findFirst({
+          where: { emailId, organizationId },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (!report) {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
+
+    if (created) {
+      const queue = queueManager.getQueue('report-generation');
+      await queue.add(
+        'generate-report',
+        {
+          organizationId,
+          resourceId: report.id,
+          jobId: report.id,
+          operation: 'report-generation',
+          reportId: report.id,
+          emailId,
+        },
+        { jobId: `report-${report.id}` }
+      );
+    }
+
+    await logAuditEvent({
+      action: 'EMAIL_REPORT_GENERATION_REQUESTED',
+      resource: 'ForensicReport',
+      resourceId: report.id,
+      actorId: request.user?.sub,
+      organizationId,
+      status: 'SUCCESS',
+      metadata: { emailId, deduplicated: !created },
+      req: request,
+    });
+
+    return reply.status(created ? 202 : 200).send(toPublicForensicReport(report));
+  });
+
+  server.get('/:emailId/reports', {
+    schema: { params: fastifyEmailParamsSchema },
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    const { emailId } = request.params as { emailId: string };
+
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    const email = await prisma.email.findUnique({ where: { id: emailId, organizationId } });
+    if (!email) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Email not found' });
+    }
+
+    const reports = await prisma.forensicReport.findMany({
+      where: { emailId, organizationId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    await logAuditEvent({
+      action: 'EMAIL_REPORT_VIEWED',
+      resource: 'Email',
+      resourceId: emailId,
+      actorId: request.user?.sub,
+      organizationId,
+      status: 'SUCCESS',
+      req: request,
+    });
+
+    return reply.send({ reports: reports.map(toPublicForensicReport) });
   });
 }

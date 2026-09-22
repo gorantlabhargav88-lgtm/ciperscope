@@ -2,8 +2,24 @@ import { CTIEnrichmentJob, validateCTIJob } from '@ciperscope/queue/src/cti-job'
 import { PrismaClient, IndicatorType } from '@ciperscope/database';
 import { ctiProvider } from '@ciperscope/providers';
 import { createLogger } from '@ciperscope/logger';
+import { env } from '@ciperscope/config';
+import IORedis from 'ioredis';
+import { CtiConfig } from './cti/CtiConfig';
+import { classifyIp } from './analyzer/IpClassifier';
 
 const logger = createLogger('cti-worker');
+
+// Lazily instantiated (like the PrismaClient below) rather than at module
+// load, so importing this file in an isolated unit-test environment never
+// opens a real Redis connection as a side effect.
+let geoProviderInstance: ReturnType<typeof CtiConfig.getGeoProvider> | null = null;
+function getGeoProvider() {
+  if (!geoProviderInstance) {
+    const geoRedis = new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });
+    geoProviderInstance = CtiConfig.getGeoProvider(geoRedis);
+  }
+  return geoProviderInstance;
+}
 
 export async function processCTIJob(jobData: CTIEnrichmentJob) {
   const startTime = Date.now();
@@ -82,6 +98,48 @@ export async function processCTIJob(jobData: CTIEnrichmentJob) {
                }
            });
        }
+    }
+    // Phase H: GeoIP/ASN enrichment, IP indicators only. A separate,
+    // best-effort step — its failure must never fail the primary CTI
+    // reputation result already persisted above, and it never sends a
+    // private/reserved/loopback IP to an external provider.
+    if (indicatorType === 'IP') {
+      const classification = classifyIp(indicator);
+      if (classification.isRoutablePublic) {
+        try {
+          const geo = await getGeoProvider().lookup(indicator);
+          if (geo) {
+            await prisma.geoLocation.upsert({
+              where: { ipAddress: indicator },
+              create: {
+                ipAddress: indicator,
+                country: geo.country,
+                region: geo.region,
+                city: geo.city,
+                latitude: geo.latitude,
+                longitude: geo.longitude,
+                asn: geo.asn,
+                isp: geo.isp,
+                provider: geo.providerName,
+              },
+              update: {
+                country: geo.country,
+                region: geo.region,
+                city: geo.city,
+                latitude: geo.latitude,
+                longitude: geo.longitude,
+                asn: geo.asn,
+                isp: geo.isp,
+                provider: geo.providerName,
+              },
+            });
+          }
+        } catch (geoError: unknown) {
+          logger.warn({ error: geoError instanceof Error ? geoError.message : 'Unknown error' }, 'GeoIP enrichment failed (non-fatal)');
+        }
+      } else {
+        logger.info({ category: classification.category }, 'Skipping GeoIP lookup for a non-public IP');
+      }
     }
   } catch (dbError: unknown) {
     logger.error({ error: dbError instanceof Error ? dbError.message : 'Unknown error' }, 'Failed to persist CTI observation');

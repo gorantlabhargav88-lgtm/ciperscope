@@ -14,6 +14,8 @@ import alertRoutes from './modules/alert/alert.routes';
 import investigationRoutes from './modules/investigation/investigation.routes';
 import evidenceRoutes from './modules/evidence/evidence.routes';
 import integrationRoutes from './modules/integration/integration.routes';
+import webhookRoutes from './modules/webhook/webhook.routes';
+import reportRoutes from './modules/report/report.routes';
 import fastifyMultipart from '@fastify/multipart';
 import { createRedisConnection } from '@ciperscope/queue';
 
@@ -95,8 +97,13 @@ server.register(fastifyCookie);
 // Register Custom RBAC/Auth Middleware
 server.register(rbacPlugin);
 
-// Register Multipart for File Uploads
-server.register(fastifyMultipart);
+// Register Multipart for File Uploads. fileSize bounds the raw upload at
+// HTTP ingress — before AttachmentAnalyzer's internal 50MB in-memory buffer
+// cap ever applies to a raw .eml's zip/archive attachments, and before the
+// upload is ever written to raw-email storage.
+server.register(fastifyMultipart, {
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
 
 // Health Check
 server.get('/health', async () => {
@@ -124,6 +131,8 @@ server.register(alertRoutes, { prefix: '/api/v1/alerts' });
 server.register(investigationRoutes, { prefix: '/api/v1/investigations' });
 server.register(evidenceRoutes, { prefix: '/api/v1/evidence' });
 server.register(integrationRoutes, { prefix: '/api/v1/integrations' });
+server.register(webhookRoutes, { prefix: '/api/v1/webhooks' });
+server.register(reportRoutes, { prefix: '/api/v1/reports' });
 
 const start = async () => {
   try {

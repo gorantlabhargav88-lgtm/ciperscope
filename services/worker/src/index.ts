@@ -1,7 +1,7 @@
 import { logger, runWithContext, generateRequestId } from '@ciperscope/logger';
 import { QueueManager, createTenantScopedWorker, IdempotencyManager, EmailIngestionJobPayload, EmailAuthenticationVerificationJobPayload } from '@ciperscope/queue';
 import { prisma } from '@ciperscope/database';
-import { env } from '@ciperscope/config';
+import { env, defaultRawEmailStoragePath } from '@ciperscope/config';
 import IORedis from 'ioredis';
 import { LocalRawEmailStore, S3RawEmailStore, RawEmailStore } from '@ciperscope/storage';
 import { EmailForensicParser } from './parser/EmailForensicParser';
@@ -18,6 +18,12 @@ import { runMlEvaluationStage } from './analyzer/mlEvaluationStage';
 import { processCTIJob } from './cti-worker';
 import { CTIEnrichmentJob } from '@ciperscope/queue';
 import { GmailSyncWorker, GmailSyncJobPayload } from './integration/gmail-sync';
+import { GmailWatchRenewalWorker } from './integration/gmail-watch-renewal';
+import { WebhookDeliveryJobPayload } from '@ciperscope/queue';
+import { WebhookNotificationService } from './notifications/NotificationService';
+import { processWebhookDelivery } from './notifications/WebhookDeliveryWorker';
+import { ReportGenerationJobPayload } from '@ciperscope/queue';
+import { ReportGenerationWorker } from './reports/ReportGenerationWorker';
 
 const redisUrl = env.REDIS_URL;
 
@@ -28,7 +34,7 @@ let rawEmailStore: RawEmailStore;
 if (env.S3_BUCKET) {
   rawEmailStore = new S3RawEmailStore(env.S3_BUCKET, env.S3_REGION || 'us-east-1', env.S3_ENDPOINT);
 } else {
-  rawEmailStore = new LocalRawEmailStore();
+  rawEmailStore = new LocalRawEmailStore(defaultRawEmailStoragePath);
 }
 
 const emailResourceValidator = async (resourceId: string, organizationId: string) => {
@@ -37,6 +43,20 @@ const emailResourceValidator = async (resourceId: string, organizationId: string
   });
   return email?.organizationId === organizationId;
 };
+
+const webhookResourceValidator = async (resourceId: string, organizationId: string) => {
+  const webhook = await prisma.webhook.findUnique({
+    where: { id_organizationId: { id: resourceId, organizationId } },
+  });
+  return !!webhook;
+};
+
+const reportResourceValidator = async (resourceId: string, organizationId: string) => {
+  const report = await prisma.forensicReport.findUnique({ where: { id: resourceId } });
+  return report?.organizationId === organizationId;
+};
+
+const notificationService = new WebhookNotificationService(prisma, queueManager);
 
 export async function start() {
   logger.info('Starting CiperScope Worker Service...');
@@ -169,11 +189,22 @@ export async function start() {
                 });
               }
 
-              // Update Analysis Status
+              // Update Analysis Status — 'PROCESSING', NOT 'COMPLETED' (Phase
+              // 10G.2). Raw MIME parsing succeeding does not mean the
+              // security-analysis pipeline (SPF/DKIM/DMARC -> CTI -> ML ->
+              // FusionEngine) has run. 'COMPLETED' is set exactly once, by
+              // FusionEngine.evaluate() (services/worker/src/analyzer/
+              // FusionEngine.ts), in the same transaction that persists the
+              // final RiskAssessment — that is the only place in the
+              // pipeline where 'COMPLETED' can legitimately be declared.
+              // Setting it here previously let the frontend treat a
+              // freshly-parsed, not-yet-analyzed email as fully analyzed and
+              // display it as P3/apparently-safe with riskAssessment still
+              // null.
               await tx.email.update({
                 where: { id: job.data.resourceId },
                 data: {
-                  analysisStatus: 'COMPLETED'
+                  analysisStatus: 'PROCESSING'
                 }
               });
             });
@@ -598,7 +629,7 @@ export async function start() {
             // Assessment. Phase 7D: a CTI-triggered re-evaluation skips
             // re-classification (see runMlEvaluationStage) since only the CTI
             // observations available to FusionEngine have changed.
-            const fusionEngine = new FusionEngine(prisma);
+            const fusionEngine = new FusionEngine(prisma, notificationService);
             await runMlEvaluationStage(job.data.resourceId, job.data.operation, {
               classifyEmail: (emailId) => mlClassifier.classifyEmail(emailId),
               evaluateFusion: (emailId) => fusionEngine.evaluate(emailId)
@@ -635,6 +666,75 @@ export async function start() {
     logger.error({ jobId: job?.id, queue: 'email-ml-classification', err }, 'ML Classification Job failed');
   });
 
+  // Phase 2: Outbound webhook delivery worker. Runs on its own queue, so a
+  // slow or unreachable receiver never delays email analysis — FusionEngine
+  // only enqueues here, never waits for delivery.
+  const webhookDeliveryWorker = createTenantScopedWorker<WebhookDeliveryJobPayload, unknown>(
+    'webhook-delivery',
+    idempotencyRedis,
+    async (job) => {
+      return runWithContext(
+        {
+          requestId: job.data.requestId || generateRequestId(),
+          jobId: job.id as string,
+          tenantId: job.data.organizationId,
+        },
+        async () => {
+          await processWebhookDelivery(prisma, job);
+          return { success: true };
+        }
+      );
+    },
+    2,
+    webhookResourceValidator
+  );
+
+  webhookDeliveryWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, queue: 'webhook-delivery' }, 'Webhook delivery job completed successfully');
+  });
+
+  webhookDeliveryWorker.on('failed', (job, err) => {
+    // err is a generic Error from processWebhookDelivery's own safe-message
+    // handling — never the raw fetch/network error object, and never
+    // includes the webhook secret.
+    logger.error({ jobId: job?.id, queue: 'webhook-delivery', err: err.message }, 'Webhook delivery job failed');
+  });
+
+  // Phase J: forensic PDF report generation. Runs on its own queue so a
+  // report request never delays or is delayed by email analysis; the
+  // resourceValidator enforces that a job can only ever act on a
+  // ForensicReport row belonging to the requesting organization.
+  const reportGenerationWorkerLogic = new ReportGenerationWorker(prisma, rawEmailStore);
+  const reportGenerationWorker = createTenantScopedWorker<ReportGenerationJobPayload, unknown>(
+    'report-generation',
+    idempotencyRedis,
+    async (job) => {
+      return runWithContext(
+        {
+          requestId: job.data.requestId || generateRequestId(),
+          jobId: job.id as string,
+          tenantId: job.data.organizationId,
+          actorId: job.data.actorId,
+        },
+        async () => {
+          logger.info({ reportId: job.data.reportId, emailId: job.data.emailId }, 'Processing forensic report generation job');
+          await reportGenerationWorkerLogic.generate(job.data.reportId, job.data.organizationId);
+          return { success: true };
+        }
+      );
+    },
+    1,
+    reportResourceValidator
+  );
+
+  reportGenerationWorker.on('completed', (job) => {
+    logger.info({ jobId: job.id, queue: 'report-generation' }, 'Report generation job completed successfully');
+  });
+
+  reportGenerationWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, queue: 'report-generation', err: err.message }, 'Report generation job failed');
+  });
+
   // Setup Gmail Sync Worker
   const gmailSyncWorkerLogic = new GmailSyncWorker(rawEmailStore);
   const gmailSyncWorker = queueManager.createWorker<GmailSyncJobPayload, unknown>(
@@ -662,6 +762,44 @@ export async function start() {
 
   gmailSyncWorker.on('failed', (job, err) => {
     logger.error({ jobId: job?.id, queue: 'gmail-sync', err }, 'Gmail Sync Job failed');
+  });
+
+  // Gmail Watch Renewal — Phase 10G.1. Google's push-notification watch
+  // subscriptions expire after a maximum of 7 days and are otherwise never
+  // renewed anywhere in this codebase (see gmail-watch-renewal.ts's doc
+  // comment for the full rationale). A BullMQ repeatable job is the
+  // smallest addition that reuses existing infrastructure: BullMQ
+  // deduplicates a repeatable job registration by its repeat key, so
+  // calling `.add()` with the same options from multiple worker instances
+  // does not create duplicate scheduled firings, and only one worker
+  // instance actually claims each firing when it occurs — no new locking
+  // or scheduling mechanism is introduced.
+  const gmailWatchRenewalWorkerLogic = new GmailWatchRenewalWorker();
+  const gmailWatchRenewalQueue = queueManager.getQueue('gmail-watch-renewal');
+  await gmailWatchRenewalQueue.add(
+    'renew-watches',
+    {},
+    {
+      repeat: { every: 24 * 60 * 60 * 1000 }, // daily — safely under Gmail's 7-day watch expiration
+      jobId: 'gmail-watch-renewal-repeat'
+    }
+  );
+  const gmailWatchRenewalWorker = queueManager.createWorker<Record<string, never>, unknown>(
+    'gmail-watch-renewal',
+    async () => {
+      return runWithContext(
+        { requestId: generateRequestId(), jobId: 'gmail-watch-renewal', tenantId: 'system' },
+        async () => {
+          await gmailWatchRenewalWorkerLogic.renewAll();
+          return { success: true };
+        }
+      );
+    },
+    1
+  );
+
+  gmailWatchRenewalWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, queue: 'gmail-watch-renewal', err }, 'Gmail Watch Renewal Job failed');
   });
 
   logger.info('Workers registered and listening for jobs.');

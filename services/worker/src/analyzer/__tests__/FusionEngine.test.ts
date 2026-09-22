@@ -95,6 +95,48 @@ describe('FusionEngine', () => {
     );
   });
 
+  it('scores CRITICAL-severity attachment threat indicators (Phase F) into overallScore', async () => {
+    mockEmail.attachments = [
+      {
+        sha256: 'abc123',
+        threatIndicators: [
+          { category: 'ARCHIVE_PATH_TRAVERSAL', severity: 'CRITICAL', description: 'x', confidence: 'HIGH', source: 'AttachmentAnalyzer', analyzerVersion: '1.0.0' },
+        ],
+      },
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: expect.objectContaining({ overallScore: 50 }) })
+    );
+  });
+
+  it('takes the worst severity across multiple attachments, not a sum', async () => {
+    mockEmail.attachments = [
+      { sha256: 'a', threatIndicators: [{ category: 'SUSPICIOUS_EXTENSION', severity: 'MEDIUM', description: 'x', confidence: 'MEDIUM', source: 'AttachmentAnalyzer', analyzerVersion: '1.0.0' }] },
+      { sha256: 'b', threatIndicators: [{ category: 'APK_UNSIGNED', severity: 'HIGH', description: 'x', confidence: 'MEDIUM', source: 'ApkAnalyzer', analyzerVersion: '1.0.0' }] },
+    ];
+
+    await fusionEngine.evaluate('email-1');
+
+    // HIGH (35) is worse than MEDIUM (15) — only the worst tier contributes,
+    // not 15+35, so overallScore must be exactly 35.
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: expect.objectContaining({ overallScore: 35 }) })
+    );
+  });
+
+  it('does not score an attachment with no threat indicators', async () => {
+    mockEmail.attachments = [{ sha256: 'clean', threatIndicators: null }];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: expect.objectContaining({ overallScore: 0 }) })
+    );
+  });
+
   it('preserves explicit ML BEC prediction', async () => {
     // 3. ML prediction BEC -> explicit BEC label is preserved
     mockEmail.inferences = [{
@@ -132,9 +174,10 @@ describe('FusionEngine', () => {
     );
 
     // Classification should NOT be set because ML prediction is missing
+    // (analysisStatus: 'COMPLETED' is expected here too — Phase 10G.2).
     expect(prismaMock.email.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { riskScore: 80 }
+        data: { riskScore: 80, analysisStatus: 'COMPLETED' }
       })
     );
   });
@@ -374,5 +417,120 @@ describe('FusionEngine', () => {
         update: expect.objectContaining({ overallScore: 100, riskLevel: 'CRITICAL' })
       })
     );
+  });
+
+  // --- Phase 10G.2: analysisStatus invariant ---
+  //
+  // FusionEngine.evaluate() is the single, always-executed terminal stage of
+  // the ingestion pipeline (called from both the normal chain and the CTI
+  // re-evaluation re-entry — see services/worker/src/analyzer/mlEvaluationStage.ts).
+  // It is therefore the only place that may legitimately declare the email's
+  // analysisStatus 'COMPLETED': that value must imply a real, just-persisted
+  // RiskAssessment exists, in the SAME transaction, not merely that raw MIME
+  // parsing succeeded earlier in the pipeline (services/worker/src/index.ts's
+  // parsing worker now writes 'PROCESSING', never 'COMPLETED' — see the
+  // dedicated static-source test in
+  // services/worker/src/__tests__/analysisStatusInvariant.test.ts).
+
+  it('sets analysisStatus to COMPLETED in the SAME email.update call that persists riskScore, when no ML prediction exists', async () => {
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.email.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ analysisStatus: 'COMPLETED', riskScore: 0 })
+      })
+    );
+  });
+
+  it('sets analysisStatus to COMPLETED in the SAME email.update call that persists an explicit ML classification', async () => {
+    mockEmail.inferences = [{ status: 'MODEL_PREDICTION', prediction: 'PHISHING', modelScore: 0.95 }];
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(prismaMock.email.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ analysisStatus: 'COMPLETED', classification: 'PHISHING' })
+      })
+    );
+  });
+
+  it('the analysisStatus write happens inside the same $transaction as the RiskAssessment upsert, not as a separate, non-atomic call', async () => {
+    const transactionCalls: unknown[] = [];
+    prismaMock.$transaction = vi.fn().mockImplementation(async (callback: (tx: unknown) => Promise<void>) => {
+      transactionCalls.push('transaction-start');
+      await callback(prismaMock);
+    });
+    fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient);
+
+    await fusionEngine.evaluate('email-1');
+
+    expect(transactionCalls).toHaveLength(1); // exactly one transaction; RiskAssessment + analysisStatus are not split across two
+    expect(prismaMock.riskAssessment.upsert).toHaveBeenCalled();
+    expect(prismaMock.email.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ analysisStatus: 'COMPLETED' }) })
+    );
+  });
+
+  it('repeated evaluation (e.g. a CTI re-evaluation re-run) is idempotent: analysisStatus remains COMPLETED, never regresses', async () => {
+    await fusionEngine.evaluate('email-1');
+    await fusionEngine.evaluate('email-1'); // simulates a second pass (CTI re-evaluation)
+
+    const allEmailUpdateCalls = (prismaMock.email.update as ReturnType<typeof vi.fn>).mock.calls;
+    for (const call of allEmailUpdateCalls) {
+      expect(call[0].data.analysisStatus).toBe('COMPLETED');
+    }
+  });
+
+  describe('Phase 2 — outbound notification hook', () => {
+    it('calls notifier.notifyThreatAnalysisCompleted with the minimal documented fields after the transaction commits', async () => {
+      mockEmail.organizationId = 'org-1';
+      const notifier = { notifyThreatAnalysisCompleted: vi.fn().mockResolvedValue(undefined) };
+      fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient, notifier);
+
+      await fusionEngine.evaluate('email-1');
+
+      expect(notifier.notifyThreatAnalysisCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({
+          emailId: 'email-1',
+          organizationId: 'org-1',
+          analysisStatus: 'COMPLETED',
+        })
+      );
+    });
+
+    it('does not call the notifier at all when none was provided (existing behavior unchanged)', async () => {
+      fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient);
+      await expect(fusionEngine.evaluate('email-1')).resolves.not.toThrow();
+    });
+
+    it('a notifier rejection is caught and logged, never allowed to fail evaluate()', async () => {
+      const notifier = { notifyThreatAnalysisCompleted: vi.fn().mockRejectedValue(new Error('redis down')) };
+      fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient, notifier);
+
+      await expect(fusionEngine.evaluate('email-1')).resolves.not.toThrow();
+      // Risk assessment must still be persisted — a notification failure
+      // never rolls back or blocks the actual analysis result.
+      expect(prismaMock.riskAssessment.upsert).toHaveBeenCalled();
+    });
+  });
+
+  describe('Phase H — IP/domain/GeoIP intelligence does not affect scoring (deliberate scope boundary)', () => {
+    it('the score is unchanged whether or not EmailUrl.domain/GeoLocation data exists — FusionEngine was not modified for Phase H', async () => {
+      // FusionEngine.ts reads email.urls/relayHops/attachments only for
+      // CTI *verdict* correlation (MALICIOUS/SUSPICIOUS) — it has no
+      // knowledge of EmailUrl.domain or the GeoLocation table at all.
+      // Geographic origin alone has no defensible universal risk meaning
+      // (a real signal would be indistinguishable from fabricated
+      // severity), so Phase H intentionally left FusionEngine untouched;
+      // GeoIP/ASN data feeds the forensic/display layer only. This test
+      // proves that boundary holds: identical mock, identical score.
+      mockEmail.urls = [{ url: 'https://example.com', domain: 'example.com', indicators: [] }];
+
+      await fusionEngine.evaluate('email-1');
+
+      expect(prismaMock.riskAssessment.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: expect.objectContaining({ overallScore: 0 }) })
+      );
+    });
   });
 });

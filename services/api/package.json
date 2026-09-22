@@ -13,6 +13,7 @@
   "dependencies": {
     "@ciperscope/config": "workspace:*",
     "@ciperscope/database": "workspace:*",
+    "@ciperscope/http-client": "workspace:*",
     "@ciperscope/logger": "workspace:*",
     "@ciperscope/providers": "workspace:*",
     "@ciperscope/queue": "workspace:*",

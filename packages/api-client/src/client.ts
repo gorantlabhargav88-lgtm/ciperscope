@@ -11,6 +11,7 @@ import type {
   DmarcResult,
   ThreatIndicator,
   EmailGeolocationEntry,
+  EvidenceGraphResponse,
   Evidence,
   ChainOfCustodyEntry,
   CaseSummary,
@@ -19,6 +20,7 @@ import type {
   AnalystDecision,
   CaseTimelineEvent,
   ForensicTimelineEvent,
+  ForensicReport,
 } from '@ciperscope/types';
 
 export interface ApiClientConfig {
@@ -164,6 +166,43 @@ export class CiperscopeApiClient {
 
   getEmailGeolocation(emailId: string): Promise<{ geolocation: EmailGeolocationEntry[] }> {
     return this.request(`/emails/${emailId}/geolocation`);
+  }
+
+  getEmailEvidenceGraph(emailId: string): Promise<EvidenceGraphResponse> {
+    return this.request(`/emails/${emailId}/evidence-graph`);
+  }
+
+  // Phase J — forensic PDF reports
+  createEmailReport(emailId: string): Promise<ForensicReport> {
+    return this.request(`/emails/${emailId}/reports`, { method: 'POST' });
+  }
+
+  getEmailReports(emailId: string): Promise<{ reports: ForensicReport[] }> {
+    return this.request(`/emails/${emailId}/reports`);
+  }
+
+  getReport(reportId: string): Promise<ForensicReport> {
+    return this.request(`/reports/${reportId}`);
+  }
+
+  async downloadReport(reportId: string): Promise<Blob> {
+    const fetchFn = this.config.fetchImpl ?? fetch;
+    const headers = new Headers();
+    const orgId = this.config.getOrganizationId();
+    if (orgId) headers.set('x-organization-id', orgId);
+
+    const response = await fetchFn(`${this.config.baseUrl}/reports/${reportId}/download`, {
+      headers,
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) this.config.onUnauthorized?.();
+      const body = await response.json().catch(() => ({}) as Record<string, unknown>);
+      throw new ApiError(response.status, (body as { message?: string }).message || `API error: ${response.status}`);
+    }
+
+    return response.blob();
   }
 
   async ingestEmail(file: File): Promise<{ message: string; emailId?: string; duplicate?: boolean }> {

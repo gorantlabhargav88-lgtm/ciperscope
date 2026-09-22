@@ -49,6 +49,84 @@ export function isPrivateIp(ip: string): boolean {
   return false;
 }
 
+export type IpVersion = 'v4' | 'v6' | null;
+
+export type IpCategory =
+  | 'PRIVATE'
+  | 'LOOPBACK'
+  | 'LINK_LOCAL'
+  | 'MULTICAST'
+  | 'DOCUMENTATION'
+  | 'RESERVED'
+  | 'PUBLIC'
+  | 'INVALID';
+
+export interface IpClassification {
+  ip: string;
+  version: IpVersion;
+  category: IpCategory;
+  /** True for anything callers must never send to an external
+   *  GeoIP/reputation provider (private/loopback/link-local/reserved/etc). */
+  isRoutablePublic: boolean;
+}
+
+// RFC 5737 (TEST-NET-1/2/3) documentation ranges.
+const IPV4_DOCUMENTATION_RANGES: Array<[number, number, number]> = [
+  [192, 0, 2], // 192.0.2.0/24 (TEST-NET-1)
+  [198, 51, 100], // 198.51.100.0/24 (TEST-NET-2)
+  [203, 0, 113], // 203.0.113.0/24 (TEST-NET-3)
+];
+
+function classifyIpv4(ip: string): IpCategory {
+  const parts = ip.split('.').map(Number);
+  const [a, b, c] = parts;
+
+  if (a === 127) return 'LOOPBACK';
+  if (a === 169 && b === 254) return 'LINK_LOCAL';
+  if (a >= 224 && a <= 239) return 'MULTICAST'; // 224.0.0.0/4
+  if (a === 255 && b === 255 && c === 255 && parts[3] === 255) return 'RESERVED'; // limited broadcast
+  if (IPV4_DOCUMENTATION_RANGES.some(([ra, rb, rc]) => a === ra && b === rb && c === rc)) return 'DOCUMENTATION';
+  if (a === 0) return 'RESERVED'; // 0.0.0.0/8 "this network"
+  if (a >= 240) return 'RESERVED'; // 240.0.0.0/4 reserved for future use
+  if (isPrivateIp(ip)) return 'PRIVATE'; // 10/8, 172.16/12, 192.168/16
+  return 'PUBLIC';
+}
+
+function classifyIpv6(ip: string): IpCategory {
+  const lower = ip.toLowerCase();
+  if (lower === '::1') return 'LOOPBACK';
+  if (lower === '::') return 'RESERVED'; // unspecified address
+  if (lower.startsWith('ff')) return 'MULTICAST'; // ff00::/8
+  if (lower.startsWith('fe80:') || lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) {
+    return 'LINK_LOCAL'; // fe80::/10
+  }
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return 'PRIVATE'; // fc00::/7 ULA
+  if (lower.startsWith('2001:db8:')) return 'DOCUMENTATION'; // 2001:db8::/32
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d) — classify by the embedded IPv4 address.
+  if (lower.startsWith('::ffff:') && lower.includes('.')) {
+    return classifyIpv4(lower.substring(7));
+  }
+  return 'PUBLIC';
+}
+
+/**
+ * Deterministic IP classification, shared by services/worker (gates which
+ * IPs may be sent to an external GeoIP/reputation provider) and
+ * services/api (labels IPs in forensic API responses) — one implementation
+ * so the two services can never disagree about what counts as public.
+ */
+export function classifyIp(ip: string): IpClassification {
+  if (net.isIPv4(ip)) {
+    const category = classifyIpv4(ip);
+    return { ip, version: 'v4', category, isRoutablePublic: category === 'PUBLIC' };
+  }
+  if (net.isIPv6(ip)) {
+    const category = classifyIpv6(ip);
+    return { ip, version: 'v6', category, isRoutablePublic: category === 'PUBLIC' };
+  }
+  return { ip, version: null, category: 'INVALID', isRoutablePublic: false };
+}
+
 const safeLookup = (
   hostname: string,
   options: dns.LookupOptions,

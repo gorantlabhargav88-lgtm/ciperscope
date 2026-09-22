@@ -145,6 +145,8 @@ describe('Email Ingestion API (Integration)', () => {
   });
 
   it('should respect upload size limits (mock large file)', async () => {
+    const emailCountBefore = await prisma.email.count({ where: { organizationId: testOrgId } });
+
     // Generate an oversized buffer
     const largeBuffer = Buffer.alloc(31 * 1024 * 1024, 'a'); // 31MB
     const form = new FormData();
@@ -162,5 +164,33 @@ describe('Email Ingestion API (Integration)', () => {
 
     expect(response.statusCode).toBe(413);
     expect(response.json().message).toBe('Upload limits exceeded');
+
+    // The rejection must happen before ingestion ever creates a persisted
+    // Email row (and therefore before any raw-storage write) — not merely
+    // return a 413 after already having stored the oversized content.
+    const emailCountAfter = await prisma.email.count({ where: { organizationId: testOrgId } });
+    expect(emailCountAfter).toBe(emailCountBefore);
+  });
+
+  it('a normal-sized upload is unaffected by the size-limit enforcement', async () => {
+    const emailCountBefore = await prisma.email.count({ where: { organizationId: testOrgId } });
+
+    const form = new FormData();
+    const fileContent = `Subject: Normal-sized regression check\nMessage-ID: <size-limit-regression-${crypto.randomUUID()}@example.com>\n\nBody`;
+    form.append('file', Buffer.from(fileContent), { filename: 'normal.eml', contentType: 'message/rfc822' });
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/v1/emails/ingest',
+      headers: {
+        ...form.getHeaders(),
+        'x-organization-id': testOrgId,
+      },
+      payload: form,
+    });
+
+    expect(response.statusCode).toBe(202);
+    const emailCountAfter = await prisma.email.count({ where: { organizationId: testOrgId } });
+    expect(emailCountAfter).toBe(emailCountBefore + 1);
   });
 });

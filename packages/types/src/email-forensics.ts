@@ -5,6 +5,7 @@ import type {
   EmailMimePart,
   EmailUrlEntry,
   EmailAttachmentEntry,
+  EvidenceGraphResponse,
 } from './email';
 import type { EmailAuthentication } from './authentication';
 import type { ThreatScore, ThreatIndicator, ThreatPriorityResult } from './threat';
@@ -51,6 +52,7 @@ export interface EmailForensicsData {
   indicators: ThreatIndicator[];
   cti: CtiResult[];
   geolocation: EmailGeolocationEntry[];
+  evidenceGraph: EvidenceGraphResponse;
   /** Present only when the email's case is already known to the caller (see MISSING BACKEND CAPABILITY note in email.ts). */
   evidence: Evidence[] | null;
   timeline: TimelineEvent[];
@@ -64,7 +66,15 @@ export interface EmailForensicsData {
 export interface EmailGeolocationEntry {
   ipAddress: string;
   country: string | null;
+  region: string | null;
   city: string | null;
+  latitude: number | null;
+  longitude: number | null;
   asn: string | null;
   isp: string | null;
+  /** Intelligence source, e.g. "MaxMind" — distinguishes a real provider
+   *  result from the absence of one. */
+  provider: string;
+  /** When this record was last (re-)observed. */
+  updatedAt: string;
 }

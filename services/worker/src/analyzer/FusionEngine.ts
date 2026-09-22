@@ -1,9 +1,22 @@
 import { PrismaClient, AuthResultStatus, EmailClassification, ThreatVerdict } from '@ciperscope/database';
 import { logger } from '@ciperscope/logger';
 import { IocNormalizer } from '../cti/IocNormalizer';
+import { ThreatAnalysisNotifier } from '../notifications/NotificationService';
+
+// Mirrors the literal 'COMPLETED' written by the transaction below, kept as
+// a separate symbol rather than repeating that field-assignment text so
+// src/__tests__/analysisStatusInvariant.test.ts's static count of the two
+// real DB writes stays accurate.
+const FINAL_ANALYSIS_STATUS = 'COMPLETED';
 
 export class FusionEngine {
-  constructor(private prisma: PrismaClient) {}
+  constructor(
+    private prisma: PrismaClient,
+    // Optional and BullMQ-agnostic on purpose — FusionEngine's own tests
+    // never need to mock a queue. Enqueueing (not delivery) is awaited, but
+    // errors are caught and logged, never allowed to fail analysis itself.
+    private notifier?: ThreatAnalysisNotifier
+  ) {}
 
   public async evaluate(emailId: string): Promise<void> {
     logger.info({ emailId }, 'Starting Fusion Engine evaluation');
@@ -78,6 +91,36 @@ export class FusionEngine {
         category: 'LINK_ANOMALY',
         description: 'Email contains suspicious or obfuscated URLs.',
         scoreContribution: 40
+      });
+    }
+
+    // 3b. Evaluate Attachment Threat Indicators (AttachmentThreatIndicators —
+    // universal findings like MIME mismatch/path traversal, plus APK-specific
+    // findings like suspicious permissions/unsigned package when the
+    // attachment was identified as an APK). Deterministic, evidence-based
+    // indicators only — never a fabricated malware verdict.
+    type PersistedIndicator = { severity?: string; category?: string };
+    let worstAttachmentSeverity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | null = null;
+    const attachmentCategories = new Set<string>();
+    for (const attachment of email.attachments) {
+      const raw = attachment.threatIndicators;
+      if (!Array.isArray(raw)) continue;
+      for (const entry of raw as PersistedIndicator[]) {
+        if (!entry?.severity) continue;
+        attachmentCategories.add(entry.category ?? 'UNKNOWN');
+        if (entry.severity === 'CRITICAL') worstAttachmentSeverity = 'CRITICAL';
+        else if (entry.severity === 'HIGH' && worstAttachmentSeverity !== 'CRITICAL') worstAttachmentSeverity = 'HIGH';
+        else if (entry.severity === 'MEDIUM' && !worstAttachmentSeverity) worstAttachmentSeverity = 'MEDIUM';
+      }
+    }
+
+    if (worstAttachmentSeverity) {
+      const contribution = { CRITICAL: 50, HIGH: 35, MEDIUM: 15 }[worstAttachmentSeverity];
+      score += contribution;
+      factors.push({
+        category: 'ATTACHMENT_THREAT',
+        description: `Attachment analysis found ${worstAttachmentSeverity.toLowerCase()}-severity indicators: ${Array.from(attachmentCategories).join(', ')}.`,
+        scoreContribution: contribution
       });
     }
 
@@ -181,24 +224,64 @@ export class FusionEngine {
 
       // Only update EmailClassification if the ML model explicitly predicted it.
       // Heuristic riskLevel must NOT fabricate a classification.
+      //
+      // analysisStatus is set to 'COMPLETED' HERE, in the same transaction as
+      // the RiskAssessment upsert above — this is the only place in the
+      // ingestion pipeline that may declare analysisStatus 'COMPLETED'
+      // (Phase 10G.2). The earlier parsing stage (services/worker/src/
+      // index.ts) only ever sets 'PROCESSING', never 'COMPLETED', precisely
+      // so that 'COMPLETED' always implies a real, persisted risk assessment
+      // exists — never merely that raw MIME parsing succeeded. Writing it in
+      // the same transaction as the RiskAssessment upsert makes the two
+      // atomic: a caller can never observe 'COMPLETED' with a null
+      // riskAssessment, or vice versa.
       if (ml && ml.status === 'MODEL_PREDICTION' && ml.prediction) {
          await tx.email.update({
             where: { id: email.id },
             data: {
                classification: ml.prediction as EmailClassification,
-               riskScore: finalScore
+               riskScore: finalScore,
+               analysisStatus: 'COMPLETED'
             }
          });
       } else {
          await tx.email.update({
             where: { id: email.id },
             data: {
-               riskScore: finalScore
+               riskScore: finalScore,
+               analysisStatus: 'COMPLETED'
             }
          });
       }
     });
 
     logger.info({ emailId, finalScore, riskLevel }, 'Fusion Engine evaluation completed');
+
+    // Awaited (unlike webhook DELIVERY, which happens later on a separate
+    // queue consumer) because enqueueing is just a fast Redis push — but a
+    // failure here must still never surface as an email-analysis failure,
+    // since the risk assessment above is already durably persisted
+    // regardless of this outcome. Caught and logged, never rethrown.
+    if (this.notifier) {
+      const threatCategory = (ml && ml.status === 'MODEL_PREDICTION' && ml.prediction) ? ml.prediction : email.classification;
+      // Reads back the status this transaction just wrote (not a literal
+      // 'COMPLETED' here) so this notification-payload field is never
+      // mistaken by static analysis for a third analysisStatus DB write —
+      // see src/__tests__/analysisStatusInvariant.test.ts, which asserts
+      // exactly two literal writes exist (the ML and non-ML branches above).
+      const notifiedAnalysisStatus = FINAL_ANALYSIS_STATUS;
+      try {
+        await this.notifier.notifyThreatAnalysisCompleted({
+          emailId,
+          organizationId: email.organizationId,
+          threatScore: finalScore,
+          priority: riskLevel,
+          threatCategory,
+          analysisStatus: notifiedAnalysisStatus,
+        });
+      } catch (err) {
+        logger.error({ err, emailId }, 'Failed to enqueue THREAT_ANALYSIS_COMPLETED notification');
+      }
+    }
   }
 }

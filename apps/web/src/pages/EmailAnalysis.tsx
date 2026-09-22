@@ -5,6 +5,8 @@ import { ForensicTimeline } from '../components/ForensicTimeline';
 import { ThreatPriorityExplanation } from '../components/threat/ThreatPriorityExplanation';
 import { ChainOfCustody } from '../components/evidence/ChainOfCustody';
 import { UnifiedForensicTimeline } from '../components/timeline/UnifiedForensicTimeline';
+import { EvidenceGraphView } from '../components/EvidenceGraphView';
+import { ReportsPanel } from '../components/ReportsPanel';
 import { apiClient } from '../lib/apiClient';
 import { aggregateEmailForensics } from '../features/email-forensics/aggregateEmailForensics';
 import type { EmailForensicsData, ThreatPriority } from '@ciperscope/types';
@@ -435,6 +437,62 @@ export const EmailAnalysis = () => {
                          {a.sha256 && (
                             <div className="text-slate-500 font-mono"><span className="text-slate-600 mr-2">SHA-256:</span>{a.sha256}</div>
                          )}
+                         {a.threatIndicators && a.threatIndicators.length > 0 && (
+                           <div className="flex flex-wrap gap-1 mt-1">
+                             {a.threatIndicators.map((ind, ti) => (
+                               <span
+                                 key={ti}
+                                 title={ind.description}
+                                 className={`px-1.5 py-0.5 rounded border text-[10px] ${
+                                   ind.severity === 'CRITICAL' ? 'text-rose-400 border-rose-500/30 bg-rose-500/10' :
+                                   ind.severity === 'HIGH' ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' :
+                                   ind.severity === 'MEDIUM' ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10' :
+                                   'text-slate-400 border-slate-600/30 bg-slate-600/10'
+                                 }`}
+                               >
+                                 {ind.category}
+                               </span>
+                             ))}
+                           </div>
+                         )}
+                         {a.apkMetadata && (
+                           <div className="bg-slate-900 border border-slate-800 rounded p-2 mt-1 space-y-1">
+                             <div className="text-amber-400 font-medium">Android APK — Static Analysis</div>
+                             <div className="grid grid-cols-2 gap-1 text-slate-400">
+                               <div>Package: <span className="text-slate-300">{a.apkMetadata.packageName ?? 'unknown'}</span></div>
+                               <div>Version: <span className="text-slate-300">{a.apkMetadata.versionName ?? 'unknown'}</span></div>
+                               <div>Min/Target SDK: <span className="text-slate-300">{a.apkMetadata.minSdkVersion ?? '?'}/{a.apkMetadata.targetSdkVersion ?? '?'}</span></div>
+                               <div>Signed: <span className="text-slate-300">{(a.apkMetadata.signing.hasV1JarSigning || a.apkMetadata.signing.hasV2SigningBlock) ? 'Yes' : 'No'}</span></div>
+                             </div>
+                             {a.apkMetadata.suspiciousPermissions.length > 0 && (
+                               <div className="text-rose-400">Suspicious permissions: {a.apkMetadata.suspiciousPermissions.join(', ')}</div>
+                             )}
+                             {a.apkMetadata.manifestParseError && (
+                               <div className="text-rose-400">Manifest parse error: {a.apkMetadata.manifestParseError}</div>
+                             )}
+                           </div>
+                         )}
+                         {a.qrFindings && a.qrFindings.detected && (
+                           <div className="bg-slate-900 border border-slate-800 rounded p-2 mt-1 space-y-1">
+                             <div className="text-cyan-400 font-medium">QR Code Analysis ({a.qrFindings.codes.length} detected)</div>
+                             <div className="space-y-1">
+                               {a.qrFindings.codes.map((code, ci) => (
+                                 <div key={ci} className="bg-slate-950 border border-slate-800 rounded p-2">
+                                   <div className="flex justify-between items-start">
+                                     <span className="text-slate-500">Type: <span className="text-slate-300">{code.type}</span></span>
+                                   </div>
+                                   <div className="font-mono text-slate-300 break-all mt-1">{code.payload}</div>
+                                   {code.type === 'URL' && (
+                                     <div className="text-slate-600 mt-1">Extracted URL — see full threat findings under "Extracted URLs" above</div>
+                                   )}
+                                 </div>
+                               ))}
+                             </div>
+                             {a.qrFindings.errors && a.qrFindings.errors.length > 0 && (
+                               <div className="text-rose-400">QR analysis notice: {a.qrFindings.errors.join(', ')}</div>
+                             )}
+                           </div>
+                         )}
                        </div>
                      )) : <div className="text-xs text-slate-600">No attachments found</div>}
                    </div>
@@ -500,11 +558,11 @@ export const EmailAnalysis = () => {
               </div>
             </div>
 
-            {/* Geolocation */}
+            {/* IP & Domain Intelligence (Phase H) */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-                <h2 className="font-medium text-slate-200">Network Geolocation</h2>
-                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">GEO</span>
+                <h2 className="font-medium text-slate-200">IP &amp; Domain Intelligence</h2>
+                <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-1 rounded border border-indigo-500/30">Approximate network geolocation</span>
               </div>
               <div className="p-5">
                  {data.geolocation.length > 0 ? (
@@ -513,21 +571,43 @@ export const EmailAnalysis = () => {
                        <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-sm flex flex-col space-y-2">
                          <div className="flex justify-between items-center border-b border-slate-800/50 pb-2 mb-1">
                            <span className="font-mono text-slate-300">{geo.ipAddress}</span>
+                           <span className="text-[10px] text-slate-500">source: {geo.provider}{geo.updatedAt ? ` · ${new Date(geo.updatedAt).toLocaleString()}` : ''}</span>
                          </div>
                          <div className="grid grid-cols-2 gap-2 text-xs">
-                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Country</span><span className="text-slate-300">{geo.country || 'Unknown'}</span></div>
-                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">City</span><span className="text-slate-300">{geo.city || 'Unknown'}</span></div>
-                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">ASN</span><span className="text-slate-300">{geo.asn || 'Unknown'}</span></div>
-                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">ISP</span><span className="text-slate-300 truncate pl-2" title={geo.isp ?? undefined}>{geo.isp || 'Unknown'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Country</span><span className="text-slate-300">{geo.country || 'Unavailable'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Region</span><span className="text-slate-300">{geo.region || 'Unavailable'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">City (approximate)</span><span className="text-slate-300">{geo.city || 'Unavailable'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">ASN</span><span className="text-slate-300">{geo.asn || 'Unavailable'}</span></div>
+                           <div className="flex justify-between p-1 bg-slate-900 rounded col-span-2"><span className="text-slate-500">ISP / Organization</span><span className="text-slate-300 truncate pl-2" title={geo.isp ?? undefined}>{geo.isp || 'Unavailable'}</span></div>
+                           {geo.latitude != null && geo.longitude != null && (
+                             <div className="flex justify-between p-1 bg-slate-900 rounded col-span-2"><span className="text-slate-500">Approximate coordinates</span><span className="text-slate-300">{geo.latitude.toFixed(2)}, {geo.longitude.toFixed(2)}</span></div>
+                           )}
                          </div>
                        </div>
                      ))}
                    </div>
                  ) : (
-                   <div className="text-sm text-slate-500 text-center py-2">No Geolocation data available</div>
+                   <div className="text-sm text-slate-500 text-center py-2">No IP intelligence available for this email's relay hops</div>
                  )}
               </div>
             </div>
+
+            {/* Evidence Graph (Phase I) */}
+            <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <h2 className="font-medium text-slate-200">Evidence Graph</h2>
+                <span className="text-xs bg-violet-500/20 text-violet-400 px-2 py-1 rounded border border-violet-500/30">
+                  {data.evidenceGraph.metadata.nodeCount} nodes · {data.evidenceGraph.metadata.edgeCount} edges
+                  {data.evidenceGraph.metadata.truncated ? ' · truncated' : ''}
+                </span>
+              </div>
+              <div className="p-5">
+                <EvidenceGraphView graph={data.evidenceGraph} />
+              </div>
+            </div>
+
+            {/* Forensic Report Generation (Phase J) */}
+            {activeEmailId && <ReportsPanel emailId={activeEmailId} />}
 
             {/* Evidence & Chain of Custody */}
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">

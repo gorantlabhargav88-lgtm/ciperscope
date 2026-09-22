@@ -288,6 +288,21 @@ export interface EmailMlClassificationJobPayload extends TenantAwareJobPayload {
   emailId: string;
 }
 
+// Phase 2: outbound webhook notification foundation.
+export interface WebhookDeliveryJobPayload extends TenantAwareJobPayload {
+  webhookId: string; // resourceId in TenantAwareJobPayload
+  eventId: string;
+  eventType: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: Record<string, any>;
+}
+
+// Phase J: forensic PDF report generation.
+export interface ReportGenerationJobPayload extends TenantAwareJobPayload {
+  reportId: string; // resourceId in TenantAwareJobPayload
+  emailId: string;
+}
+
 export type ResourceValidator = (resourceId: string, organizationId: string) => Promise<boolean>;
 
 export const wrapTenantScopedProcessor = <T extends TenantAwareJobPayload, R>(

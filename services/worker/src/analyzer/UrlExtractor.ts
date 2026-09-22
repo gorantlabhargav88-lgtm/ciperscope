@@ -1,9 +1,10 @@
 import * as cheerio from 'cheerio';
+import { detectBrandImpersonation } from './BrandImpersonationDetector';
 
 export interface ExtractedUrl {
   originalObservedUrl: string;
   normalizedUrl: string | null;
-  source: 'TEXT' | 'HTML_HREF' | 'HTML_SRC' | 'HTML_ACTION' | 'OTHER';
+  source: 'TEXT' | 'HTML_HREF' | 'HTML_SRC' | 'HTML_ACTION' | 'QR_CODE' | 'OTHER';
   isObfuscated: boolean;
   indicators: string[];
 }
@@ -20,7 +21,7 @@ export class UrlExtractor {
     while ((match = regex.exec(text)) !== null && urls.length < this.MAX_URLS) {
       const observed = match[1];
       if (observed.length <= this.MAX_URL_LENGTH) {
-        urls.push(this.analyzeUrl(observed, 'TEXT'));
+        urls.push(this.analyzeSingleUrl(observed, 'TEXT'));
       }
     }
     return urls;
@@ -41,7 +42,7 @@ export class UrlExtractor {
       
       // Ignore relative URLs or let normalization handle them (we want absolute http/https mostly)
       if (url.startsWith('http://') || url.startsWith('https://')) {
-        urls.push(this.analyzeUrl(url, source));
+        urls.push(this.analyzeSingleUrl(url, source));
       }
     };
 
@@ -52,7 +53,14 @@ export class UrlExtractor {
     return urls;
   }
 
-  private static analyzeUrl(observed: string, source: ExtractedUrl['source']): ExtractedUrl {
+  /**
+   * Analyzes a single URL string using the exact same logic
+   * extractFromText/extractFromHtml use internally (IP-literal/obfuscation/
+   * brand-impersonation/homoglyph/typosquat detection, normalization) — the
+   * single public entry point for any caller with one URL already in hand
+   * (e.g. a QR-decoded payload) rather than a whole document to scan.
+   */
+  public static analyzeSingleUrl(observed: string, source: ExtractedUrl['source']): ExtractedUrl {
     const indicators: string[] = [];
     let isObfuscated = false;
     let normalized: string | null = null;
@@ -114,6 +122,15 @@ export class UrlExtractor {
 
       if (parsedUrl.hostname.includes('xn--')) {
         indicators.push('PUNYCODE');
+        isObfuscated = true;
+      }
+
+      // Brand impersonation: evaluated against the actual destination
+      // hostname only, never against link/anchor display text (the caller
+      // has no display text at this layer, so this is inherently safe).
+      const brandCheck = detectBrandImpersonation(parsedUrl.hostname);
+      if (brandCheck.indicators.length > 0) {
+        indicators.push(...brandCheck.indicators);
         isObfuscated = true;
       }
 

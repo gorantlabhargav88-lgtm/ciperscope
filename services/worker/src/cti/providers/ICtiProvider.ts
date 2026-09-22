@@ -15,7 +15,10 @@ export interface ICtiProvider {
 
 export interface GeoLocationResult {
   country?: string;
+  region?: string;
   city?: string;
+  latitude?: number;
+  longitude?: number;
   asn?: string;
   isp?: string;
   providerName: string;

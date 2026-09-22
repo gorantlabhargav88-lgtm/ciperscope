@@ -25,6 +25,23 @@ export const envSchema = z.object({
   // services/api and services/worker's Gmail code paths fail fast if this
   // is missing when actually needed.
   GMAIL_TOKEN_ENCRYPTION_KEY: z.string().min(32, 'GMAIL_TOKEN_ENCRYPTION_KEY must be at least 32 characters long').optional(),
+  // Raw-email object storage. S3_* select the S3-backed store; when unset,
+  // both services/api and services/worker fall back to LocalRawEmailStore.
+  // RAW_EMAIL_STORAGE_PATH pins the local store to one shared absolute
+  // directory — without it, each process defaulted to `process.cwd()`,
+  // which diverges whenever api and worker are started from different
+  // working directories, causing every locally-stored raw email the API
+  // wrote to be invisible to the worker's parsing stage.
+  S3_BUCKET: z.string().optional(),
+  S3_REGION: z.string().optional(),
+  S3_ENDPOINT: z.string().optional(),
+  RAW_EMAIL_STORAGE_PATH: z.string().optional(),
+  // Phase H: MaxMind GeoIP2 City web service (HTTP + Basic Auth, not the
+  // downloadable .mmdb database). Both optional — when either is unset,
+  // services/worker/src/cti/CtiConfig.ts falls back to NullGeoProvider
+  // (geolocation becomes UNAVAILABLE, never fabricated).
+  MAXMIND_ACCOUNT_ID: z.string().optional(),
+  MAXMIND_LICENSE_KEY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -38,6 +55,16 @@ if (!parsed.success && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
 export const env = parsed.success ? parsed.data : (process.env as any);
 
 export * from './tokenCrypto';
+
+/**
+ * Shared default directory for LocalRawEmailStore, resolved relative to this
+ * package's build output the same way the .env path above is (dist -> repo
+ * root is 3 levels up). Used by both services/api and services/worker so a
+ * raw email written by one process is always found by the other when
+ * RAW_EMAIL_STORAGE_PATH is not explicitly set and S3 is not configured.
+ */
+export const defaultRawEmailStoragePath =
+  env.RAW_EMAIL_STORAGE_PATH || path.resolve(__dirname, '../../../.data/emails');
 
 /** Throws a clear, actionable error at the exact point Gmail token encryption is needed, rather than failing app-wide startup for an optional feature. */
 export function requireGmailTokenEncryptionKey(): string {

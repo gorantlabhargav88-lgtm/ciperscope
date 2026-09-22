@@ -49,6 +49,15 @@ export class ReliableGeoProvider implements IGeoProvider {
     if (geoResult.isp !== undefined && (typeof geoResult.isp !== 'string' || geoResult.isp.length > 255)) {
       throw new Error('Malformed provider response: invalid or oversized isp');
     }
+    if (geoResult.region !== undefined && (typeof geoResult.region !== 'string' || geoResult.region.length > 255)) {
+      throw new Error('Malformed provider response: invalid or oversized region');
+    }
+    if (geoResult.latitude !== undefined && (typeof geoResult.latitude !== 'number' || geoResult.latitude < -90 || geoResult.latitude > 90)) {
+      throw new Error('Malformed provider response: invalid latitude');
+    }
+    if (geoResult.longitude !== undefined && (typeof geoResult.longitude !== 'number' || geoResult.longitude < -180 || geoResult.longitude > 180)) {
+      throw new Error('Malformed provider response: invalid longitude');
+    }
 
     return geoResult as GeoLocationResult;
   }

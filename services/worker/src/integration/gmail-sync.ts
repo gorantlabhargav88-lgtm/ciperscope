@@ -41,6 +41,13 @@ export class GmailSyncWorker {
       throw new Error(`Integration ${integrationId} not found`);
     }
 
+    // Snapshot the cursor value this execution is about to act on. Used as
+    // the compare-and-swap guard when persisting the final cursor below —
+    // see the comment at that write for why an unconditional update is
+    // unsafe under concurrent execution (Phase 10D empirically reproduced a
+    // regression without it).
+    const originalHistoryId = integration.historyId;
+
     if (integration.status !== 'ACTIVE') {
       logger.warn({ integrationId, status: integration.status }, 'Skipping sync for a non-active Gmail connection');
       return;
@@ -59,15 +66,45 @@ export class GmailSyncWorker {
       refresh_token: decryptToken(integration.refreshToken, encryptionKey)
     });
 
+    // Tracks the encrypted accessToken value this execution last confirmed is
+    // actually stored — starts at what was read above, and is advanced after
+    // each successful write below. Used as the compare-and-swap guard on the
+    // token-refresh update (Phase 10D.2): two concurrent executions for the
+    // same Integration each build their own OAuth2Client and can each
+    // independently trigger their own refresh, so an unconditional update
+    // here has the same last-write-wins shape already fixed for historyId in
+    // Phase 10D.1. Guarding on the actual current accessToken (not a token
+    // string comparison, not a lexical/numeric ordering — there is no
+    // ordering relation between opaque OAuth tokens) means a write only
+    // lands if nothing else has changed the stored credentials since this
+    // execution last observed them; a second refresh within the SAME
+    // execution (Google's client can fire 'tokens' more than once per
+    // instance) still succeeds because the tracked value advances on success.
+    let lastKnownAccessToken = integration.accessToken;
+
     oauth2Client.on('tokens', async (tokens) => {
-      await prisma.integration.update({
-        where: { id: integrationId },
+      const nextAccessToken = encryptToken(tokens.access_token!, encryptionKey);
+      const updateResult = await prisma.integration.updateMany({
+        where: { id: integrationId, accessToken: lastKnownAccessToken },
         data: {
-          accessToken: encryptToken(tokens.access_token!, encryptionKey),
+          accessToken: nextAccessToken,
           ...(tokens.refresh_token ? { refreshToken: encryptToken(tokens.refresh_token, encryptionKey) } : {}),
           ...(tokens.expiry_date ? { expiresAt: new Date(tokens.expiry_date) } : {})
         }
       });
+
+      if (updateResult.count === 0) {
+        // No token, header, or credential content is logged here — only the
+        // integrationId and a generic description, matching this file's
+        // existing logging convention.
+        logger.info(
+          { integrationId },
+          'Gmail OAuth token refresh not persisted: another concurrent execution already updated the stored credentials'
+        );
+        return;
+      }
+
+      lastKnownAccessToken = nextAccessToken;
     });
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
@@ -98,10 +135,30 @@ export class GmailSyncWorker {
         const gmailError = error as GoogleApiError;
         if (gmailError.code === 404 || (gmailError.message && gmailError.message.includes('HistoryId is invalid'))) {
           logger.warn({ integrationId }, 'History ID expired or invalid, performing full sync (not fully implemented) - updating to new historyId');
-          await prisma.integration.update({
-            where: { id: integrationId },
+          // Same compare-and-swap shape as the success-path cursor write
+          // below (Phase 10D.1) and for the same reason (Phase 10E proved
+          // this exact regression live, against real Postgres): a concurrent
+          // execution for the same Integration may have already advanced the
+          // cursor past originalHistoryId while this execution was in
+          // flight. Guarding on `historyId: originalHistoryId` means this
+          // recovery write only lands if nothing else has changed the
+          // cursor since this execution read it; if it has, this execution's
+          // own (potentially stale) recovery value is discarded rather than
+          // overwriting whatever the other execution already committed.
+          const recoveryUpdateResult = await prisma.integration.updateMany({
+            where: { id: integrationId, historyId: originalHistoryId },
             data: { historyId: newHistoryId }
           });
+
+          if (recoveryUpdateResult.count === 0) {
+            // No token, header, or MIME content is logged here — only the
+            // integrationId and a generic description, matching this file's
+            // existing logging convention.
+            logger.info(
+              { integrationId },
+              'Gmail sync historyId recovery not persisted: another concurrent execution already changed the cursor'
+            );
+          }
           return;
         }
         // Google permanently rejecting the refresh token (revoked by the
@@ -116,10 +173,30 @@ export class GmailSyncWorker {
           (gmailError.message && gmailError.message.includes('invalid_grant'));
         if (isPermanentAuthFailure) {
           logger.error({ integrationId }, 'Gmail credential permanently invalid (revoked?); marking connection ERROR');
-          await prisma.integration.update({
-            where: { id: integrationId },
+          // Field-scoped compare-and-swap (Phase 10F): this execution read
+          // status='ACTIVE' at job start (the early-return guard above
+          // guarantees that), but the user may have disconnected the
+          // integration (status -> 'DISCONNECTED', credentials cleared)
+          // while this execution was still in flight. An unconditional write
+          // here would overwrite that newer, deliberate, user-initiated
+          // state with a stale ERROR classification from credentials that
+          // are no longer even in use. Guarding on `status: 'ACTIVE'` means
+          // this write only lands if nothing else has changed the status
+          // since this execution observed it; only status is touched — never
+          // accessToken, refreshToken, expiresAt, or historyId.
+          const errorUpdateResult = await prisma.integration.updateMany({
+            where: { id: integrationId, status: 'ACTIVE' },
             data: { status: 'ERROR' }
           });
+
+          if (errorUpdateResult.count === 0) {
+            // No token, header, or credential content is logged here — only
+            // the integrationId, matching this file's existing convention.
+            logger.info(
+              { integrationId },
+              'Gmail sync ERROR status not persisted: integration already changed state'
+            );
+          }
           return;
         }
         // Any other page-level failure (including on page 2+) propagates:
@@ -210,9 +287,35 @@ export class GmailSyncWorker {
     // reaching here, so the cursor can never advance past history this sync
     // never actually saw. newHistoryId is only a fallback for the
     // never-expected case where Gmail's response omits its own historyId.
-    await prisma.integration.update({
-      where: { id: integrationId },
-      data: { historyId: latestHistoryId || newHistoryId }
+    //
+    // Written as a compare-and-swap, not an unconditional update: two
+    // concurrent executions for the same Integration (Phase 10D proved this
+    // is a real, reachable interleaving, not merely theoretical) can each
+    // independently reach this line with a different final historyId. An
+    // unconditional write lets whichever execution's write lands LAST win,
+    // regardless of which one's value is actually newer — this can regress
+    // the cursor backward. Guarding the write with `historyId:
+    // originalHistoryId` (the value this execution itself read at the top of
+    // process()) means the write only succeeds if nothing else has changed
+    // the cursor in between; if another execution already advanced it, this
+    // one's update affects zero rows and is treated as an expected
+    // concurrency outcome, not an error — whatever the other execution
+    // already committed is left in place rather than being overwritten by
+    // this potentially-stale value.
+    const candidateHistoryId = latestHistoryId || newHistoryId;
+    const cursorUpdateResult = await prisma.integration.updateMany({
+      where: { id: integrationId, historyId: originalHistoryId },
+      data: { historyId: candidateHistoryId }
     });
+
+    if (cursorUpdateResult.count === 0) {
+      // No token, header, or MIME content is logged here — only the
+      // integrationId and a generic description of the race, matching this
+      // file's existing logging convention.
+      logger.info(
+        { integrationId },
+        'Gmail sync cursor not persisted: another concurrent execution already advanced it'
+      );
+    }
   }
 }

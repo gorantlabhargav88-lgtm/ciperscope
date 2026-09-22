@@ -40,6 +40,7 @@ export async function aggregateEmailForensics(
     aiAnalysisRes,
     threatIndicatorsRes,
     geolocationRes,
+    evidenceGraph,
   ] = await Promise.all([
     apiClient.getEmailAnalysis(emailId),
     apiClient.getEmailHeaders(emailId),
@@ -54,6 +55,7 @@ export async function aggregateEmailForensics(
     apiClient.getEmailAiAnalysis(emailId),
     apiClient.getEmailThreatIndicators(emailId),
     apiClient.getEmailGeolocation(emailId),
+    apiClient.getEmailEvidenceGraph(emailId),
   ]);
 
   const maliciousIndicatorCount = threatIndicatorsRes.threatIndicators.filter(
@@ -176,6 +178,7 @@ export async function aggregateEmailForensics(
     indicators: threatIndicatorsRes.threatIndicators,
     cti,
     geolocation: geolocationRes.geolocation,
+    evidenceGraph,
     evidence,
     timeline,
     investigationContext,

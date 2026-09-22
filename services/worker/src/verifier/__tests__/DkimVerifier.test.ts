@@ -144,4 +144,78 @@ describe('DkimVerifier', () => {
     const result = await verifier.verify(sigHeader, allHeaders, body);
     expect(result.result).not.toBe('PASS');
   });
+
+  describe('multiple TXT records at the selector name (DKIM10)', () => {
+    it('DKIM10-1: resolves the valid key correctly when an unrelated TXT record coexists', async () => {
+      const { targetHeader, allHeaders } = buildSignedMessage();
+      const resolver = makeResolver({
+        'sel1._domainkey.example.com': [
+          'google-site-verification=unrelated-ownership-token',
+          `v=DKIM1; k=rsa; p=${rsaPublicKeyDer}`
+        ]
+      });
+      const verifier = new DkimVerifier(resolver);
+
+      const result = await verifier.verify(targetHeader, allHeaders, body);
+      expect(result.result).toBe('PASS');
+      expect(result.bodyHashResult).toBe('PASS');
+    });
+
+    it('DKIM10-2: multiple malformed/non-key TXT records classify deterministically as "no public key found", never PASS', async () => {
+      const { targetHeader, allHeaders } = buildSignedMessage();
+      const resolver = makeResolver({
+        'sel1._domainkey.example.com': [
+          'google-site-verification=unrelated-ownership-token',
+          'v=spf1 -all',
+          'some-other-unrelated=value'
+        ]
+      });
+      const verifier = new DkimVerifier(resolver);
+
+      const result = await verifier.verify(targetHeader, allHeaders, body);
+      expect(result.result).toBe('PERMERROR');
+      expect(result.explanation).toMatch(/no public key found/i);
+    });
+
+    it('DKIM10-3: multiple candidate DKIM-looking records are rejected deterministically, not resolved by array order', async () => {
+      const { targetHeader, allHeaders } = buildSignedMessage();
+      const otherPair = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const otherKeyDer = otherPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+
+      const recordsInOneOrder = [`v=DKIM1; k=rsa; p=${rsaPublicKeyDer}`, `v=DKIM1; k=rsa; p=${otherKeyDer}`];
+      const recordsInReverseOrder = [...recordsInOneOrder].reverse();
+
+      for (const records of [recordsInOneOrder, recordsInReverseOrder]) {
+        const resolver = makeResolver({ 'sel1._domainkey.example.com': records });
+        const verifier = new DkimVerifier(resolver);
+        const result = await verifier.verify(targetHeader, allHeaders, body);
+        expect(result.result).toBe('PERMERROR');
+        expect(result.explanation).toMatch(/multiple ambiguous dkim key records/i);
+      }
+    });
+
+    it('DKIM10-4: a single valid TXT record still passes unchanged (no regression from the multi-record fix)', async () => {
+      const { targetHeader, allHeaders } = buildSignedMessage();
+      const resolver = makeResolver({ 'sel1._domainkey.example.com': [`v=DKIM1; k=rsa; p=${rsaPublicKeyDer}`] });
+      const verifier = new DkimVerifier(resolver);
+
+      const result = await verifier.verify(targetHeader, allHeaders, body);
+      expect(result.result).toBe('PASS');
+    });
+
+    it('DKIM10-5: a revoked (empty p=) key record among multiple TXT records still fails as revoked, never PASS', async () => {
+      const { targetHeader, allHeaders } = buildSignedMessage();
+      const resolver = makeResolver({
+        'sel1._domainkey.example.com': [
+          'google-site-verification=unrelated-ownership-token',
+          'v=DKIM1; k=rsa; p='
+        ]
+      });
+      const verifier = new DkimVerifier(resolver);
+
+      const result = await verifier.verify(targetHeader, allHeaders, body);
+      expect(result.result).toBe('PERMERROR');
+      expect(result.explanation).toMatch(/revoked/i);
+    });
+  });
 });

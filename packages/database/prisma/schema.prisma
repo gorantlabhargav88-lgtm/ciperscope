@@ -24,6 +24,7 @@ model Organization {
   members      OrganizationMember[]
   Role         Role[]
   systemConfig SystemSetting[]
+  webhooks     Webhook[]
 }
 
 model User {
@@ -275,6 +276,7 @@ model Email {
   relayHops         RelayHop[]
   riskAssessments   RiskAssessment[]
   spfVerifications  SpfVerification[]
+  forensicReports   ForensicReport[]
 
   @@unique([organizationId, sha256])
   @@index([organizationId])
@@ -329,6 +331,22 @@ model EmailAttachment {
   isArchive       Boolean  @default(false)
   isMismatch      Boolean  @default(false)
   magicBytes      String?
+  // Structured, deterministic findings from AttachmentThreatIndicators —
+  // never a fabricated malware verdict, see services/worker's analyzer.
+  threatIndicators Json?
+  // Populated only when this attachment was identified as an Android APK
+  // (via AndroidManifest.xml presence, not filename/extension); see
+  // services/worker/src/analyzer/apk/ApkAnalyzer.ts. Null for non-APK files.
+  apkMetadata     Json?
+  // Populated only when this attachment was identified as an image and QR
+  // code(s) were decoded from it; see
+  // services/worker/src/analyzer/QrCodeAnalyzer.ts. Null when no QR codes
+  // were found or the attachment isn't an image. Decoded QR URLs are
+  // additionally persisted as ordinary EmailUrl rows (source QR_CODE) so
+  // they flow through the existing URL/CTI/risk-scoring pipeline
+  // unchanged — this field is the raw QR-decode record, not a second
+  // source of truth for URL analysis.
+  qrFindings      Json?
   email           Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
 
   @@index([emailId])
@@ -654,6 +672,104 @@ model Report {
   @@index([caseId])
 }
 
+enum ForensicReportStatus {
+  QUEUED
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
+// Phase J — deterministic, worker-generated PDF forensic report for a
+// single analyzed email. Deliberately a separate model from `Report`
+// above: `Report` is case-centric (caseId is required) and a simple
+// client-supplied-content CRUD shell; a great many analyzed emails have no
+// case at all (Email.caseId is nullable), and report generation here has
+// its own async lifecycle (QUEUED/GENERATING/COMPLETED/FAILED, produced by
+// a BullMQ worker, not authored by a client). Reusing `Report` would force
+// every email report to have a case and would conflate two different
+// concerns. organizationId is stored directly (not only reachable via a
+// join) so every query can enforce tenant isolation without an extra hop.
+model ForensicReport {
+  id               String               @id @default(uuid())
+  organizationId   String
+  emailId          String
+  status           ForensicReportStatus @default(QUEUED)
+  reportVersion    String               @default("1.0")
+  generatedAt      DateTime?
+  // Storage key for the generated PDF artifact (same RawEmailStore-shaped
+  // abstraction already used for raw emails, under a distinct key prefix —
+  // never the raw email content itself).
+  artifactLocation String?
+  sha256           String?
+  errorMessage     String?
+  requestedById    String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  email            Email                @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([emailId])
+  @@index([organizationId, emailId, status])
+}
+
+// Outbound webhook configuration (Phase 2: notification foundation).
+// Tenant-owned. `secretEncrypted` uses the same AES-256-GCM envelope format
+// as Integration.accessToken/refreshToken (packages/config/src/tokenCrypto.ts)
+// — the plaintext secret is only ever returned once, at creation time.
+model Webhook {
+  id              String            @id @default(uuid())
+  organizationId  String
+  url             String
+  secretEncrypted String
+  // Array of WebhookEventType values this webhook is subscribed to, e.g.
+  // ["THREAT_ANALYSIS_COMPLETED"]. Stored as Json (not a native Postgres
+  // array) to match this schema's existing convention for variable-shape
+  // data (see EmailUrl.indicators, EmailAttachment.threatIndicators) and to
+  // let new event types be added without a migration.
+  events          Json
+  enabled         Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries      WebhookDelivery[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId])
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  EXHAUSTED
+}
+
+// One row per (webhook, event) delivery attempt history. The
+// @@unique([webhookId, eventId]) constraint is the durable idempotency
+// guarantee: even if the same event is enqueued or processed more than
+// once (BullMQ at-least-once delivery, job retry, concurrent workers), a
+// second attempt to create this row fails with a unique-constraint error,
+// which the delivery worker treats as "already handled" rather than
+// sending a duplicate HTTP request.
+model WebhookDelivery {
+  id             String                @id @default(uuid())
+  webhookId      String
+  organizationId String
+  eventId        String
+  eventType      String
+  status         WebhookDeliveryStatus @default(PENDING)
+  attemptCount   Int                   @default(0)
+  lastStatusCode Int?
+  lastError      String?
+  payload        Json
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  webhook        Webhook               @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@unique([webhookId, eventId])
+  @@index([organizationId])
+}
+
 model AuditLog {
   id             String        @id @default(uuid())
   organizationId String?
@@ -814,6 +930,7 @@ enum UrlExtractionSource {
   HTML_HREF
   HTML_SRC
   HTML_ACTION
+  QR_CODE
   OTHER
 }
 

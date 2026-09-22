@@ -469,6 +469,312 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
     expect(decryptToken(updated!.refreshToken, ENCRYPTION_KEY)).toBe('real-refresh-token-value-A');
   });
 
+  // --- OAuth token refresh compare-and-swap (Phase 10D.2) ---
+  //
+  // OAUTH1 (normal refresh persists accessToken) and OAUTH2/OAUTH3 (a new
+  // refresh_token persists; an omitted one is preserved) are already fully
+  // covered by F1 and F2 above — not duplicated here. This section covers
+  // what F1/F2 do not: the concurrent-write race and its fix.
+
+  describe('OAuth token refresh — compare-and-swap', () => {
+    it('OAUTH4: a stale token-refresh write (registered before a concurrent execution\'s refresh) cannot overwrite the newer, already-persisted token state', async () => {
+      historyListMock.mockResolvedValue({ data: { history: [], historyId: '290' } });
+
+      // Two concurrent executions for the SAME integration each build their
+      // own OAuth2Client and register their own 'tokens' listener — captured
+      // here as two independent closures, exactly as googleapis would invoke
+      // them on two real concurrent GmailSyncWorker.process() calls.
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '290' });
+      const [, executionA] = onTokensMock.mock.calls[onTokensMock.mock.calls.length - 1];
+
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '290' });
+      const [, executionB] = onTokensMock.mock.calls[onTokensMock.mock.calls.length - 1];
+
+      // Deterministic ordering (no setTimeout): B's refresh — the one that
+      // will end up "newer" — is applied first.
+      await executionB({ access_token: 'execution-B-newer-access-token', expiry_date: Date.now() + 7200_000 });
+
+      const afterB = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      const { decryptToken } = await import('@ciperscope/config');
+      expect(decryptToken(afterB!.accessToken, ENCRYPTION_KEY)).toBe('execution-B-newer-access-token');
+
+      // A's refresh — captured BEFORE B's, representing the execution that
+      // started first but resolves/writes second with now-stale data — is
+      // applied second. Pre-fix, this unconditionally overwrote B's value.
+      await executionA({ access_token: 'execution-A-stale-access-token', expiry_date: Date.now() + 3600_000 });
+
+      const finalState = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      // THE FIX: A's stale write must NOT have landed — B's value survives.
+      expect(decryptToken(finalState!.accessToken, ENCRYPTION_KEY)).toBe('execution-B-newer-access-token');
+      expect(allLoggedText()).toMatch(/another concurrent execution already updated the stored credentials/i);
+    });
+
+    it('OAUTH5: the token-refresh compare-and-swap never touches historyId — the Phase 10D.1 cursor CAS is unaffected', async () => {
+      historyListMock.mockResolvedValue({ data: { history: [], historyId: '295' } });
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '295' });
+
+      const afterSync = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(afterSync!.historyId).toBe('295'); // the sync's own cursor CAS succeeded normally
+
+      const [, tokensCallback] = onTokensMock.mock.calls[onTokensMock.mock.calls.length - 1];
+      await tokensCallback({ access_token: 'oauth5-refresh-token-value' });
+
+      const afterRefresh = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(afterRefresh!.historyId).toBe('295'); // unchanged by the token-refresh write
+    });
+
+    it('OAUTH6: no accessToken, refreshToken, or Authorization value appears in logs, including on a CAS-loss (concurrent refresh) path', async () => {
+      historyListMock.mockResolvedValue({ data: { history: [], historyId: '300' } });
+
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '300' });
+      const [, executionA] = onTokensMock.mock.calls[onTokensMock.mock.calls.length - 1];
+
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '300' });
+      const [, executionB] = onTokensMock.mock.calls[onTokensMock.mock.calls.length - 1];
+
+      await executionB({ access_token: 'secret-oauth6-newer-token' });
+      await executionA({ access_token: 'secret-oauth6-stale-token' }); // triggers the CAS-loss log line
+
+      assertNoSecretLeakage();
+      expect(allLoggedText()).not.toContain('secret-oauth6-newer-token');
+      expect(allLoggedText()).not.toContain('secret-oauth6-stale-token');
+    });
+  });
+
+  // --- 404 / invalid-historyId recovery compare-and-swap (Phase 10E.1) ---
+  //
+  // Phase 10E's discovery audit built a temporary (deleted-after-use) live
+  // reproduction proving that the 404-recovery branch's then-unconditional
+  // historyId write could silently overwrite an already-newer, already-CAS-
+  // protected cursor committed by a concurrent execution. This section is
+  // the permanent regression coverage for the fix.
+  //
+  // 404-CAS-2 (no concurrent change -> CAS succeeds) and 404-CAS-4 (CAS-loss
+  // path never throws) are already fully exercised by the pre-existing D1
+  // test above — not duplicated in substance here, only named explicitly
+  // below for traceability against the acceptance criteria.
+
+  describe('404 / invalid-historyId recovery — compare-and-swap', () => {
+    it('404-CAS-1: another execution advances historyId to 999 before this execution\'s 404 recovery write attempts to land — the CAS affects 0 rows and 999 survives', async () => {
+      await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '150' } });
+
+      // Deterministic ordering, no timing: the concurrent change is performed
+      // as a side effect of the mocked history.list call itself, placing it
+      // exactly between this execution's read (process() entry, historyId=150)
+      // and its own 404-recovery CAS write.
+      historyListMock.mockImplementation(async () => {
+        await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '999' } });
+        const err: { code: number; message: string } = { code: 404, message: 'HistoryId is invalid' };
+        throw err;
+      });
+
+      await expect(
+        worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '175' })
+      ).resolves.toBeUndefined(); // CAS loss is not a thrown/fatal error
+
+      const updated = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(updated!.historyId).toBe('999'); // the concurrently-set newer value survives, untouched by the stale '175' recovery attempt
+      expect(allLoggedText()).toMatch(/historyId recovery not persisted: another concurrent execution already changed the cursor/i);
+    });
+
+    it('404-CAS-2 (named for traceability): no concurrent change — the 404 recovery CAS succeeds and persists the recovery historyId (see pre-existing D1 above for full coverage)', async () => {
+      historyListMock.mockRejectedValue({ code: 404, message: 'HistoryId is invalid' });
+
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '180' });
+
+      const updated = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(updated!.historyId).toBe('180');
+    });
+
+    it('404-CAS-3: original historyId is null, and another process sets a real value before this execution\'s recovery CAS attempts to land — the newer value survives', async () => {
+      await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: null } });
+
+      historyListMock.mockImplementation(async () => {
+        // Simulates a different, concurrently-running execution completing a
+        // normal first-ever sync (moving the cursor from null to a real
+        // value) while this execution is still in flight with its own
+        // original snapshot of null.
+        await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '999' } });
+        const err: { code: number; message: string } = { code: 404, message: 'HistoryId is invalid' };
+        throw err;
+      });
+
+      await expect(
+        worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '175' })
+      ).resolves.toBeUndefined();
+
+      const updated = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(updated!.historyId).toBe('999'); // never overwritten back by the null-originated stale recovery attempt
+      expect(allLoggedText()).toMatch(/historyId recovery not persisted: another concurrent execution already changed the cursor/i);
+    });
+
+    it('404-CAS-4 (named for traceability): a CAS loss on the recovery path does not throw and does not fail the job (see pre-existing D1 above for the base 404 case)', async () => {
+      await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '150' } });
+      historyListMock.mockImplementation(async () => {
+        await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '999' } });
+        const err: { code: number; message: string } = { code: 404, message: 'HistoryId is invalid' };
+        throw err;
+      });
+
+      // The promise must resolve (job succeeds), never reject — a CAS loss
+      // here is an expected concurrency outcome, not a processing failure.
+      await expect(
+        worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '175' })
+      ).resolves.toBeUndefined();
+    });
+
+    it('404-CAS-5: the CAS-loss log line contains no OAuth token, Authorization header, raw MIME, or other secret', async () => {
+      await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '150' } });
+      historyListMock.mockImplementation(async () => {
+        await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '999' } });
+        const err: { code: number; message: string } = { code: 404, message: 'HistoryId is invalid' };
+        throw err;
+      });
+
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '175' });
+
+      assertNoSecretLeakage();
+    });
+  });
+
+  // --- 401/invalid_grant status compare-and-swap (Phase 10F.1) ---
+  //
+  // Phase 10F's discovery audit identified a genuine cross-path write-write
+  // race: a stale in-flight sync execution's unconditional
+  // Integration.status = 'ERROR' write can overwrite a newer, deliberate
+  // status='DISCONNECTED' committed by the real disconnect endpoint
+  // (services/api/src/modules/integration/integration.routes.ts) while the
+  // sync was still in flight. This section is the permanent regression
+  // coverage for the fix. Note: the disconnect endpoint clears credentials
+  // to an encrypted EMPTY STRING (accessToken/refreshToken are non-nullable
+  // columns), not literal null — assertions below match that real behavior.
+  //
+  // STATUS-CAS-2 (no concurrent change -> ERROR persists, no throw) is
+  // already fully exercised by the pre-existing D2 test above — not
+  // duplicated in substance here, only named explicitly for traceability.
+
+  describe('401/invalid_grant — status compare-and-swap', () => {
+    it('STATUS-CAS-1: the exact reproduced race — worker reads ACTIVE, pauses, a real disconnect commits DISCONNECTED, worker resumes and hits invalid_grant — final status MUST remain DISCONNECTED, never ERROR', async () => {
+      // Deterministic promise barrier — never setTimeout/arbitrary delay.
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+      let reachedGate = false;
+
+      historyListMock.mockImplementation(async () => {
+        // The worker has already passed the `status !== 'ACTIVE'` guard at
+        // process() entry (it read ACTIVE) and is now blocked here — i.e.
+        // "paused immediately before the invalid_grant/status-write path",
+        // exactly as specified.
+        reachedGate = true;
+        await gate;
+        const err: { code: number; message: string } = { code: 401, message: 'invalid_grant' };
+        throw err;
+      });
+
+      const workerPromise = worker.process({
+        integrationId: integrationAId,
+        organizationId: orgA,
+        emailAddress: emailAddressA,
+        newHistoryId: '999'
+      });
+
+      // Poll (not sleep-and-hope) until the worker has genuinely reached the
+      // gate — guarantees its ACTIVE read already happened before disconnect.
+      const deadline = Date.now() + 5000;
+      while (!reachedGate) {
+        if (Date.now() > deadline) throw new Error('Worker never reached the gate — test setup error');
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      // Represents the real disconnect operation committing while the sync
+      // is still in flight — same field writes as the actual disconnect
+      // endpoint (status + both credential fields cleared).
+      await prisma.integration.update({
+        where: { id: integrationAId },
+        data: {
+          status: 'DISCONNECTED',
+          accessToken: encryptToken('', ENCRYPTION_KEY),
+          refreshToken: encryptToken('', ENCRYPTION_KEY)
+        }
+      });
+
+      // Release the worker — it now hits the invalid_grant branch and
+      // attempts its CAS write.
+      releaseGate();
+      await expect(workerPromise).resolves.toBeUndefined(); // completes normally, no throw
+
+      const finalState = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(finalState!.status).toBe('DISCONNECTED'); // THE FIX: never overwritten to ERROR
+      const { decryptToken } = await import('@ciperscope/config');
+      expect(decryptToken(finalState!.accessToken, ENCRYPTION_KEY)).toBe(''); // disconnect's clearing survives, untouched
+      expect(decryptToken(finalState!.refreshToken, ENCRYPTION_KEY)).toBe('');
+      expect(allLoggedText()).toMatch(/ERROR status not persisted: integration already changed state/i);
+    }, 15000);
+
+    it('STATUS-CAS-2 (named for traceability): no concurrent change — the CAS succeeds and ERROR persists, worker does not throw (see pre-existing D2 above for full coverage)', async () => {
+      historyListMock.mockRejectedValue({ code: 401, message: 'invalid_grant' });
+
+      await expect(
+        worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '190' })
+      ).resolves.toBeUndefined();
+
+      const updated = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(updated!.status).toBe('ERROR');
+    });
+
+    it('STATUS-CAS-3: status changed to DISCONNECTED before the worker\'s own status write attempts to land — the CAS loses, no throw, DISCONNECTED survives', async () => {
+      historyListMock.mockImplementation(async () => {
+        await prisma.integration.update({ where: { id: integrationAId }, data: { status: 'DISCONNECTED' } });
+        const err: { code: number; message: string } = { code: 401, message: 'invalid_grant' };
+        throw err;
+      });
+
+      await expect(
+        worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '195' })
+      ).resolves.toBeUndefined(); // CAS loss is not a thrown/fatal error
+
+      const updated = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(updated!.status).toBe('DISCONNECTED');
+    });
+
+    it('STATUS-CAS-4: the status CAS touches only status — historyId, accessToken, and refreshToken are untouched by this branch', async () => {
+      await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '500' } });
+      const beforeAccessToken = (await prisma.integration.findUnique({ where: { id: integrationAId } }))!.accessToken;
+      const beforeRefreshToken = (await prisma.integration.findUnique({ where: { id: integrationAId } }))!.refreshToken;
+
+      historyListMock.mockRejectedValue({ code: 401, message: 'invalid_grant' });
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '505' });
+
+      const updated = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(updated!.status).toBe('ERROR'); // the field this branch DOES change
+      expect(updated!.historyId).toBe('500'); // unchanged
+      expect(updated!.accessToken).toBe(beforeAccessToken); // unchanged
+      expect(updated!.refreshToken).toBe(beforeRefreshToken); // unchanged
+    });
+
+    it('STATUS-CAS-5: the CAS-loss path never logs OAuth tokens, Authorization headers, or MIME content', async () => {
+      historyListMock.mockImplementation(async () => {
+        await prisma.integration.update({ where: { id: integrationAId }, data: { status: 'DISCONNECTED' } });
+        // Representative secret values planted in the error itself, the way
+        // a real Google API error object might carry request/response
+        // context — proves the logger call never forwards the raw error's
+        // content, only the safe, fixed message + integrationId.
+        const err = {
+          code: 401,
+          message: 'invalid_grant',
+          response: { data: { error: 'invalid_grant', authorization: 'Bearer secret-status-cas5-token' } }
+        };
+        throw err;
+      });
+
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '199' });
+
+      assertNoSecretLeakage();
+      expect(allLoggedText()).not.toContain('secret-status-cas5-token');
+      expect(allLoggedText()).not.toMatch(/Bearer\s+\S/i);
+    });
+  });
+
   // --- Malformed Gmail responses ---
 
   it('G1: a messagesAdded entry with no message object at all is skipped safely', async () => {
@@ -765,5 +1071,123 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
     ).rejects.toBeTruthy();
 
     assertNoSecretLeakage();
+  });
+
+  // --- CAS: compare-and-swap cursor persistence (Phase 10D.1) ---
+  //
+  // Phase 10D empirically reproduced a cursor-regression race (a temporary,
+  // deterministic-barrier harness — deleted after that discovery phase, not
+  // committed) against real Postgres: two concurrent GmailSyncWorker.process()
+  // calls for the same Integration, where the slower execution's unconditional
+  // final `Integration.update` overwrote an already-newer, already-committed
+  // historyId. This section is the permanent regression coverage for the
+  // compare-and-swap fix that closes that race.
+
+  describe('CAS — compare-and-swap cursor persistence', () => {
+    it('CAS1: the exact reproduced race — A reads 100 and pauses, B reads 100 and commits 120, A resumes and attempts 110 — final historyId MUST remain 120, not regress', async () => {
+      // Deterministic promise gate — never setTimeout/arbitrary delay.
+      let releaseGate!: () => void;
+      const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+      let phase: 'A-blocked' | 'B-active' = 'A-blocked';
+      let aReachedGate = false;
+
+      historyListMock.mockImplementation(async () => {
+        if (phase === 'A-blocked') {
+          aReachedGate = true;
+          await gate; // Worker A blocks here — its Gmail call has "read" historyId=100
+          // (via the do-while loop's startHistoryId: integration.historyId snapshot
+          // taken at process() entry) and is paused before it can reach its own
+          // final cursor write, exactly as the acceptance criteria specifies.
+          return { data: { history: [], historyId: '110' } };
+        }
+        // Worker B: fast, completes, commits historyId=120.
+        return { data: { history: [], historyId: '120' } };
+      });
+
+      // 1. Start Worker A — it calls history.list, hits the gate, blocks.
+      const aPromise = worker.process({
+        integrationId: integrationAId,
+        organizationId: orgA,
+        emailAddress: emailAddressA,
+        newHistoryId: '999'
+      });
+
+      // 2. Poll (not sleep-and-hope) until A has genuinely reached the gate —
+      //    guarantees A's read of historyId=100 already happened before B starts.
+      const deadline = Date.now() + 5000;
+      while (!aReachedGate) {
+        if (Date.now() > deadline) throw new Error('Worker A never reached the gate — test setup error');
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      // 3. Run Worker B to full completion — reads historyId=100 (same as A),
+      //    commits historyId=120.
+      phase = 'B-active';
+      await worker.process({
+        integrationId: integrationAId,
+        organizationId: orgA,
+        emailAddress: emailAddressA,
+        newHistoryId: '120'
+      });
+
+      const afterB = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(afterB?.historyId).toBe('120'); // sanity check: B's write landed
+
+      // 4. Release Worker A. Its own CAS write (`WHERE historyId = '100'`) must
+      //    now affect zero rows, since the stored value is '120', not '100'.
+      releaseGate();
+      await expect(aPromise).resolves.toBeUndefined(); // CAS loss is NOT a thrown error
+
+      const finalState = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(finalState?.historyId).toBe('120'); // THE FIX: no regression to '110'
+
+      // A safe, generic concurrency log line was emitted — no secrets.
+      expect(allLoggedText()).toMatch(/another concurrent execution already advanced it/i);
+      assertNoSecretLeakage();
+    }, 15000);
+
+    it('CAS2: normal single-worker execution still advances the cursor via the CAS write (no concurrent contender)', async () => {
+      historyListMock.mockResolvedValue({ data: { history: [], historyId: '160' } });
+
+      await worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '160' });
+
+      const integration = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(integration?.historyId).toBe('160');
+      // No "another concurrent execution" line — the CAS succeeded on the first attempt.
+      expect(allLoggedText()).not.toMatch(/another concurrent execution already advanced it/i);
+    });
+
+    it('CAS3: a cursor change that happens between this execution\'s read and its write causes the CAS to lose without overwriting the newer value, and without throwing', async () => {
+      // Single-execution simulation of "another worker already advanced the
+      // cursor concurrently": the mocked history.list call itself performs the
+      // concurrent write as a side effect, deterministically placing the race
+      // exactly between this execution's initial read (at process() entry) and
+      // its own final CAS write.
+      historyListMock.mockImplementation(async () => {
+        await prisma.integration.update({ where: { id: integrationAId }, data: { historyId: '777' } });
+        return { data: { history: [], historyId: '130' } }; // this execution's own (now-stale) candidate value
+      });
+
+      await expect(
+        worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '130' })
+      ).resolves.toBeUndefined(); // CAS loss is an expected outcome, never a thrown/fatal error
+
+      const integration = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(integration?.historyId).toBe('777'); // the concurrently-set newer value survives, untouched
+
+      expect(allLoggedText()).toMatch(/another concurrent execution already advanced it/i);
+      assertNoSecretLeakage(); // no token/Authorization/MIME content in the concurrency log line
+    });
+
+    it('CAS4: a page-level failure still prevents the cursor from advancing at all (CAS write is never reached)', async () => {
+      historyListMock.mockRejectedValueOnce({ code: 500, message: 'Internal error' });
+
+      await expect(
+        worker.process({ integrationId: integrationAId, organizationId: orgA, emailAddress: emailAddressA, newHistoryId: '999' })
+      ).rejects.toBeTruthy();
+
+      const integration = await prisma.integration.findUnique({ where: { id: integrationAId } });
+      expect(integration?.historyId).toBe('100'); // unchanged — same as pre-CAS behavior (see PAG4)
+    });
   });
 });
