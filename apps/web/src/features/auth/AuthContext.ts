@@ -10,6 +10,17 @@ export interface User {
   organizationId: string;
 }
 
+/** Shape of GET /auth/me, consumed by both AuthProvider (session restore) and Login (post-login). */
+export interface MeResponse {
+  user?: {
+    id: string;
+    firstName?: string;
+    lastName?: string;
+    email: string;
+    memberships?: { organizationId: string; role?: { name?: string } }[];
+  };
+}
+
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;

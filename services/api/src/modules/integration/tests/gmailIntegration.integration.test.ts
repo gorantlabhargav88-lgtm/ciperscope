@@ -129,6 +129,125 @@ describe('Gmail Integration — token encryption, disconnect, webhook isolation 
     });
   });
 
+  describe('GET /gmail/connection — status', () => {
+    it('rejects an unauthenticated request (401)', async () => {
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/integrations/gmail/connection',
+        headers: { 'x-organization-id': orgId }
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('rejects a user without INTEGRATION_MANAGE (403)', async () => {
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/integrations/gmail/connection',
+        headers: { 'x-organization-id': orgId, authorization: `Bearer ${tokenWithoutPerm}` }
+      });
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('rejects a token not claiming the target organization (tenant isolation)', async () => {
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/integrations/gmail/connection',
+        headers: { 'x-organization-id': otherOrgId, authorization: `Bearer ${tokenWithPerm}` }
+      });
+      expect(response.statusCode).toBe(403);
+    });
+
+    // Each test below uses its own freshly-created organization (rather than
+    // the shared `orgId`) — GET /gmail/connection has no per-test-run
+    // isolation of its own (by design: it reports the real, current,
+    // possibly-multi-row ACTIVE state for an org), so reusing `orgId`
+    // across these specific tests would let one test's created integration
+    // leak into another's assertions.
+    async function setupIsolatedOrgWithAccess() {
+      const isolatedOrgId = crypto.randomUUID();
+      await prisma.organization.create({ data: { id: isolatedOrgId, name: 'Gmail Status Isolated Org' } });
+      const permission = await prisma.permission.upsert({
+        where: { action: 'INTEGRATION_MANAGE' },
+        update: {},
+        create: { action: 'INTEGRATION_MANAGE', description: 'Connect, view, and disconnect third-party integrations' }
+      });
+      const role = await prisma.role.create({ data: { name: 'Integration Manager', organizationId: isolatedOrgId } });
+      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+      await prisma.organizationMember.create({ data: { userId: userIdWithPerm, organizationId: isolatedOrgId, roleId: role.id } });
+      const token = server.jwt.sign({ sub: userIdWithPerm, orgs: [isolatedOrgId], sid: sessionIdWithPerm });
+      return {
+        isolatedOrgId,
+        token,
+        cleanup: async () => {
+          await prisma.integration.deleteMany({ where: { organizationId: isolatedOrgId } });
+          await prisma.organizationMember.deleteMany({ where: { organizationId: isolatedOrgId } });
+          await prisma.rolePermission.deleteMany({ where: { roleId: role.id } });
+          await prisma.role.deleteMany({ where: { id: role.id } });
+          await prisma.organization.deleteMany({ where: { id: isolatedOrgId } });
+        }
+      };
+    }
+
+    it('returns not_connected when no ACTIVE integration exists for the org', async () => {
+      const { isolatedOrgId, token, cleanup } = await setupIsolatedOrgWithAccess();
+      try {
+        const response = await server.inject({
+          method: 'GET',
+          url: '/api/v1/integrations/gmail/connection',
+          headers: { 'x-organization-id': isolatedOrgId, authorization: `Bearer ${token}` }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ status: 'not_connected' });
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it('returns connected with the real emailAddress, and never a token, for an ACTIVE integration', async () => {
+      const { isolatedOrgId, token, cleanup } = await setupIsolatedOrgWithAccess();
+      try {
+        const emailAddress = `status-check-${crypto.randomUUID()}@example.com`;
+        await createIntegration(isolatedOrgId, emailAddress);
+
+        const response = await server.inject({
+          method: 'GET',
+          url: '/api/v1/integrations/gmail/connection',
+          headers: { 'x-organization-id': isolatedOrgId, authorization: `Bearer ${token}` }
+        });
+
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.status).toBe('connected');
+        expect(body.emailAddress).toBe(emailAddress);
+        expect(JSON.stringify(body)).not.toContain('fake-access-token-value');
+        expect(JSON.stringify(body)).not.toContain('fake-refresh-token-value');
+        expect(body).not.toHaveProperty('accessToken');
+        expect(body).not.toHaveProperty('refreshToken');
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it('does not report a DISCONNECTED integration as connected', async () => {
+      const { isolatedOrgId, token, cleanup } = await setupIsolatedOrgWithAccess();
+      try {
+        const emailAddress = `status-disconnected-${crypto.randomUUID()}@example.com`;
+        await createIntegration(isolatedOrgId, emailAddress, 'DISCONNECTED');
+
+        const response = await server.inject({
+          method: 'GET',
+          url: '/api/v1/integrations/gmail/connection',
+          headers: { 'x-organization-id': isolatedOrgId, authorization: `Bearer ${token}` }
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ status: 'not_connected' });
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
   describe('DELETE /gmail/connection — authorization', () => {
     it('rejects an unauthenticated request (401)', async () => {
       const response = await server.inject({

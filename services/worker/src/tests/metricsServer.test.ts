@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createMetricsServer } from '../metricsServer';
-import { register } from 'prom-client';
+import { register } from '@platformatic/prom-client';
 
 describe('Worker Metrics Server', () => {
   beforeEach(() => {

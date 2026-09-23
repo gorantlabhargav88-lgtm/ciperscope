@@ -84,11 +84,22 @@ export default async function emailRoutes(server: FastifyInstance) {
     }
 
     // 2. Validate Multipart
+    // fileSize is the authoritative HTTP-ingress limit — before
+    // AttachmentAnalyzer's internal 50MB in-memory buffer cap ever applies
+    // to a raw .eml's zip/archive attachments, and before the upload is
+    // ever written to raw-email storage. On @fastify/multipart 10 /
+    // Fastify 5, THIS per-call value is what actually governs (confirmed
+    // via live testing: it fully replaces the plugin-level registration's
+    // limits in services/api/src/index.ts rather than being bounded by
+    // them, unlike the prior major version) — kept at the original
+    // intended 25MB rather than the pre-migration route-level 30MB, which
+    // was never actually binding before (the smaller global limit always
+    // won).
     const data = await request.file({
       limits: {
-        fileSize: 30 * 1024 * 1024, // 30 MB limit
+        fileSize: 25 * 1024 * 1024,
         files: 1,
-        fields: 0, // No extra metadata fields expected
+        fields: 0, // No extra metadata fields expected — no longer enforced by @fastify/multipart 10 (see multipartValidation.test.ts), kept for documentation/future-proofing
       }
     });
 

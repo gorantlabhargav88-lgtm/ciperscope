@@ -6,6 +6,7 @@ import { Overview } from './pages/Overview';
 import { EmailAnalysis } from './pages/EmailAnalysis';
 import { PlaceholderPage } from './pages/PlaceholderPage';
 import { Cases } from './pages/Cases';
+import { CaseDetail } from './pages/CaseDetail';
 import { Alerts } from './pages/Alerts';
 import { AuthProvider } from './features/auth/AuthProvider';
 import { InvestigationWorkspace } from './InvestigationWorkspace';
@@ -30,10 +31,13 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <Navigate to="/overview" replace /> },
           { path: 'overview', element: <Overview /> },
-          { path: 'investigations', element: <PlaceholderPage title="Investigations" /> },
-          { path: 'investigations/:id', element: <PlaceholderPage title="Investigation Details" /> },
+          // Investigations are case-scoped (there is no cross-case investigation
+          // list endpoint on the backend) — the real entry point is a case's own
+          // detail page, which lists and links to its investigations.
+          { path: 'investigations', element: <Navigate to="/cases" replace /> },
           { path: 'alerts', element: <Alerts /> },
           { path: 'cases', element: <Cases /> },
+          { path: 'cases/:caseId', element: <CaseDetail /> },
           { path: 'cases/:caseId/investigations/:investigationId/workspace', element: <InvestigationWorkspace /> },
           { path: 'email-analysis', element: <EmailAnalysis /> },
           { path: 'email-analysis/:id', element: <EmailAnalysis /> },

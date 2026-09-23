@@ -7,19 +7,48 @@ import { Mail, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { apiClient } from '../lib/apiClient';
 
+// Matches apps/web/src/lib/apiClient.ts's own BASE_URL derivation.
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
+
+type ConnectionState =
+  | { kind: 'loading' }
+  | { kind: 'not_connected' }
+  | { kind: 'connected'; emailAddress: string; connectedAt: string };
+
 export default function Integrations() {
   const [searchParams] = useSearchParams();
-  const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  // Transient banner for the one-time OAuth redirect (?integration=success|error)
+  // — separate from `connection`, which is the actual, refresh-proof source
+  // of truth for whether Gmail is connected (fetched from the backend, not
+  // inferred from a URL param that disappears after the first render).
+  const [banner, setBanner] = useState<'success' | 'error' | null>(null);
+  const [connection, setConnection] = useState<ConnectionState>({ kind: 'loading' });
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
+  const loadStatus = async () => {
+    try {
+      const res = await apiClient.getGmailConnectionStatus();
+      setConnection(
+        res.status === 'connected'
+          ? { kind: 'connected', emailAddress: res.emailAddress, connectedAt: res.connectedAt }
+          : { kind: 'not_connected' }
+      );
+    } catch {
+      // Honest unknown rather than fabricating a connected/not-connected
+      // state — render the not-connected UI (safe default: offers "Connect"
+      // rather than falsely claiming an active connection) and let the user
+      // retry.
+      setConnection({ kind: 'not_connected' });
+    }
+  };
+
   useEffect(() => {
     const integrationStatus = searchParams.get('integration');
-    if (integrationStatus === 'success') {
-      setStatus('success');
-    } else if (integrationStatus === 'error') {
-      setStatus('error');
-    }
+    if (integrationStatus === 'success') setBanner('success');
+    else if (integrationStatus === 'error') setBanner('error');
+    loadStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   const handleDisconnect = async () => {
@@ -28,7 +57,8 @@ export default function Integrations() {
     setDisconnectError(null);
     try {
       await apiClient.disconnectGmail();
-      setStatus('idle');
+      setBanner(null);
+      await loadStatus();
     } catch (err) {
       setDisconnectError(err instanceof Error ? err.message : 'Failed to disconnect Gmail');
     } finally {
@@ -45,7 +75,7 @@ export default function Integrations() {
         </p>
       </div>
 
-      {status === 'success' && (
+      {banner === 'success' && (
         <Alert className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20">
           <CheckCircle2 className="h-4 w-4" />
           <AlertTitle>Success</AlertTitle>
@@ -55,7 +85,7 @@ export default function Integrations() {
         </Alert>
       )}
 
-      {status === 'error' && (
+      {banner === 'error' && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Error</AlertTitle>
@@ -87,9 +117,20 @@ export default function Integrations() {
               <li className="flex items-center"><CheckCircle2 className="mr-2 h-4 w-4 text-emerald-500" /> Automatic async processing</li>
               <li className="flex items-center"><CheckCircle2 className="mr-2 h-4 w-4 text-emerald-500" /> Tenant isolated</li>
             </ul>
+            {connection.kind === 'connected' && (
+              <p className="text-xs text-muted-foreground mt-4 pt-4 border-t border-white/10">
+                Connected as <span className="text-foreground font-medium">{connection.emailAddress}</span>
+                <br />
+                since {new Date(connection.connectedAt).toLocaleDateString()}
+              </p>
+            )}
           </CardContent>
           <CardFooter className="flex-col gap-2 items-stretch">
-            {status === 'success' ? (
+            {connection.kind === 'loading' ? (
+              <Button variant="outline" className="w-full" disabled>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Checking status…
+              </Button>
+            ) : connection.kind === 'connected' ? (
               <>
                 <Button variant="outline" className="w-full" disabled>
                   Connected
@@ -106,9 +147,9 @@ export default function Integrations() {
                 {disconnectError && <p className="text-xs text-destructive">{disconnectError}</p>}
               </>
             ) : (
-              <Button 
+              <Button
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:shadow-[0_0_25px_rgba(37,99,235,0.5)] transition-all duration-300"
-                onClick={() => window.location.href = 'http://localhost:3000/api/v1/integrations/gmail/auth'}
+                onClick={() => { window.location.href = `${API_BASE_URL}/integrations/gmail/auth`; }}
               >
                 Connect Gmail
               </Button>

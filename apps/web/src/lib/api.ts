@@ -11,7 +11,7 @@ class ApiClient {
     return this.organizationId;
   }
 
-  async fetch(endpoint: string, options: RequestInit = {}) {
+  async fetch<T = unknown>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers || {});
     
     headers.set('Content-Type', 'application/json');
@@ -38,45 +38,47 @@ class ApiClient {
       throw new Error(errorData.message || `API Error: ${response.status}`);
     }
 
-    // For 204 No Content
+    // For 204 No Content — callers of an endpoint that can genuinely return
+    // 204 are expected to type T accordingly (e.g. `T = null`) or handle
+    // this explicitly; this cast reflects the real runtime possibility.
     if (response.status === 204) {
-      return null;
+      return null as T;
     }
 
     return response.json();
   }
 
   // Convenience methods
-  async get(endpoint: string, options?: RequestInit) {
-    return this.fetch(endpoint, { ...options, method: 'GET' });
+  async get<T = unknown>(endpoint: string, options?: RequestInit): Promise<T> {
+    return this.fetch<T>(endpoint, { ...options, method: 'GET' });
   }
 
-  async post(endpoint: string, data?: any, options?: RequestInit) {
-    return this.fetch(endpoint, {
+  async post<T = unknown>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
+    return this.fetch<T>(endpoint, {
       ...options,
       method: 'POST',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  async put(endpoint: string, data?: any, options?: RequestInit) {
-    return this.fetch(endpoint, {
+  async put<T = unknown>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
+    return this.fetch<T>(endpoint, {
       ...options,
       method: 'PUT',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  async patch(endpoint: string, data?: any, options?: RequestInit) {
-    return this.fetch(endpoint, {
+  async patch<T = unknown>(endpoint: string, data?: unknown, options?: RequestInit): Promise<T> {
+    return this.fetch<T>(endpoint, {
       ...options,
       method: 'PATCH',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  async delete(endpoint: string, options?: RequestInit) {
-    return this.fetch(endpoint, { ...options, method: 'DELETE' });
+  async delete<T = unknown>(endpoint: string, options?: RequestInit): Promise<T> {
+    return this.fetch<T>(endpoint, { ...options, method: 'DELETE' });
   }
 }
 

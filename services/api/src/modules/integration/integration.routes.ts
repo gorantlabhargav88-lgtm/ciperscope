@@ -60,7 +60,7 @@ export default async function integrationRoutes(server: FastifyInstance) {
       prompt: 'consent'
     });
 
-    return reply.redirect(302, url);
+    return reply.redirect(url, 302);
   });
 
   server.get('/gmail/callback', {
@@ -78,7 +78,7 @@ export default async function integrationRoutes(server: FastifyInstance) {
     const query = CallbackQuerySchema.safeParse(request.query);
     if (!query.success) {
       server.log.error({ err: query.error }, 'Invalid callback query parameters');
-      return reply.redirect(302, frontendUrl('error'));
+      return reply.redirect(frontendUrl('error'), 302);
     }
 
     let organizationId: string;
@@ -97,7 +97,7 @@ export default async function integrationRoutes(server: FastifyInstance) {
         metadata: { reason: message },
         req: request
       });
-      return reply.redirect(302, frontendUrl('error'));
+      return reply.redirect(frontendUrl('error'), 302);
     }
 
     try {
@@ -135,7 +135,7 @@ export default async function integrationRoutes(server: FastifyInstance) {
           metadata: { reason: 'mailbox_already_connected_to_another_org' },
           req: request
         });
-        return reply.redirect(302, frontendUrl('error'));
+        return reply.redirect(frontendUrl('error'), 302);
       }
 
       await prisma.integration.upsert({
@@ -185,11 +185,11 @@ export default async function integrationRoutes(server: FastifyInstance) {
         req: request
       });
 
-      return reply.redirect(302, frontendUrl('success'));
+      return reply.redirect(frontendUrl('success'), 302);
 
     } catch (error) {
       server.log.error({ err: error }, 'Failed to process Gmail callback');
-      return reply.redirect(302, frontendUrl('error'));
+      return reply.redirect(frontendUrl('error'), 302);
     }
   });
 
@@ -256,6 +256,40 @@ export default async function integrationRoutes(server: FastifyInstance) {
     } catch (error) {
       server.log.error({ err: error }, 'Failed to process Gmail webhook');
     }
+  });
+
+  // The frontend previously had no way to know whether Gmail was actually
+  // connected except by reading a one-time `?integration=success` query
+  // param right after the OAuth callback redirect — a page refresh lost
+  // that state entirely, showing "not connected" even for a genuinely
+  // active integration. This is the real status source it was missing.
+  // Never returns accessToken/refreshToken — only the fields needed to
+  // render connection state in the UI.
+  server.get('/gmail/connection', {
+    preValidation: [server.authenticate, server.requirePermission('INTEGRATION_MANAGE')],
+    schema: {
+      tags: ['Integrations'],
+      summary: 'Get current Gmail connection status for this organization'
+    }
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+
+    const integration = await prisma.integration.findFirst({
+      where: { organizationId, provider: 'GMAIL', status: 'ACTIVE' },
+      select: { emailAddress: true, status: true, createdAt: true, updatedAt: true },
+      orderBy: { updatedAt: 'desc' }
+    });
+
+    if (!integration) {
+      return reply.code(200).send({ status: 'not_connected' });
+    }
+
+    return reply.code(200).send({
+      status: 'connected',
+      emailAddress: integration.emailAddress,
+      connectedAt: integration.createdAt,
+      lastUpdatedAt: integration.updatedAt
+    });
   });
 
   server.delete('/gmail/connection', {

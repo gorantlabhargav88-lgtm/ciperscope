@@ -327,6 +327,13 @@ export class CiperscopeApiClient {
     return this.request('/integrations/gmail/connection', { method: 'DELETE' });
   }
 
+  async getGmailConnectionStatus(): Promise<
+    | { status: 'not_connected' }
+    | { status: 'connected'; emailAddress: string; connectedAt: string; lastUpdatedAt: string }
+  > {
+    return this.request('/integrations/gmail/connection');
+  }
+
   // NOTE (Phase 3, Step 2): GET /emails/:emailId/analysis now returns
   // `caseId` (previously a documented missing capability — see git history
   // of this file / CIPERSCOPE_NEXT_PHASE_AUDIT.md). Callers should read

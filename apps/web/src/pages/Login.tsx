@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../features/auth/AuthContext';
+import type { MeResponse, Role } from '../features/auth/AuthContext';
 import { Shield } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -22,15 +23,16 @@ export const Login = () => {
 
       // To fully initialize context with organizationId, we need to fetch /me
       // The backend login does not return memberships in the user object
-      const meData = await api.get('/auth/me');
+      const meData = await api.get<MeResponse>('/auth/me');
 
+      if (!meData.user) throw new Error('Failed to load session after login');
       const membership = meData.user.memberships?.[0];
 
       login({
         id: meData.user.id,
         name: `${meData.user.firstName || ''} ${meData.user.lastName || ''}`.trim() || 'User',
         email: meData.user.email,
-        role: (membership?.role?.name) || 'VIEWER',
+        role: (membership?.role?.name as Role) || 'VIEWER',
         organizationId: membership?.organizationId || ''
       });
 

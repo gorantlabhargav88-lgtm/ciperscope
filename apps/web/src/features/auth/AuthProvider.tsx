@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { AuthContext } from './AuthContext';
-import type { User, Role } from './AuthContext';
+import type { User, Role, MeResponse } from './AuthContext';
 import { api } from '../../lib/api';
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
@@ -11,7 +11,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const restoreSession = async () => {
       try {
-        const data = await api.get('/auth/me');
+        const data = await api.get<MeResponse>('/auth/me');
         if (data && data.user) {
             const membership = data.user.memberships?.[0];
             const orgId = membership?.organizationId || '';

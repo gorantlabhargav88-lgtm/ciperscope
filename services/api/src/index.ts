@@ -1,4 +1,4 @@
-import Fastify, { FastifyInstance } from 'fastify';
+import Fastify, { FastifyInstance, FastifyError } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import fastifyCookie from '@fastify/cookie';
 import fastifyCors from '@fastify/cors';
@@ -46,7 +46,11 @@ server.addHook('onRequest', (request, reply, done) => {
 });
 
 // Centralized Error Handler
-server.setErrorHandler((error, request, reply) => {
+// Fastify v5's setErrorHandler infers `error` as `unknown` unless the
+// FastifyError generic/annotation is supplied explicitly (v4 defaulted
+// this to FastifyError) — a type-only change, not a runtime behavior
+// change; error.validation is still populated identically at runtime.
+server.setErrorHandler((error: FastifyError, request, reply) => {
   logger.error({ err: error }, 'Unhandled error occurred');
   
   if (error.validation) {
@@ -97,10 +101,15 @@ server.register(fastifyCookie);
 // Register Custom RBAC/Auth Middleware
 server.register(rbacPlugin);
 
-// Register Multipart for File Uploads. fileSize bounds the raw upload at
-// HTTP ingress — before AttachmentAnalyzer's internal 50MB in-memory buffer
-// cap ever applies to a raw .eml's zip/archive attachments, and before the
-// upload is ever written to raw-email storage.
+// Register Multipart for File Uploads. This plugin-level `fileSize` is a
+// fallback only — on @fastify/multipart 10 / Fastify 5, a route's own
+// `request.file({ limits: {...} })` call fully REPLACES these limits for
+// that call rather than being capped by them (confirmed via live testing:
+// a 26–29MB upload was accepted here despite this 25MB setting, because
+// email.routes.ts's /ingest handler passes its own `fileSize: 25*1024*1024`
+// — see that file for the actual authoritative ingress limit). Kept in
+// sync with the route's limit as defense-in-depth for any future route
+// that omits its own per-call limits.
 server.register(fastifyMultipart, {
   limits: { fileSize: 25 * 1024 * 1024 },
 });

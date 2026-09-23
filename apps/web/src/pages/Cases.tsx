@@ -3,13 +3,26 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { Loader2, AlertTriangle, Briefcase, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { PriorityBadge } from '../components/threats/PriorityBadge';
+import type { CaseSummary } from '@ciperscope/types';
+
+const STATUS_STYLES: Record<string, string> = {
+  OPEN: 'bg-blue-950/30 text-blue-400 border-blue-900/50',
+  INVESTIGATING: 'bg-purple-950/30 text-purple-400 border-purple-900/50',
+  CONTAINED: 'bg-emerald-950/30 text-emerald-400 border-emerald-900/50',
+  RESOLVED: 'bg-slate-800 text-slate-400 border-slate-700',
+  CLOSED: 'bg-slate-800 text-slate-500 border-slate-700',
+};
 
 export const Cases = () => {
   const [cursor, setCursor] = useState<string | undefined>();
-  
+
   const { data, isLoading, error } = useQuery({
     queryKey: ['cases', cursor],
-    queryFn: () => api.get(`/cases?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
+    queryFn: () =>
+      api.get<{ items: CaseSummary[]; nextCursor?: string }>(
+        `/cases?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+      ),
   });
 
   return (
@@ -55,26 +68,17 @@ export const Cases = () => {
                   </td>
                 </tr>
               ) : (
-                data?.items?.map((c: any) => (
+                data?.items?.map((c) => (
                   <tr key={c.id} className="hover:bg-slate-800/30 transition-colors group">
                     <td className="px-6 py-4 font-mono text-xs text-slate-500">{c.id.split('-')[0]}</td>
                     <td className="px-6 py-4 font-medium text-slate-200">{c.title}</td>
                     <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded text-xs font-medium border
-                        ${c.status === 'OPEN' ? 'bg-blue-950/30 text-blue-400 border-blue-900/50' : 
-                          c.status === 'INVESTIGATING' ? 'bg-purple-950/30 text-purple-400 border-purple-900/50' : 
-                          c.status === 'CONTAINED' ? 'bg-emerald-950/30 text-emerald-400 border-emerald-900/50' :
-                          'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                      <span className={`px-2.5 py-1 rounded text-xs font-medium border ${STATUS_STYLES[c.status] ?? STATUS_STYLES.CLOSED}`}>
                         {c.status}
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded text-xs font-medium border
-                        ${c.priority === 'CRITICAL' ? 'bg-red-950/50 text-red-400 border-red-900' :
-                          c.priority === 'HIGH' ? 'bg-orange-950/30 text-orange-400 border-orange-900/50' :
-                          'bg-slate-800 text-slate-400 border-slate-700'}`}>
-                        {c.priority}
-                      </span>
+                      <PriorityBadge priority={c.priority} />
                     </td>
                     <td className="px-6 py-4 text-slate-400">{new Date(c.createdAt).toLocaleDateString()}</td>
                     <td className="px-6 py-4 text-right">

@@ -3,13 +3,28 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { Loader2, AlertTriangle, ShieldAlert, ChevronRight, CheckCircle2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { SeverityBadge } from '../components/threats/SeverityBadge';
+import type { AlertSeverity } from '../types/severity';
+
+interface AlertItem {
+  id: string;
+  caseId: string | null;
+  title: string;
+  message: string;
+  severity: AlertSeverity;
+  isRead: boolean;
+  createdAt: string;
+}
 
 export const Alerts = () => {
   const [cursor, setCursor] = useState<string | undefined>();
-  
+
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['alerts', cursor],
-    queryFn: () => api.get(`/alerts?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
+    queryFn: () =>
+      api.get<{ items: AlertItem[]; nextCursor?: string }>(
+        `/alerts?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+      ),
   });
 
   const markAsRead = async (alertId: string) => {
@@ -62,16 +77,10 @@ export const Alerts = () => {
                   </td>
                 </tr>
               ) : (
-                data?.items?.map((a: any) => (
+                data?.items?.map((a) => (
                   <tr key={a.id} className={`hover:bg-slate-800/30 transition-colors group ${a.isRead ? 'opacity-60' : ''}`}>
                     <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded text-xs font-medium border
-                        ${a.severity === 'CRITICAL' ? 'bg-red-950/50 text-red-400 border-red-900' :
-                          a.severity === 'HIGH' ? 'bg-orange-950/30 text-orange-400 border-orange-900/50' :
-                          a.severity === 'MEDIUM' ? 'bg-yellow-950/30 text-yellow-400 border-yellow-900/50' :
-                          'bg-blue-950/30 text-blue-400 border-blue-900/50'}`}>
-                        {a.severity}
-                      </span>
+                      <SeverityBadge level={a.severity} />
                     </td>
                     <td className="px-6 py-4">
                       <p className={`font-medium ${a.isRead ? 'text-slate-400' : 'text-slate-200'}`}>{a.title}</p>
