@@ -10,15 +10,30 @@ function baseInput(overrides: Partial<EvidenceGraphInput> = {}): EvidenceGraphIn
     urls: [],
     attachments: [],
     geoLocations: [],
+    reverseDnsObservations: [],
     indicatorObservations: [],
+    recipients: [],
+    domainIntelligence: [],
+    caseContext: null,
     ...overrides,
   };
 }
 
 describe('buildEvidenceGraph', () => {
-  it('1. produces a basic graph with just the EMAIL node when there is no other evidence', () => {
+  it('1. produces a basic graph with just EMAIL and SENDER nodes when there is no other evidence', () => {
     const graph = buildEvidenceGraph(baseInput());
     expect(graph.emailId).toBe('email-1');
+    expect(graph.nodes).toEqual([
+      expect.objectContaining({ id: 'EMAIL:email-1', type: 'EMAIL' }),
+      expect.objectContaining({ id: 'SENDER:sender@example.com', type: 'SENDER' }),
+    ]);
+    expect(graph.edges).toEqual([
+      expect.objectContaining({ from: 'EMAIL:email-1', to: 'SENDER:sender@example.com', type: 'EMAIL_SENT_FROM' }),
+    ]);
+  });
+
+  it('1b. no SENDER node when senderAddress is null, and no CASE/EVIDENCE/ALERT nodes when the email is unlinked', () => {
+    const graph = buildEvidenceGraph(baseInput({ senderAddress: null }));
     expect(graph.nodes).toEqual([
       expect.objectContaining({ id: 'EMAIL:email-1', type: 'EMAIL' }),
     ]);
@@ -119,6 +134,25 @@ describe('buildEvidenceGraph', () => {
     const geoNode = graph.nodes.find((n) => n.type === 'GEOLOCATION');
     expect(geoNode?.id).toBe('GEO:2.2.2.2');
     expect(graph.edges.find((e) => e.type === 'HAS_GEOLOCATION' && e.from === 'IP:2.2.2.2')).toBeDefined();
+  });
+
+  it('8b. an IP with a persisted PTR observation carries reverseDns hostnames on its node data', () => {
+    const graph = buildEvidenceGraph(baseInput({
+      relayHops: [{ sourceIp: '3.3.3.3', hopOrder: 0, receivedHeader: 'x' }],
+      reverseDnsObservations: [{ ipAddress: '3.3.3.3', hostnames: ['relay.example.net'] }],
+    }));
+
+    const ipNode = graph.nodes.find((n) => n.id === 'IP:3.3.3.3');
+    expect(ipNode?.data).toEqual(expect.objectContaining({ reverseDns: ['relay.example.net'] }));
+  });
+
+  it('8c. an IP with no PTR observation never fabricates reverseDns on its node data', () => {
+    const graph = buildEvidenceGraph(baseInput({
+      relayHops: [{ sourceIp: '4.4.4.4', hopOrder: 0, receivedHeader: 'x' }],
+    }));
+
+    const ipNode = graph.nodes.find((n) => n.id === 'IP:4.4.4.4');
+    expect(ipNode?.data).toEqual(expect.objectContaining({ reverseDns: null }));
   });
 
   it('9. the same domain appearing via multiple URL sources collapses into ONE domain node with multiple provenance entries', () => {
@@ -259,5 +293,140 @@ describe('buildEvidenceGraph', () => {
         truncated: expect.any(Boolean),
       }),
     }));
+  });
+
+  it('20b. Phase M — EVIDENCE node exposes anchorStatus honestly (NOT_BATCHED when unset, real status when set)', () => {
+    const unbatched = buildEvidenceGraph(baseInput({
+      caseContext: {
+        caseId: 'case-1', title: 'Case', status: 'OPEN', priority: 'HIGH',
+        evidence: [{ id: 'ev-1', type: 'LOG', sha256: null, filename: 'x', collectionTime: new Date(), anchorStatus: null, merkleRoot: null } as any],
+        alerts: [],
+      },
+    }));
+    expect(unbatched.nodes.find((n) => n.id === 'EVIDENCE:ev-1')?.data.anchorStatus).toBe('NOT_BATCHED');
+
+    const batched = buildEvidenceGraph(baseInput({
+      caseContext: {
+        caseId: 'case-1', title: 'Case', status: 'OPEN', priority: 'HIGH',
+        evidence: [{ id: 'ev-2', type: 'LOG', sha256: null, filename: 'x', collectionTime: new Date(), anchorStatus: 'ANCHORED', merkleRoot: 'deadbeef' } as any],
+        alerts: [],
+      },
+    }));
+    const node = batched.nodes.find((n) => n.id === 'EVIDENCE:ev-2');
+    expect(node?.data.anchorStatus).toBe('ANCHORED');
+    expect(node?.data.merkleRoot).toBe('deadbeef');
+  });
+
+  it('21. recipients produce RECIPIENT nodes linked by EMAIL_SENT_TO, deduplicated across To/Cc', () => {
+    const graph = buildEvidenceGraph(baseInput({
+      recipients: [
+        { headerName: 'to', address: 'victim@example.com' },
+        { headerName: 'cc', address: 'victim@example.com' },
+        { headerName: 'to', address: 'other@example.com' },
+      ],
+    }));
+    const recipientNodes = graph.nodes.filter((n) => n.type === 'RECIPIENT');
+    expect(recipientNodes).toHaveLength(2);
+    const victim = recipientNodes.find((n) => n.id === 'RECIPIENT:victim@example.com')!;
+    expect(victim.provenance).toHaveLength(1); // deduped: same source/sourceRecordId for both headers
+    expect(graph.edges.filter((e) => e.type === 'EMAIL_SENT_TO')).toHaveLength(2);
+  });
+
+  it('22. a case-linked email produces a CASE node and BELONGS_TO_CASE edge; an unlinked email produces neither', () => {
+    const linked = buildEvidenceGraph(baseInput({
+      caseContext: { caseId: 'case-1', title: 'Phishing Campaign X', status: 'OPEN', priority: 'HIGH', evidence: [], alerts: [] },
+    }));
+    expect(linked.nodes.find((n) => n.id === 'CASE:case-1')).toBeDefined();
+    expect(linked.edges.find((e) => e.type === 'BELONGS_TO_CASE' && e.from === 'EMAIL:email-1' && e.to === 'CASE:case-1')).toBeDefined();
+
+    const unlinked = buildEvidenceGraph(baseInput({ caseContext: null }));
+    expect(unlinked.nodes.find((n) => n.type === 'CASE')).toBeUndefined();
+  });
+
+  it('23. case evidence produces EVIDENCE nodes and EMAIL_GENERATED_EVIDENCE edges from the CASE node', () => {
+    const graph = buildEvidenceGraph(baseInput({
+      caseContext: {
+        caseId: 'case-1', title: 'Case', status: 'OPEN', priority: 'HIGH',
+        evidence: [{ id: 'ev-1', type: 'LOG', sha256: null, filename: 'notes.log', collectionTime: new Date('2026-01-01T00:00:00Z') }],
+        alerts: [],
+      },
+    }));
+    expect(graph.nodes.find((n) => n.id === 'EVIDENCE:ev-1')).toBeDefined();
+    expect(graph.edges.find((e) => e.type === 'EMAIL_GENERATED_EVIDENCE' && e.from === 'CASE:case-1' && e.to === 'EVIDENCE:ev-1')).toBeDefined();
+  });
+
+  it('24. EVIDENCE_SUPPORTS_FINDING links evidence to a matching FILE_HASH node only when the SHA-256 genuinely matches an attachment', () => {
+    const matching = buildEvidenceGraph(baseInput({
+      attachments: [{ id: 'att-1', filename: 'payload.apk', sha256: 'deadbeef', apkMetadata: null, qrFindings: null, threatIndicators: null }],
+      caseContext: {
+        caseId: 'case-1', title: 'Case', status: 'OPEN', priority: 'HIGH',
+        evidence: [{ id: 'ev-1', type: 'ATTACHMENT', sha256: 'deadbeef', filename: 'payload.apk', collectionTime: new Date() }],
+        alerts: [],
+      },
+    }));
+    expect(matching.edges.find((e) => e.type === 'EVIDENCE_SUPPORTS_FINDING' && e.from === 'EVIDENCE:ev-1' && e.to === 'HASH:deadbeef')).toBeDefined();
+
+    // No matching attachment hash — never fabricate the link.
+    const nonMatching = buildEvidenceGraph(baseInput({
+      caseContext: {
+        caseId: 'case-1', title: 'Case', status: 'OPEN', priority: 'HIGH',
+        evidence: [{ id: 'ev-2', type: 'ATTACHMENT', sha256: 'unrelated-hash', filename: 'x', collectionTime: new Date() }],
+        alerts: [],
+      },
+    }));
+    expect(nonMatching.edges.find((e) => e.type === 'EVIDENCE_SUPPORTS_FINDING')).toBeUndefined();
+  });
+
+  it('25. case alerts produce ALERT nodes and HAS_ALERT edges from the CASE node', () => {
+    const graph = buildEvidenceGraph(baseInput({
+      caseContext: {
+        caseId: 'case-1', title: 'Case', status: 'OPEN', priority: 'HIGH',
+        evidence: [],
+        alerts: [{ id: 'alert-1', title: 'Suspicious login', severity: 'HIGH', createdAt: new Date('2026-01-01T00:00:00Z') }],
+      },
+    }));
+    expect(graph.nodes.find((n) => n.id === 'ALERT:alert-1')).toBeDefined();
+    expect(graph.edges.find((e) => e.type === 'HAS_ALERT' && e.from === 'CASE:case-1' && e.to === 'ALERT:alert-1')).toBeDefined();
+  });
+
+  it('26. repeated generation with case/evidence/alert/recipient data produces the same node/edge IDs (deterministic)', () => {
+    const input = baseInput({
+      recipients: [{ headerName: 'to', address: 'victim@example.com' }],
+      caseContext: {
+        caseId: 'case-1', title: 'Case', status: 'OPEN', priority: 'HIGH',
+        evidence: [{ id: 'ev-1', type: 'LOG', sha256: null, filename: 'x', collectionTime: new Date() }],
+        alerts: [{ id: 'alert-1', title: 'A', severity: 'HIGH', createdAt: new Date() }],
+      },
+    });
+    const idsOf = (g: ReturnType<typeof buildEvidenceGraph>) => ({
+      nodeIds: g.nodes.map((n) => n.id).sort(),
+      edgeIds: g.edges.map((e) => e.id).sort(),
+    });
+    expect(idsOf(buildEvidenceGraph(input))).toEqual(idsOf(buildEvidenceGraph(input)));
+  });
+
+  it('27. a DOMAIN node includes RDAP domain intelligence only when a real lookup result exists for its registrable domain', () => {
+    const withIntel = buildEvidenceGraph(baseInput({
+      urls: [{ id: 'u1', url: 'https://mail.evil-example.com/a', normalizedUrl: 'https://mail.evil-example.com/a', domain: 'mail.evil-example.com', source: 'TEXT', indicators: [] }],
+      domainIntelligence: [{
+        registrableDomain: 'evil-example.com',
+        status: 'SUCCESS',
+        registrar: 'Evil Registrar LLC',
+        registrationDate: new Date('2020-01-01T00:00:00Z'),
+        expirationDate: new Date('2030-01-01T00:00:00Z'),
+        nameservers: ['ns1.evil-example.com'],
+        domainStatus: ['clientTransferProhibited'],
+      }],
+    }));
+    const domainNode = withIntel.nodes.find((n) => n.type === 'DOMAIN')!;
+    expect(domainNode.data.domainIntelligence).toMatchObject({ status: 'SUCCESS', registrar: 'Evil Registrar LLC' });
+
+    // No RDAP data persisted for this domain yet — never fabricated.
+    const withoutIntel = buildEvidenceGraph(baseInput({
+      urls: [{ id: 'u2', url: 'https://unknown.example.org/x', normalizedUrl: 'https://unknown.example.org/x', domain: 'unknown.example.org', source: 'TEXT', indicators: [] }],
+      domainIntelligence: [],
+    }));
+    const domainNode2 = withoutIntel.nodes.find((n) => n.type === 'DOMAIN')!;
+    expect(domainNode2.data.domainIntelligence).toBeNull();
   });
 });

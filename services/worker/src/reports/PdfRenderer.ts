@@ -63,8 +63,15 @@ export function renderReportPdf(data: ReportData): Promise<Buffer> {
       }
     }
 
-    // 3. Email Metadata
-    h1('3. Email Metadata');
+    // 3. Case / Email Overview
+    h1('3. Case / Email Overview');
+    if (data.emailOverview.caseContext) {
+      kv('Linked Case', s(data.emailOverview.caseContext.title));
+      kv('Case Status', s(data.emailOverview.caseContext.status));
+      kv('Case Priority', s(data.emailOverview.caseContext.priority));
+    } else {
+      p('This email is not linked to a case.');
+    }
     kv('Subject', s(data.emailOverview.subject));
     kv('Sender', s(data.emailOverview.sender));
     kv('Recipients', data.emailOverview.recipients.length > 0 ? data.emailOverview.recipients.map(s).join(', ') : 'N/A');

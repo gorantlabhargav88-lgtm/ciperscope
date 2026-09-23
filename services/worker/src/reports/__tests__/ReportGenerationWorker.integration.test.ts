@@ -99,6 +99,36 @@ describe('ReportGenerationWorker (Integration)', () => {
     expect(artifactBuffer.subarray(0, 5).toString('utf8')).toBe('%PDF-');
   });
 
+  it('generates a COMPLETED report for a case-linked email, fetching the real case scoped to the organization', async () => {
+    const c = await prisma.case.create({ data: { organizationId: orgA, title: 'Report Worker Linked Case' } });
+    const linkedEmail = await prisma.email.create({
+      data: {
+        organizationId: orgA,
+        caseId: c.id,
+        sha256: crypto.randomBytes(32).toString('hex'),
+        analysisStatus: 'COMPLETED',
+        senderAddress: 'attacker@evil.example',
+      },
+    });
+    await prisma.emailAddress.create({
+      data: { emailId: linkedEmail.id, headerName: 'to', address: 'victim@example.com', raw: 'victim@example.com' },
+    });
+
+    const report = await prisma.forensicReport.create({
+      data: { organizationId: orgA, emailId: linkedEmail.id, reportVersion: '1.0' },
+    });
+    await worker.generate(report.id, orgA);
+
+    const updated = await prisma.forensicReport.findUniqueOrThrow({ where: { id: report.id } });
+    expect(updated.status).toBe('COMPLETED');
+    expect(updated.sha256).toMatch(/^[a-f0-9]{64}$/);
+
+    await prisma.forensicReport.deleteMany({ where: { emailId: linkedEmail.id } });
+    await prisma.emailAddress.deleteMany({ where: { emailId: linkedEmail.id } });
+    await prisma.email.deleteMany({ where: { id: linkedEmail.id } });
+    await prisma.case.deleteMany({ where: { id: c.id } });
+  });
+
   it('refuses to generate a report for a report ID belonging to a different organization', async () => {
     const report = await prisma.forensicReport.create({
       data: { organizationId: orgA, emailId: emailAId, reportVersion: '2.0' },

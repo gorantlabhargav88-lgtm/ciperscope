@@ -27,6 +27,9 @@ export interface ReportInput {
     riskScore: number | null;
   };
   addresses: Array<{ address: string; type: string }>;
+  // Present only when the email is linked to a Case (Email.caseId) — never
+  // fabricated for an unlinked email.
+  caseContext: { id: string; title: string; status: string; priority: string } | null;
   relayHops: Array<{ sourceIp: string | null; hopOrder: number; receivedHeader: string; timestamp: Date | null }>;
   spf: Array<{ result: string; domain: string | null; evaluatedIp: string | null; explanation: string | null }>;
   dkim: Array<{ result: string; domain: string | null; selector: string | null; explanation: string | null }>;
@@ -76,6 +79,7 @@ export interface ReportData {
     messageId: string | null;
     ingestedAt: string;
     relayHops: Array<{ hopOrder: number; sourceIp: string | null; header: string }>;
+    caseContext: { id: string; title: string; status: string; priority: string } | null;
   };
   authentication: {
     spf: Array<{ result: string; domain: string | null; evaluatedIp: string | null; explanation: string | null }>;
@@ -169,6 +173,9 @@ export function buildReportData(input: ReportInput): ReportData {
     limitations.push(`Risk assessment unavailable — analysisStatus is ${input.email.analysisStatus}, not COMPLETED.`);
   }
 
+  // --- Case linkage ---
+  if (!input.caseContext) limitations.push('This email is not linked to a case; no case context is available.');
+
   // --- Authentication ---
   if (!input.dmarc) limitations.push('No DMARC record/verification was observed for this email.');
   if (input.spf.length === 0) limitations.push('No SPF verification was performed or recorded.');
@@ -259,13 +266,17 @@ export function buildReportData(input: ReportInput): ReportData {
     emailOverview: {
       subject: input.email.subject,
       sender: input.email.senderAddress,
-      recipients: input.addresses.filter((a) => a.type === 'TO').map((a) => a.address),
+      // `type` is the raw EmailAddress.headerName as persisted by the
+      // parser (lowercase, e.g. 'to'/'from'/'cc') — matched
+      // case-insensitively rather than against a literal 'TO'.
+      recipients: input.addresses.filter((a) => a.type.toLowerCase() === 'to').map((a) => a.address),
       replyTo: input.email.replyTo,
       returnPath: input.email.returnPath,
       date: input.email.date ? input.email.date.toISOString() : null,
       messageId: input.email.messageId,
       ingestedAt: input.email.createdAt.toISOString(),
       relayHops: input.relayHops.map((h) => ({ hopOrder: h.hopOrder, sourceIp: h.sourceIp, header: h.receivedHeader })),
+      caseContext: input.caseContext,
     },
     authentication: {
       spf: input.spf,

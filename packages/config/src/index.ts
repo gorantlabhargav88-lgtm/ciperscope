@@ -42,6 +42,10 @@ export const envSchema = z.object({
   // (geolocation becomes UNAVAILABLE, never fabricated).
   MAXMIND_ACCOUNT_ID: z.string().optional(),
   MAXMIND_LICENSE_KEY: z.string().optional(),
+  // Phase L: RDAP domain intelligence. RDAP itself needs no credentials
+  // (public protocol), but this lets ops disable outbound RDAP lookups
+  // entirely; when unset/true, RDAP is used. See DomainIntelConfig.ts.
+  RDAP_ENABLED: z.enum(['true', 'false']).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

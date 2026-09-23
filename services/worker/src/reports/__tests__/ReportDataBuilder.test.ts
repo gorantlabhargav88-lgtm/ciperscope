@@ -20,6 +20,7 @@ function baseInput(overrides: Partial<ReportInput> = {}): ReportInput {
       riskScore: 80,
     },
     addresses: [{ address: 'victim@example.com', type: 'TO' }],
+    caseContext: null,
     relayHops: [],
     spf: [],
     dkim: [],
@@ -50,6 +51,31 @@ describe('buildReportData', () => {
     expect(data).toHaveProperty('riskFactors');
     expect(data).toHaveProperty('chainOfCustody');
     expect(data).toHaveProperty('limitations');
+  });
+
+  it('recipients match real persisted EmailAddress.headerName values, which are lowercase (e.g. "to"), not uppercase "TO"', () => {
+    const data = buildReportData(
+      baseInput({
+        addresses: [
+          { address: 'victim@example.com', type: 'to' },
+          { address: 'attacker@example.com', type: 'from' },
+          { address: 'cc-recipient@example.com', type: 'cc' },
+        ],
+      })
+    );
+    expect(data.emailOverview.recipients).toEqual(['victim@example.com']);
+  });
+
+  it('case context is passed through honestly — present only when the email is actually linked to a case', () => {
+    const linked = buildReportData(
+      baseInput({ caseContext: { id: 'case-1', title: 'Phishing Campaign X', status: 'OPEN', priority: 'HIGH' } })
+    );
+    expect(linked.emailOverview.caseContext).toEqual({ id: 'case-1', title: 'Phishing Campaign X', status: 'OPEN', priority: 'HIGH' });
+    expect(linked.limitations.some((l) => l.includes('not linked to a case'))).toBe(false);
+
+    const unlinked = buildReportData(baseInput({ caseContext: null }));
+    expect(unlinked.emailOverview.caseContext).toBeNull();
+    expect(unlinked.limitations.some((l) => l.includes('not linked to a case'))).toBe(true);
   });
 
   it('never fabricates missing intelligence — records honest limitations instead', () => {

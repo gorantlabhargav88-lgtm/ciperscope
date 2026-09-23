@@ -19,11 +19,15 @@ import type { EvidenceGraphResponse, EvidenceGraphNode, EvidenceGraphNodeType } 
  */
 
 const COLUMN_ORDER: EvidenceGraphNodeType[] = [
-  'EMAIL', 'IP', 'ATTACHMENT', 'URL', 'GEOLOCATION', 'DOMAIN', 'FILE_HASH', 'QR_CODE', 'APK', 'CTI_INDICATOR', 'THREAT_INDICATOR',
+  'CASE', 'EMAIL', 'SENDER', 'RECIPIENT', 'IP', 'ATTACHMENT', 'URL', 'GEOLOCATION', 'DOMAIN',
+  'FILE_HASH', 'QR_CODE', 'APK', 'CTI_INDICATOR', 'THREAT_INDICATOR', 'EVIDENCE', 'ALERT',
 ];
 
 const NODE_COLORS: Record<EvidenceGraphNodeType, string> = {
+  CASE: '#c084fc',
   EMAIL: '#818cf8',
+  SENDER: '#fda4af',
+  RECIPIENT: '#7dd3fc',
   IP: '#38bdf8',
   DOMAIN: '#34d399',
   URL: '#fbbf24',
@@ -34,6 +38,8 @@ const NODE_COLORS: Record<EvidenceGraphNodeType, string> = {
   CTI_INDICATOR: '#ef4444',
   GEOLOCATION: '#60a5fa',
   THREAT_INDICATOR: '#f43f5e',
+  EVIDENCE: '#facc15',
+  ALERT: '#fb7185',
 };
 
 const COLUMN_WIDTH = 170;

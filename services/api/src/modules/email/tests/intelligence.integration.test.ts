@@ -74,10 +74,20 @@ describe('GET /:emailId/intelligence (Integration)', () => {
       data: { indicatorId: indicator.id, provider: 'AbuseIPDB', verdict: 'SUSPICIOUS', confidence: 42, observationTime: new Date() },
     });
 
+    // Phase N — a PTR observation persisted by the worker's CTI pipeline,
+    // scoped to this exact email.
+    await prisma.dnsObservation.create({
+      data: {
+        emailId: emailAId, queryName: '203.0.113.50', recordType: 'PTR',
+        response: JSON.stringify(['relay.example.net']), rcode: 'NOERROR', durationMs: 14,
+      },
+    });
+
     await server.ready();
   });
 
   afterAll(async () => {
+    await prisma.dnsObservation.deleteMany({ where: { emailId: emailAId } });
     await prisma.threatIntelObservation.deleteMany({ where: { indicator: { value: '203.0.113.50' } } });
     await prisma.indicator.deleteMany({ where: { value: '203.0.113.50' } });
     await prisma.geoLocation.deleteMany({ where: { ipAddress: '203.0.113.50' } });
@@ -108,6 +118,18 @@ describe('GET /:emailId/intelligence (Integration)', () => {
     expect(publicEntry.reputation).toEqual(
       expect.objectContaining({ verdict: 'SUSPICIOUS', confidence: 42, provider: 'AbuseIPDB' })
     );
+    expect(publicEntry.reverseDns).toEqual(['relay.example.net']);
+  });
+
+  it('never fabricates reverseDns for an IP with no persisted PTR observation', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/emails/${emailAId}/intelligence`,
+      headers: { 'x-organization-id': orgA },
+    });
+
+    const privateEntry = res.json().ipIntelligence.find((e: any) => e.ip === '10.0.0.5');
+    expect(privateEntry.reverseDns).toBeNull();
   });
 
   it('classifies a private IP correctly and never fabricates geolocation/reputation for it', async () => {
@@ -143,7 +165,47 @@ describe('GET /:emailId/intelligence (Integration)', () => {
       headers: { 'x-organization-id': orgA },
     });
 
-    expect(res.json().domains).toEqual(expect.arrayContaining([{ domain: 'example.com', urlCount: 1 }]));
+    expect(res.json().domains).toEqual(expect.arrayContaining([
+      expect.objectContaining({ domain: 'example.com', urlCount: 1 }),
+    ]));
+  });
+
+  it('domains have no RDAP intelligence attached when none has been persisted yet — never fabricated', async () => {
+    const res = await server.inject({
+      method: 'GET',
+      url: `/api/v1/emails/${emailAId}/intelligence`,
+      headers: { 'x-organization-id': orgA },
+    });
+
+    const entry = res.json().domains.find((d: any) => d.domain === 'example.com');
+    expect(entry.domainIntelligence).toBeNull();
+  });
+
+  it('attaches persisted RDAP domain intelligence, read-only (no live RDAP call from this route)', async () => {
+    await prisma.domainIntelligence.upsert({
+      where: { registrableDomain: 'example.com' },
+      create: {
+        registrableDomain: 'example.com', status: 'SUCCESS', registrar: 'Test Registrar, Inc.',
+        registrationDate: new Date('1995-08-14T00:00:00Z'), expirationDate: new Date('2030-08-13T00:00:00Z'),
+        nameservers: ['a.iana-servers.net', 'b.iana-servers.net'], domainStatus: ['clientTransferProhibited'], rdapSource: 'https://rdap.verisign.com/com/v1/',
+      },
+      update: {},
+    });
+
+    try {
+      const res = await server.inject({
+        method: 'GET',
+        url: `/api/v1/emails/${emailAId}/intelligence`,
+        headers: { 'x-organization-id': orgA },
+      });
+      const entry = res.json().domains.find((d: any) => d.domain === 'example.com');
+      expect(entry.domainIntelligence).toEqual(expect.objectContaining({
+        registrableDomain: 'example.com', status: 'SUCCESS', registrar: 'Test Registrar, Inc.',
+        nameservers: ['a.iana-servers.net', 'b.iana-servers.net'],
+      }));
+    } finally {
+      await prisma.domainIntelligence.deleteMany({ where: { registrableDomain: 'example.com' } });
+    }
   });
 
   it('tenant isolation — a different organization cannot view this email\'s intelligence', async () => {

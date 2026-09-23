@@ -1,5 +1,12 @@
 generator client {
   provider = "prisma-client-js"
+  // "native" covers local dev; "linux-musl-openssl-3.0.x" is needed for the
+  // node:20-alpine Docker runtime images (services/api/Dockerfile,
+  // services/worker/Dockerfile) — that Alpine version ships OpenSSL 3.x
+  // only (no libssl.so.1.1 compat package available), so the default
+  // musl engine binary (linked against OpenSSL 1.1) fails to load at
+  // container startup with "Error loading shared library libssl.so.1.1".
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -515,6 +522,42 @@ model GeoLocation {
   updatedAt DateTime @updatedAt
 }
 
+enum RdapLookupStatus {
+  SUCCESS
+  NOT_FOUND
+  PRIVATE_OR_RESERVED
+  MALFORMED_DOMAIN
+  PROVIDER_TIMEOUT
+  PROVIDER_ERROR
+  NOT_CONFIGURED
+}
+
+// Phase L — RDAP domain intelligence. Keyed by the registrable (public
+// suffix + one label) domain, never a full hostname/subdomain — RDAP
+// registries only resolve registrable domains, and caching by hostname
+// would fragment the cache across every subdomain of the same real
+// registration. Global/not tenant-scoped, same rationale as GeoLocation:
+// domain registration data is public information, not tenant-specific
+// evidence. `status` distinguishes a genuine RDAP result from every
+// non-fabricated reason one isn't available — never invented.
+model DomainIntelligence {
+  id                String           @id @default(uuid())
+  registrableDomain String           @unique
+  registrar         String?
+  registrationDate  DateTime?
+  expirationDate    DateTime?
+  nameservers       Json?
+  domainStatus      Json?
+  rdapSource        String?
+  status            RdapLookupStatus @default(NOT_CONFIGURED)
+  errorMessage      String?
+  fetchedAt         DateTime         @default(now())
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@index([status])
+}
+
 model MLInference {
   id                   String       @id @default(uuid())
   emailId              String
@@ -595,6 +638,12 @@ model CampaignEmail {
 
 model Evidence {
   id               String                @id @default(uuid())
+  // Denormalized from case.organizationId (same rationale as
+  // ForensicReport.organizationId, see its own comment below): lets every
+  // query enforce tenant isolation directly on Evidence without requiring a
+  // join through Case, and gives the Phase-I evidence model a first-class
+  // tenant boundary independent of the case relation.
+  organizationId   String
   caseId           String
   type             EvidenceType
   storageKey       String
@@ -605,11 +654,24 @@ model Evidence {
   status           EvidenceStatus        @default(ACTIVE)
   collectionTime   DateTime              @default(now())
   collectedById    String?
-  blockchainAnchor BlockchainAnchor?
+  // Provenance: which subsystem produced this evidence (e.g.
+  // 'MANUAL_UPLOAD', 'EMAIL_INGESTION', 'THREAT_ANALYSIS') — distinct from
+  // collectedById (the human actor, when there is one). Null for evidence
+  // predating this field.
+  sourceSystem     String?
+  // Phase M — set exactly once, the moment this evidence is selected into a
+  // batch (BlockchainAnchor), and never cleared. This is the idempotency
+  // guard against double-anchoring: batch selection is a single UPDATE
+  // ... WHERE anchorId IS NULL, so two concurrent workers can never select
+  // the same evidence into two different batches.
+  anchorId         String?
+  anchor           BlockchainAnchor?     @relation(fields: [anchorId], references: [id])
   custodyEvents    ChainOfCustodyEvent[]
   case             Case                  @relation(fields: [caseId], references: [id])
 
   @@index([caseId])
+  @@index([organizationId])
+  @@index([anchorId])
 }
 
 model ChainOfCustodyEvent {
@@ -620,6 +682,13 @@ model ChainOfCustodyEvent {
   description     String?
   previousEventId String?              @unique
   timestamp       DateTime             @default(now())
+  // Phase M — SHA256(previousEventHash ?? 'GENESIS' + canonical event
+  // fields), computed by services/api/src/utils/custodyChain.ts at write
+  // time. Null for events created before this field existed — verification
+  // treats those chains as INCOMPLETE (never silently "valid"), never
+  // retroactively computed after the fact (that would defeat the point:
+  // the hash must be committed at the moment of the event).
+  eventHash       String?
   actor           User?                @relation(fields: [actorId], references: [id])
   evidence        Evidence             @relation(fields: [evidenceId], references: [id])
   previous        ChainOfCustodyEvent? @relation("CustodyChain", fields: [previousEventId], references: [id], onDelete: Restrict)
@@ -628,19 +697,38 @@ model ChainOfCustodyEvent {
   @@index([evidenceId])
 }
 
+// Phase M — one row per anchored BATCH of evidence (Merkle root over
+// multiple evidence hashes), not one row per evidence item — the original
+// 1:1-with-Evidence shape was dead schema with zero supporting code (see
+// Phase I discovery) and couldn't represent batching at all, so it's
+// evolved here rather than duplicated. Tenant-scoped: a batch's Merkle
+// tree must never mix evidence from different organizations, unlike
+// GeoLocation/DomainIntelligence which are genuinely global public data.
 model BlockchainAnchor {
-  id              String                 @id @default(uuid())
-  evidenceId      String                 @unique
-  network         String                 @default("HyperledgerFabric")
-  transactionId   String?                @unique
-  blockNumber     Int?
-  status          BlockchainAnchorStatus @default(PENDING)
-  errorDetails    String?
-  anchorTimestamp DateTime?
-  createdAt       DateTime               @default(now())
-  updatedAt       DateTime               @updatedAt
-  evidence        Evidence               @relation(fields: [evidenceId], references: [id])
+  id             String                 @id @default(uuid())
+  organizationId String
+  // Idempotency key for this exact batch (see EvidenceBatchingService) —
+  // derived from organizationId + the ordered set of evidence hashes +
+  // the resulting Merkle root, so retrying/duplicating a job can never
+  // create a second anchor for the same batch.
+  batchKey       String                 @unique
+  merkleRoot     String
+  // Ordered evidence IDs — this exact order is what the Merkle tree was
+  // built from, and is required to reconstruct/verify it later.
+  evidenceIds    Json
+  evidenceCount  Int
+  hashAlgorithm  String                 @default("SHA-256")
+  status         BlockchainAnchorStatus @default(HASHED)
+  network        String?
+  transactionId  String?
+  blockNumber    Int?
+  errorDetails   String?
+  anchoredAt     DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  evidence       Evidence[]
 
+  @@index([organizationId])
   @@index([status])
 }
 
@@ -901,12 +989,21 @@ enum CustodyAction {
   ACCESSED
 }
 
+// Phase M — was dead schema (PENDING/SUBMITTED/CONFIRMED/VERIFICATION_FAILED,
+// zero supporting code, confirmed in the Phase I discovery pass); redefined
+// to the batch lifecycle this phase actually implements. HASHED: evidence
+// hashes computed, not yet batched. BATCHED: Merkle root built, evidence
+// linked to this anchor row. ANCHORED: a configured external blockchain
+// provider confirmed a real transaction. NOT_CONFIGURED: no provider is
+// configured — the batch/Merkle/hash work is still real and persisted,
+// only the external anchor step was skipped, honestly. FAILED: a
+// configured provider was attempted and it failed.
 enum BlockchainAnchorStatus {
-  PENDING
-  SUBMITTED
-  CONFIRMED
+  HASHED
+  BATCHED
+  ANCHORED
+  NOT_CONFIGURED
   FAILED
-  VERIFICATION_FAILED
 }
 
 enum AlertSeverity {

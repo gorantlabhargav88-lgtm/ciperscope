@@ -7,6 +7,7 @@ import rbacPlugin from '../plugins/rbac';
 import alertRoutes from '../modules/alert/alert.routes';
 import investigationRoutes from '../modules/investigation/investigation.routes';
 import evidenceRoutes from '../modules/evidence/evidence.routes';
+import { computeEvidenceHash, computeEventHash, buildMerkleRoot } from '@ciperscope/integrity';
 
 /**
  * Phase 10A — single-resource ownership/tenant-isolation coverage for
@@ -119,6 +120,7 @@ describe('Alert/Evidence/Investigation — cross-tenant resource ownership (Inte
 
     const evidenceA = await prisma.evidence.create({
       data: {
+        organizationId: orgA,
         caseId: caseAId,
         type: 'RAW_EMAIL',
         storageKey: 'orgA/private/evidence-a-secret-path.eml',
@@ -158,6 +160,15 @@ describe('Alert/Evidence/Investigation — cross-tenant resource ownership (Inte
       expect(res.statusCode).toBe(401);
     });
 
+    it('authenticated in the right org but missing EVIDENCE_READ -> 403', async () => {
+      const res = await server.inject({
+        method: 'GET',
+        url: `/api/v1/evidence/${evidenceAId}`,
+        headers: { authorization: `Bearer ${tokenAWithoutPerm}`, 'x-organization-id': orgA },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
     it("Tenant A's own resource, correct permission -> 200, and never leaks storageKey", async () => {
       const res = await server.inject({
         method: 'GET',
@@ -187,6 +198,113 @@ describe('Alert/Evidence/Investigation — cross-tenant resource ownership (Inte
         headers: { authorization: `Bearer ${tokenA}`, 'x-organization-id': orgA },
       });
       expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe('GET /api/v1/evidence/:evidenceId/integrity (Phase M)', () => {
+    it('unauthenticated request -> 401', async () => {
+      const res = await server.inject({ method: 'GET', url: `/api/v1/evidence/${evidenceAId}/integrity`, headers: { 'x-organization-id': orgA } });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('authenticated but missing EVIDENCE_READ -> 403', async () => {
+      const res = await server.inject({ method: 'GET', url: `/api/v1/evidence/${evidenceAId}/integrity`, headers: { authorization: `Bearer ${tokenAWithoutPerm}`, 'x-organization-id': orgA } });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it("Tenant B cannot verify Tenant A's evidence -> 404", async () => {
+      const res = await server.inject({ method: 'GET', url: `/api/v1/evidence/${evidenceAId}/integrity`, headers: { authorization: `Bearer ${tokenB}`, 'x-organization-id': orgB } });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it('evidence with no custody events -> INCOMPLETE, honest hash still returned, no storageKey/secrets leaked', async () => {
+      const res = await server.inject({ method: 'GET', url: `/api/v1/evidence/${evidenceAId}/integrity`, headers: { authorization: `Bearer ${tokenA}`, 'x-organization-id': orgA } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.status).toBe('INCOMPLETE');
+      expect(body.chainValid).toBe(false);
+      expect(body.merkleValid).toBe('NOT_BATCHED');
+      expect(typeof body.evidenceHash).toBe('string');
+      expect(body.evidenceHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(body)).not.toMatch(/storageKey|orgA\/private/i);
+    });
+
+    it('a real NOT_CONFIGURED batch (seeded as the worker would leave it) verifies honestly, matches worker Merkle output', async () => {
+      // Simulate exactly what services/worker's EvidenceBatchingService
+      // would have persisted — cannot call it directly here (cross-service
+      // import restriction), so this seeds the same shape via Prisma.
+      const custody = await prisma.chainOfCustodyEvent.create({
+        data: { evidenceId: evidenceAId, action: 'UPLOADED', actorId: userA, eventHash: 'placeholder-not-real-chain-hash' },
+      });
+      const anchor = await prisma.blockchainAnchor.create({
+        data: {
+          organizationId: orgA,
+          batchKey: `test-batch-${crypto.randomUUID()}`,
+          merkleRoot: 'test-merkle-root-value',
+          evidenceIds: [evidenceAId],
+          evidenceCount: 1,
+          status: 'NOT_CONFIGURED',
+        },
+      });
+      await prisma.evidence.update({ where: { id: evidenceAId }, data: { anchorId: anchor.id } });
+
+      try {
+        const res = await server.inject({ method: 'GET', url: `/api/v1/evidence/${evidenceAId}/integrity`, headers: { authorization: `Bearer ${tokenA}`, 'x-organization-id': orgA } });
+        expect(res.statusCode).toBe(200);
+        const body = res.json();
+        // Chain is INVALID here (eventHash was a placeholder, not a real
+        // computed chain hash) — proving the route genuinely recomputes and
+        // checks it rather than trusting the stored value blindly.
+        expect(body.chainValid).toBe(false);
+        // Merkle recomputation also fails since 'test-merkle-root-value'
+        // isn't a real SHA-256 Merkle root of the evidence's real hash —
+        // proving the route genuinely reconstructs the tree rather than
+        // trusting the stored merkleRoot blindly.
+        expect(body.merkleValid).toBe(false);
+        expect(body.anchorStatus).toBe('NOT_CONFIGURED');
+      } finally {
+        await prisma.evidence.update({ where: { id: evidenceAId }, data: { anchorId: null } });
+        await prisma.blockchainAnchor.delete({ where: { id: anchor.id } });
+        await prisma.chainOfCustodyEvent.delete({ where: { id: custody.id } });
+      }
+    });
+
+    it('a genuinely correct batch (real event hash + real Merkle root) verifies as NOT_CONFIGURED, which is honest SUCCESS behavior', async () => {
+      const evidenceRow = await prisma.evidence.findUniqueOrThrow({ where: { id: evidenceAId } });
+      const canonicalEvidence = {
+        id: evidenceRow.id, organizationId: evidenceRow.organizationId, caseId: evidenceRow.caseId, type: evidenceRow.type,
+        sha256: evidenceRow.sha256, filename: evidenceRow.filename, mimeType: evidenceRow.mimeType, sizeBytes: evidenceRow.sizeBytes,
+        collectionTime: evidenceRow.collectionTime,
+      };
+      const realEvidenceHash = computeEvidenceHash(canonicalEvidence);
+      const eventTimestamp = new Date();
+      const realEventHash = computeEventHash(null, { action: 'UPLOADED', actorId: userA, description: null, timestamp: eventTimestamp });
+      const realMerkleRoot = buildMerkleRoot([realEvidenceHash])!;
+
+      const custody = await prisma.chainOfCustodyEvent.create({
+        data: { evidenceId: evidenceAId, action: 'UPLOADED', actorId: userA, timestamp: eventTimestamp, eventHash: realEventHash },
+      });
+      const anchor = await prisma.blockchainAnchor.create({
+        data: {
+          organizationId: orgA, batchKey: `test-batch-real-${crypto.randomUUID()}`, merkleRoot: realMerkleRoot,
+          evidenceIds: [evidenceAId], evidenceCount: 1, status: 'NOT_CONFIGURED',
+        },
+      });
+      await prisma.evidence.update({ where: { id: evidenceAId }, data: { anchorId: anchor.id } });
+
+      try {
+        const res = await server.inject({ method: 'GET', url: `/api/v1/evidence/${evidenceAId}/integrity`, headers: { authorization: `Bearer ${tokenA}`, 'x-organization-id': orgA } });
+        expect(res.statusCode).toBe(200);
+        const body = res.json();
+        expect(body.chainValid).toBe(true);
+        expect(body.merkleValid).toBe(true);
+        expect(body.status).toBe('NOT_CONFIGURED');
+        expect(body.evidenceHash).toBe(realEvidenceHash);
+      } finally {
+        await prisma.evidence.update({ where: { id: evidenceAId }, data: { anchorId: null } });
+        await prisma.blockchainAnchor.delete({ where: { id: anchor.id } });
+        await prisma.chainOfCustodyEvent.delete({ where: { id: custody.id } });
+      }
     });
   });
 

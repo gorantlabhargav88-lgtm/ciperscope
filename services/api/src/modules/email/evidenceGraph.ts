@@ -1,6 +1,17 @@
 /**
- * Phase I — deterministic Evidence Graph builder.
+ * Deterministic Evidence Graph builder.
  *
+ * Extended for Phase J (SENDER/RECIPIENT/CASE/EVIDENCE/ALERT nodes,
+ * EMAIL_SENT_FROM/EMAIL_SENT_TO/BELONGS_TO_CASE/EMAIL_GENERATED_EVIDENCE/
+ * EVIDENCE_SUPPORTS_FINDING/HAS_ALERT edges). Deliberately NOT implemented:
+ * a DOMAIN_RESOLVES_TO_IP edge — no A-record/DNS-resolution capability
+ * exists anywhere in this pipeline (DnsResolver only performs TXT/MX
+ * lookups for SPF/DKIM/DMARC and MX-based SPF mechanisms; see
+ * services/worker/src/verifier/DnsResolver.ts), so persisting that edge
+ * would mean inventing a domain→IP fact this system never actually
+ * observed. Adding it later requires a real A-record lookup step first.
+ *
+
  * A pure function over already-persisted evidence (no DB access, no
  * network calls, no external provider calls here — the route that calls
  * this has already fetched everything). Given the same input rows, it
@@ -24,14 +35,19 @@
  *   it were directly observed in the email.
  */
 
+import psl from 'psl';
+
 export type GraphNodeType =
   | 'EMAIL' | 'DOMAIN' | 'URL' | 'IP' | 'ATTACHMENT' | 'FILE_HASH'
-  | 'QR_CODE' | 'APK' | 'CTI_INDICATOR' | 'GEOLOCATION' | 'THREAT_INDICATOR';
+  | 'QR_CODE' | 'APK' | 'CTI_INDICATOR' | 'GEOLOCATION' | 'THREAT_INDICATOR'
+  | 'SENDER' | 'RECIPIENT' | 'EVIDENCE' | 'ALERT' | 'CASE';
 
 export type GraphEdgeType =
   | 'CONTAINS_URL' | 'HAS_ATTACHMENT' | 'RECEIVED_FROM_IP' | 'BELONGS_TO_DOMAIN'
   | 'HAS_HASH' | 'CONTAINS_QR' | 'DECODED_TO_URL' | 'IS_APK'
-  | 'OBSERVED_BY_CTI' | 'HAS_GEOLOCATION' | 'HAS_INDICATOR';
+  | 'OBSERVED_BY_CTI' | 'HAS_GEOLOCATION' | 'HAS_INDICATOR'
+  | 'EMAIL_SENT_FROM' | 'EMAIL_SENT_TO' | 'BELONGS_TO_CASE'
+  | 'EMAIL_GENERATED_EVIDENCE' | 'EVIDENCE_SUPPORTS_FINDING' | 'HAS_ALERT';
 
 export interface ProvenanceEntry {
   source: string;
@@ -87,6 +103,11 @@ const nodeId = {
   cti: (indicatorValue: string) => `CTI:${indicatorValue.toLowerCase()}`,
   geo: (ip: string) => `GEO:${ip}`,
   threatIndicator: (category: string) => `THREAT_INDICATOR:${category}`,
+  sender: (address: string) => `SENDER:${address.toLowerCase()}`,
+  recipient: (address: string) => `RECIPIENT:${address.toLowerCase()}`,
+  case: (caseId: string) => `CASE:${caseId}`,
+  evidence: (evidenceId: string) => `EVIDENCE:${evidenceId}`,
+  alert: (alertId: string) => `ALERT:${alertId}`,
 };
 
 class GraphBuilder {
@@ -181,7 +202,43 @@ export interface EvidenceGraphInput {
     threatIndicators: unknown;
   }>;
   geoLocations: Array<{ ipAddress: string; country: string | null; city: string | null; asn: string | null; isp: string | null; provider: string }>;
+  // Phase N — most-recent PTR observation per relay IP, keyed by IP
+  // (DnsObservation.queryName). hostnames is null when no PTR record exists
+  // or the lookup failed; attacker-influenceable, never a verified identity.
+  reverseDnsObservations: Array<{ ipAddress: string; hostnames: string[] | null }>;
   indicatorObservations: Array<{ value: string; type: string; verdict: string; confidence: number | null; provider: string; observationTime: Date }>;
+  // Phase L — keyed by registrable domain (what RDAP resolves), attached to
+  // the matching DOMAIN node's `data` when a URL's domain reduces to it.
+  domainIntelligence: Array<{
+    registrableDomain: string;
+    status: string;
+    registrar: string | null;
+    registrationDate: Date | null;
+    expirationDate: Date | null;
+    nameservers: unknown;
+    domainStatus: unknown;
+  }>;
+  recipients: Array<{ headerName: string; address: string | null }>;
+  // Present only when this email is linked to a Case (Email.caseId) — the
+  // graph never invents a case relationship for an unlinked email.
+  caseContext: {
+    caseId: string;
+    title: string;
+    status: string;
+    priority: string;
+    // Evidence/alerts belonging to the same case as this email — a real,
+    // already-persisted relationship (both are case-scoped), not a
+    // fabricated "this email produced this evidence" claim. Provenance on
+    // each edge makes this scoping explicit.
+    // Phase M — anchorStatus/merkleRoot are read directly from the
+    // Evidence/BlockchainAnchor rows (via a join in the route), never
+    // recomputed here — the dedicated GET /evidence/:id/integrity endpoint
+    // is the one place that does real hash/chain/Merkle verification, so
+    // the graph only surfaces already-persisted status, avoiding two
+    // inconsistent sources of integrity truth.
+    evidence: Array<{ id: string; type: string; sha256: string | null; filename: string | null; collectionTime: Date; anchorStatus: string | null; merkleRoot: string | null }>;
+    alerts: Array<{ id: string; title: string; severity: string; createdAt: Date }>;
+  } | null;
 }
 
 function asStringArray(value: unknown): string[] {
@@ -198,20 +255,42 @@ function asIndicatorEntries(value: unknown): Array<{ category: string; severity?
 export function buildEvidenceGraph(input: EvidenceGraphInput): EvidenceGraph {
   const g = new GraphBuilder(input.organizationId);
   const emailNodeId = nodeId.email(input.emailId);
+  const domainIntelByRegistrable = new Map(input.domainIntelligence.map((d) => [d.registrableDomain, d]));
 
   g.addNode(emailNodeId, 'EMAIL', input.senderAddress ?? input.emailId, { emailId: input.emailId }, {
     source: 'EMAIL_RECORD',
     sourceRecordId: input.emailId,
   });
 
+  // --- Sender / recipients ---
+  if (input.senderAddress) {
+    const senderId = nodeId.sender(input.senderAddress);
+    g.addNode(senderId, 'SENDER', input.senderAddress, { address: input.senderAddress }, {
+      source: 'EMAIL_RECORD',
+      sourceRecordId: input.emailId,
+    });
+    g.addEdge(emailNodeId, senderId, 'EMAIL_SENT_FROM', { source: 'EMAIL_RECORD', sourceRecordId: input.emailId });
+  }
+
+  for (const recipient of input.recipients) {
+    if (!recipient.address) continue;
+    const recipientId = nodeId.recipient(recipient.address);
+    g.addNode(recipientId, 'RECIPIENT', recipient.address, { address: recipient.address, headerName: recipient.headerName }, {
+      source: 'EMAIL_RECORD',
+      sourceRecordId: input.emailId,
+    });
+    g.addEdge(emailNodeId, recipientId, 'EMAIL_SENT_TO', { source: 'EMAIL_RECORD', sourceRecordId: input.emailId });
+  }
+
   // --- Relay IPs ---
   const geoByIp = new Map(input.geoLocations.map((g2) => [g2.ipAddress, g2]));
   const indicatorByValue = new Map(input.indicatorObservations.map((o) => [o.value.toLowerCase(), o]));
+  const reverseDnsByIp = new Map(input.reverseDnsObservations.map((r) => [r.ipAddress, r.hostnames]));
 
   for (const hop of input.relayHops) {
     if (!hop.sourceIp) continue;
     const ipId = nodeId.ip(hop.sourceIp);
-    g.addNode(ipId, 'IP', hop.sourceIp, { ip: hop.sourceIp, hopOrder: hop.hopOrder }, {
+    g.addNode(ipId, 'IP', hop.sourceIp, { ip: hop.sourceIp, hopOrder: hop.hopOrder, reverseDns: reverseDnsByIp.get(hop.sourceIp) ?? null }, {
       source: 'RECEIVED_HEADER',
       sourceRecordId: String(hop.hopOrder),
     });
@@ -257,7 +336,24 @@ export function buildEvidenceGraph(input: EvidenceGraphInput): EvidenceGraph {
 
     if (url.domain) {
       const domainId = nodeId.domain(url.domain);
-      g.addNode(domainId, 'DOMAIN', url.domain, { domain: url.domain }, { source: url.source, sourceRecordId: url.id });
+      const registrable = psl.get(url.domain.toLowerCase());
+      const intel = registrable ? domainIntelByRegistrable.get(registrable) : undefined;
+      g.addNode(domainId, 'DOMAIN', url.domain, {
+        domain: url.domain,
+        // Honest RDAP fields — only present when a real lookup has
+        // actually happened (see DomainIntelligence.status); never
+        // fabricated for a domain that hasn't been enriched yet.
+        domainIntelligence: intel
+          ? {
+              status: intel.status,
+              registrar: intel.registrar,
+              registrationDate: intel.registrationDate,
+              expirationDate: intel.expirationDate,
+              nameservers: intel.nameservers,
+              domainStatus: intel.domainStatus,
+            }
+          : null,
+      }, { source: url.source, sourceRecordId: url.id });
       g.addEdge(urlId, domainId, 'BELONGS_TO_DOMAIN', { source: url.source, sourceRecordId: url.id });
 
       const obs = indicatorByValue.get(url.domain.toLowerCase());
@@ -341,6 +437,58 @@ export function buildEvidenceGraph(input: EvidenceGraphInput): EvidenceGraph {
         sourceRecordId: att.id,
       });
       g.addEdge(attId, tiId, 'HAS_INDICATOR', { source: 'ATTACHMENT_ANALYSIS', sourceRecordId: att.id });
+    }
+  }
+
+  // --- Case / Evidence / Alerts (only when this email is linked to a case —
+  // never fabricated for an unlinked email) ---
+  if (input.caseContext) {
+    const { caseId, title, status, priority, evidence, alerts } = input.caseContext;
+    const caseNodeId = nodeId.case(caseId);
+    g.addNode(caseNodeId, 'CASE', title, { caseId, status, priority }, {
+      source: 'CASE_RECORD',
+      sourceRecordId: caseId,
+    });
+    g.addEdge(emailNodeId, caseNodeId, 'BELONGS_TO_CASE', { source: 'CASE_RECORD', sourceRecordId: caseId });
+
+    for (const ev of evidence) {
+      const evidenceNodeId = nodeId.evidence(ev.id);
+      g.addNode(evidenceNodeId, 'EVIDENCE', ev.filename ?? ev.type, {
+        evidenceType: ev.type,
+        filename: ev.filename,
+        // 'NOT_BATCHED' is an honest, explicit state — never omitted or
+        // fabricated as any of the real BlockchainAnchorStatus values.
+        anchorStatus: ev.anchorStatus ?? 'NOT_BATCHED',
+        merkleRoot: ev.merkleRoot,
+      }, {
+        source: 'CASE_EVIDENCE',
+        sourceRecordId: ev.id,
+        createdAt: ev.collectionTime.toISOString(),
+      });
+      // Case-scoped, not email-scoped: this evidence belongs to the same
+      // case as this email, which is the real relationship we can attest to
+      // — never claimed to have been literally extracted from this email.
+      g.addEdge(caseNodeId, evidenceNodeId, 'EMAIL_GENERATED_EVIDENCE', { source: 'CASE_EVIDENCE', sourceRecordId: ev.id });
+
+      // Only when the evidence's own SHA-256 genuinely matches an
+      // already-persisted FILE_HASH node from this email's attachments —
+      // a real, verifiable link, never inferred from anything else.
+      if (ev.sha256) {
+        const hashId = nodeId.hash(ev.sha256);
+        if (input.attachments.some((a) => a.sha256 && nodeId.hash(a.sha256) === hashId)) {
+          g.addEdge(evidenceNodeId, hashId, 'EVIDENCE_SUPPORTS_FINDING', { source: 'CASE_EVIDENCE', sourceRecordId: ev.id });
+        }
+      }
+    }
+
+    for (const alert of alerts) {
+      const alertNodeId = nodeId.alert(alert.id);
+      g.addNode(alertNodeId, 'ALERT', alert.title, { severity: alert.severity }, {
+        source: 'CASE_ALERT',
+        sourceRecordId: alert.id,
+        createdAt: alert.createdAt.toISOString(),
+      });
+      g.addEdge(caseNodeId, alertNodeId, 'HAS_ALERT', { source: 'CASE_ALERT', sourceRecordId: alert.id });
     }
   }
 

@@ -3195,6 +3195,12 @@ describe('Case API (Integration) - Real RBAC', () => {
       expect(data.sha256).toBe(payload.sha256);
       expect(data.status).toBe('ACTIVE');
 
+      // Provenance: organizationId is stamped directly (not only reachable
+      // via the case join) and the source subsystem is recorded honestly.
+      const persisted = await prisma.evidence.findUniqueOrThrow({ where: { id: data.id } });
+      expect(persisted.organizationId).toBe(orgId);
+      expect(persisted.sourceSystem).toBe('MANUAL_UPLOAD');
+
       // Verify custody event
       const custody = await prisma.chainOfCustodyEvent.findFirst({ where: { evidenceId: data.id } });
       expect(custody).toBeDefined();
@@ -3221,7 +3227,7 @@ describe('Case API (Integration) - Real RBAC', () => {
 
     it('3. Unique SHA256 constraint', async () => {
       await prisma.evidence.create({
-        data: { caseId: testCaseId, type: 'LOG', storageKey: 'key', sha256: 'b'.repeat(64), status: 'ACTIVE' }
+        data: { organizationId: orgId, caseId: testCaseId, type: 'LOG', storageKey: 'key', sha256: 'b'.repeat(64), status: 'ACTIVE' }
       });
 
       const res = await realServer.inject({
@@ -3236,8 +3242,8 @@ describe('Case API (Integration) - Real RBAC', () => {
     it('4. GET /evidence lists active evidence only', async () => {
       await prisma.evidence.createMany({
         data: [
-          { caseId: testCaseId, type: 'LOG', storageKey: '1', sha256: 'c'.repeat(64), status: 'ACTIVE', collectionTime: new Date(Date.now() - 1000) },
-          { caseId: testCaseId, type: 'LOG', storageKey: '2', sha256: 'd'.repeat(64), status: 'DELETED', collectionTime: new Date(Date.now() - 500) }
+          { organizationId: orgId, caseId: testCaseId, type: 'LOG', storageKey: '1', sha256: 'c'.repeat(64), status: 'ACTIVE', collectionTime: new Date(Date.now() - 1000) },
+          { organizationId: orgId, caseId: testCaseId, type: 'LOG', storageKey: '2', sha256: 'd'.repeat(64), status: 'DELETED', collectionTime: new Date(Date.now() - 500) }
         ]
       });
 
@@ -3254,7 +3260,7 @@ describe('Case API (Integration) - Real RBAC', () => {
 
     it('5. DELETE /evidence soft-deletes and prevents duplicate deletions', async () => {
       const e = await prisma.evidence.create({
-        data: { caseId: testCaseId, type: 'LOG', storageKey: '1', sha256: 'e'.repeat(64), status: 'ACTIVE' }
+        data: { organizationId: orgId, caseId: testCaseId, type: 'LOG', storageKey: '1', sha256: 'e'.repeat(64), status: 'ACTIVE' }
       });
 
       const res1 = await realServer.inject({
@@ -3277,7 +3283,7 @@ describe('Case API (Integration) - Real RBAC', () => {
 
     it('6. GET /custody lists chain of custody for evidence', async () => {
       const e = await prisma.evidence.create({
-        data: { caseId: testCaseId, type: 'LOG', storageKey: 'c1', sha256: 'f'.repeat(64), status: 'ACTIVE' }
+        data: { organizationId: orgId, caseId: testCaseId, type: 'LOG', storageKey: 'c1', sha256: 'f'.repeat(64), status: 'ACTIVE' }
       });
 
       await prisma.chainOfCustodyEvent.createMany({
@@ -3302,7 +3308,7 @@ describe('Case API (Integration) - Real RBAC', () => {
 
     it('7. Accessing evidence detail creates ACCESSED event', async () => {
       const e = await prisma.evidence.create({
-        data: { caseId: testCaseId, type: 'LOG', storageKey: 'c2', sha256: 'g'.repeat(64), status: 'ACTIVE' }
+        data: { organizationId: orgId, caseId: testCaseId, type: 'LOG', storageKey: 'c2', sha256: 'g'.repeat(64), status: 'ACTIVE' }
       });
 
       const res = await realServer.inject({
@@ -3315,6 +3321,96 @@ describe('Case API (Integration) - Real RBAC', () => {
       const custody = await prisma.chainOfCustodyEvent.findMany({ where: { evidenceId: e.id } });
       expect(custody.length).toBe(1);
       expect(custody[0].action).toBe('ACCESSED');
+    });
+
+    it('8. Integrity — the SHA-256 round-trips exactly from creation through retrieval, unmutated', async () => {
+      const content = `evidence-content-${crypto.randomUUID()}`;
+      const realHash = crypto.createHash('sha256').update(content).digest('hex');
+
+      const createRes = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/evidence`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { type: 'LOG', storageKey: 's3://bucket/integrity.log', sha256: realHash }
+      });
+      expect(createRes.statusCode).toBe(201);
+      const created = JSON.parse(createRes.payload);
+      expect(created.sha256).toBe(realHash);
+
+      const getRes = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/evidence/${created.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` }
+      });
+      expect(getRes.statusCode).toBe(200);
+      expect(JSON.parse(getRes.payload).sha256).toBe(realHash);
+
+      // Never mutated by any read-path side effect (e.g. the ACCESSED custody event above).
+      const persisted = await prisma.evidence.findUniqueOrThrow({ where: { id: created.id } });
+      expect(persisted.sha256).toBe(realHash);
+    });
+
+    it('9. Integrity — a malformed (non-64-hex) SHA-256 is rejected at creation, never persisted', async () => {
+      const res = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/evidence`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { type: 'LOG', storageKey: 's3://bucket/bad-hash.log', sha256: 'not-a-real-hash' }
+      });
+      expect(res.statusCode).toBe(400);
+
+      const count = await prisma.evidence.count({ where: { storageKey: 's3://bucket/bad-hash.log' } });
+      expect(count).toBe(0);
+    });
+
+    it('10. Tenant isolation on DELETE evidence (IDOR) — cannot delete another organization\'s evidence by guessing IDs', async () => {
+      // Evidence genuinely owned by otherOrgId's case.
+      const foreignEvidence = await prisma.evidence.create({
+        data: { organizationId: otherOrgId, caseId: otherCaseId, type: 'LOG', storageKey: 'foreign', sha256: 'h'.repeat(64), status: 'ACTIVE' },
+      });
+
+      // tokenWithPerm is authenticated and holds CASE_MANAGE_EVIDENCE — but
+      // only within orgId, not otherOrgId — and supplies orgId as the
+      // tenant context while targeting the foreign case/evidence pair.
+      const res = await realServer.inject({
+        method: 'DELETE',
+        url: `/api/v1/cases/${otherCaseId}/evidence/${foreignEvidence.id}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+      });
+      expect(res.statusCode).toBe(404);
+
+      const unchanged = await prisma.evidence.findUniqueOrThrow({ where: { id: foreignEvidence.id } });
+      expect(unchanged.status).toBe('ACTIVE');
+
+      await prisma.evidence.delete({ where: { id: foreignEvidence.id } });
+    });
+
+    it('11. Phase M — evidence creation computes a real genesis eventHash, and viewing it chains a second, different eventHash', async () => {
+      const createRes = await realServer.inject({
+        method: 'POST',
+        url: `/api/v1/cases/${testCaseId}/evidence`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+        payload: { type: 'LOG', storageKey: 's3://bucket/custody-chain-test.log', sha256: 'd'.repeat(64) },
+      });
+      expect(createRes.statusCode).toBe(201);
+      const evidenceId = createRes.json().id;
+
+      const genesis = await prisma.chainOfCustodyEvent.findFirstOrThrow({ where: { evidenceId, previousEventId: null } });
+      expect(genesis.eventHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(genesis.action).toBe('UPLOADED');
+
+      // Trigger a second custody event (GET detail auto-logs ACCESSED).
+      const getRes = await realServer.inject({
+        method: 'GET',
+        url: `/api/v1/cases/${testCaseId}/evidence/${evidenceId}`,
+        headers: { 'x-organization-id': orgId, 'authorization': `Bearer ${tokenWithPerm}` },
+      });
+      expect(getRes.statusCode).toBe(200);
+
+      const second = await prisma.chainOfCustodyEvent.findFirstOrThrow({ where: { evidenceId, previousEventId: genesis.id } });
+      expect(second.eventHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(second.eventHash).not.toBe(genesis.eventHash);
+      expect(second.action).toBe('ACCESSED');
     });
   });
 

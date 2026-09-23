@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { FileText, Download, Loader2, AlertTriangle, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { apiClient } from '../lib/apiClient';
 import type { ForensicReport, ForensicReportStatus } from '@ciperscope/types';
@@ -10,7 +10,7 @@ const STATUS_STYLES: Record<ForensicReportStatus, string> = {
   FAILED: 'bg-rose-500/20 text-rose-400 border-rose-500/30',
 };
 
-const STATUS_ICON: Record<ForensicReportStatus, JSX.Element> = {
+const STATUS_ICON: Record<ForensicReportStatus, ReactElement> = {
   QUEUED: <Clock className="w-3.5 h-3.5" />,
   GENERATING: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
   COMPLETED: <CheckCircle className="w-3.5 h-3.5" />,

@@ -3,8 +3,14 @@ import crypto from 'crypto';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-import { prisma } from '@ciperscope/database';
+// @ciperscope/config must be imported before @ciperscope/database — it
+// loads dotenv as a side effect, and PrismaClient's construction reads
+// DATABASE_URL from process.env immediately. Importing database first (as
+// this file previously did) only fails when OTHER test files in the same
+// full-suite run haven't already triggered the config import first —
+// flaky depending on file execution order, not a real env issue.
 import { env, encryptToken } from '@ciperscope/config';
+import { prisma } from '@ciperscope/database';
 import { LocalRawEmailStore } from '@ciperscope/storage';
 import { QueueManager } from '@ciperscope/queue';
 import { logger } from '@ciperscope/logger';

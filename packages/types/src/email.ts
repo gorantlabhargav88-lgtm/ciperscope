@@ -166,15 +166,18 @@ export interface EmailRiskAssessment {
   factors: EmailRiskFactor[];
 }
 
-// Phase I — GET /emails/:emailId/evidence-graph
+// GET /emails/:emailId/evidence-graph
 export type EvidenceGraphNodeType =
   | 'EMAIL' | 'DOMAIN' | 'URL' | 'IP' | 'ATTACHMENT' | 'FILE_HASH'
-  | 'QR_CODE' | 'APK' | 'CTI_INDICATOR' | 'GEOLOCATION' | 'THREAT_INDICATOR';
+  | 'QR_CODE' | 'APK' | 'CTI_INDICATOR' | 'GEOLOCATION' | 'THREAT_INDICATOR'
+  | 'SENDER' | 'RECIPIENT' | 'EVIDENCE' | 'ALERT' | 'CASE';
 
 export type EvidenceGraphEdgeType =
   | 'CONTAINS_URL' | 'HAS_ATTACHMENT' | 'RECEIVED_FROM_IP' | 'BELONGS_TO_DOMAIN'
   | 'HAS_HASH' | 'CONTAINS_QR' | 'DECODED_TO_URL' | 'IS_APK'
-  | 'OBSERVED_BY_CTI' | 'HAS_GEOLOCATION' | 'HAS_INDICATOR';
+  | 'OBSERVED_BY_CTI' | 'HAS_GEOLOCATION' | 'HAS_INDICATOR'
+  | 'EMAIL_SENT_FROM' | 'EMAIL_SENT_TO' | 'BELONGS_TO_CASE'
+  | 'EMAIL_GENERATED_EVIDENCE' | 'EVIDENCE_SUPPORTS_FINDING' | 'HAS_ALERT';
 
 export interface EvidenceGraphProvenanceEntry {
   source: string;

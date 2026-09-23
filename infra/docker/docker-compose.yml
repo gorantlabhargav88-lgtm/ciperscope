@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
@@ -49,7 +47,66 @@ services:
     volumes:
       - hf_cache:/home/mluser/.cache/huggingface
 
+  # API service. Build context is the repo root (not services/api) because
+  # the Dockerfile needs the whole pnpm workspace (pnpm-workspace.yaml,
+  # every packages/* dependency) to build — see services/api/Dockerfile.
+  api:
+    build:
+      context: ../..
+      dockerfile: services/api/Dockerfile
+    container_name: ciperscope_api
+    # Secrets/config (JWT_SECRET, CTI provider keys, etc.) come from the
+    # repo-root .env — never baked into the image. DATABASE_URL/REDIS_URL
+    # are overridden below to use the Docker-network service names instead
+    # of the host's localhost.
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: postgresql://ciperscope_user:ciperscope_password@postgres:5432/ciperscope_db?schema=public
+      REDIS_URL: redis://redis:6379
+      # Shared with the worker container via the raw_email_storage volume
+      # below — LocalRawEmailStore otherwise defaults to a path private to
+      # each container, so an email the API ingests would be invisible to
+      # the worker's parsing stage.
+      RAW_EMAIL_STORAGE_PATH: /app/data/emails
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - raw_email_storage:/app/data/emails
+    # Healthcheck is inherited from services/api/Dockerfile's own
+    # HEALTHCHECK instruction — one definition, not duplicated here.
+
+  # Worker service. Same build-context rationale as `api` above.
+  worker:
+    build:
+      context: ../..
+      dockerfile: services/worker/Dockerfile
+    container_name: ciperscope_worker
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: postgresql://ciperscope_user:ciperscope_password@postgres:5432/ciperscope_db?schema=public
+      REDIS_URL: redis://redis:6379
+      RAW_EMAIL_STORAGE_PATH: /app/data/emails
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - raw_email_storage:/app/data/emails
+    # Healthcheck is inherited from services/worker/Dockerfile's own
+    # HEALTHCHECK instruction — one definition, not duplicated here.
+
 volumes:
   postgres_data:
   redis_data:
   hf_cache:
+  raw_email_storage:

@@ -136,6 +136,7 @@ async function main() {
   if (!evidence) {
     evidence = await prisma.evidence.create({
       data: {
+        organizationId: devOrg.id,
         caseId: demoCase.id,
         type: EvidenceType.RAW_EMAIL,
         storageKey: 's3://ciperscope-dev/emails/demo-1.eml',
@@ -144,6 +145,7 @@ async function main() {
         sizeBytes: 15420,
         sha256: emailSha256,
         collectedById: adminUser.id,
+        sourceSystem: 'MANUAL_UPLOAD',
         custodyEvents: {
           create: {
             action: CustodyAction.COLLECTED,
@@ -155,19 +157,12 @@ async function main() {
     });
   }
 
-  // 6. Blockchain Anchor (Pending state for demo)
-  const existingAnchor = await prisma.blockchainAnchor.findUnique({
-    where: { evidenceId: evidence.id }
-  });
-  if (!existingAnchor) {
-    await prisma.blockchainAnchor.create({
-      data: {
-        evidenceId: evidence.id,
-        network: 'HyperledgerFabric',
-        status: 'PENDING',
-      },
-    });
-  }
+  // Phase M: no fake/demo BlockchainAnchor is seeded here anymore — a
+  // BlockchainAnchor now represents a real Merkle-batch integrity record
+  // (see services/worker/src/integrity/), and seeding a fabricated
+  // "PENDING" anchor with no real batch/Merkle root behind it is exactly
+  // the kind of invented blockchain state this phase's design forbids.
+  // Real anchor rows are created by the notarization service/job.
 
   // 7. Threat Intelligence (Marked as DEMO)
   const indicator = await prisma.indicator.upsert({

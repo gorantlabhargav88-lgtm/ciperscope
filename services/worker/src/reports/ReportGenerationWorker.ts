@@ -78,7 +78,7 @@ export class ReportGenerationWorker {
       throw new Error(`Email ${emailId} not found for organization ${organizationId}`);
     }
 
-    const [addresses, relayHops, spf, dkim, dmarc, urls, attachments, latestRiskAssessment, latestMlInference] =
+    const [addresses, relayHops, spf, dkim, dmarc, urls, attachments, latestRiskAssessment, latestMlInference, caseRecord] =
       await Promise.all([
         this.prisma.emailAddress.findMany({ where: { emailId } }),
         this.prisma.relayHop.findMany({ where: { emailId }, orderBy: { hopOrder: 'asc' } }),
@@ -93,6 +93,11 @@ export class ReportGenerationWorker {
           include: { factors: true },
         }),
         this.prisma.mLInference.findFirst({ where: { emailId }, orderBy: { createdAt: 'desc' } }),
+        // Only fetched when this email is actually linked to a case — never
+        // fabricated for an unlinked email.
+        email.caseId
+          ? this.prisma.case.findUnique({ where: { id: email.caseId, organizationId } })
+          : Promise.resolve(null),
       ]);
 
     // ThreatIntelObservation is keyed by Indicator (value/type), not
@@ -136,6 +141,9 @@ export class ReportGenerationWorker {
         riskScore: email.riskScore,
       },
       addresses: addresses.map((a) => ({ address: a.address ?? a.raw, type: a.headerName })),
+      caseContext: caseRecord
+        ? { id: caseRecord.id, title: caseRecord.title, status: caseRecord.status, priority: caseRecord.priority }
+        : null,
       relayHops: relayHops.map((h) => ({
         sourceIp: h.sourceIp,
         hopOrder: h.hopOrder,

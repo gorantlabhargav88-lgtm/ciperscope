@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import psl from 'psl';
 import { EmailIngestionService } from './ingestion.service';
 import { prisma } from '@ciperscope/database';
 import { LocalRawEmailStore, S3RawEmailStore, RawEmailStore } from '@ciperscope/storage';
@@ -11,6 +12,27 @@ import { multiRateLimit } from '../../middleware/rateLimiter';
 import { logAuditEvent } from '../../utils/audit';
 import { fastifyEmailParamsSchema, fastifyAttachmentParamsSchema } from '../../utils/validation';
 import { toPublicForensicReport } from '../report/reportSerializer';
+
+// Phase N: builds a most-recent-per-IP map from raw PTR DnsObservation rows
+// (response is a JSON-encoded string[] of hostnames, or null on failure/no
+// record). Shared by /:emailId/intelligence and /:emailId/evidence-graph.
+function buildReverseDnsByIp(ptrRows: Array<{ queryName: string; response: string | null }>): Map<string, string[] | null> {
+  const reverseDnsByIp = new Map<string, string[] | null>();
+  for (const row of ptrRows) {
+    if (reverseDnsByIp.has(row.queryName)) continue;
+    let hostnames: string[] | null = null;
+    if (row.response) {
+      try {
+        const parsed = JSON.parse(row.response);
+        if (Array.isArray(parsed)) hostnames = parsed;
+      } catch {
+        hostnames = null;
+      }
+    }
+    reverseDnsByIp.set(row.queryName, hostnames);
+  }
+  return reverseDnsByIp;
+}
 
 export default async function emailRoutes(server: FastifyInstance) {
   // Setup dependencies for the route
@@ -711,7 +733,7 @@ export default async function emailRoutes(server: FastifyInstance) {
 
     const uniqueIps = Array.from(new Set(email.relayHops.map(h => h.sourceIp).filter(Boolean) as string[]));
 
-    const [geoRows, indicatorRows] = await Promise.all([
+    const [geoRows, indicatorRows, ptrRows] = await Promise.all([
       prisma.geoLocation.findMany({
         where: { ipAddress: { in: uniqueIps } },
         select: {
@@ -721,9 +743,18 @@ export default async function emailRoutes(server: FastifyInstance) {
       }),
       uniqueIps.length > 0
         ? prisma.indicator.findMany({
-            where: { value: { in: uniqueIps } },
-            include: { observations: { orderBy: { observationTime: 'desc' }, take: 1 } }
-          })
+          where: { value: { in: uniqueIps } },
+          include: { observations: { orderBy: { observationTime: 'desc' }, take: 1 } }
+        })
+        : Promise.resolve([]),
+      // Phase N: reverse-DNS (PTR), scoped to THIS email — enriched
+      // asynchronously by the worker's CTI pipeline (cti-worker.ts). This
+      // route never performs a live DNS call itself.
+      uniqueIps.length > 0
+        ? prisma.dnsObservation.findMany({
+          where: { emailId: email.id, recordType: 'PTR', queryName: { in: uniqueIps } },
+          orderBy: { createdAt: 'desc' },
+        })
         : Promise.resolve([]),
     ]);
 
@@ -733,6 +764,10 @@ export default async function emailRoutes(server: FastifyInstance) {
         .filter(i => i.observations.length > 0)
         .map(i => [i.value, i.observations[0]])
     );
+    // Most-recent PTR observation per IP. The value is attacker-influenceable
+    // (see DnsResolver.resolvePtr) and is surfaced as raw forensic context,
+    // never as a verified hostname.
+    const reverseDnsByIp = buildReverseDnsByIp(ptrRows);
 
     // Each classification is deterministic and computed here, never stored
     // separately — RelayHop.sourceIp remains the single source of truth.
@@ -756,6 +791,7 @@ export default async function emailRoutes(server: FastifyInstance) {
           verdict: observation.verdict, confidence: observation.confidence,
           provider: observation.provider, observedAt: observation.observationTime,
         } : null,
+        reverseDns: reverseDnsByIp.has(ip) ? reverseDnsByIp.get(ip) : null,
       };
     });
 
@@ -766,7 +802,40 @@ export default async function emailRoutes(server: FastifyInstance) {
       if (!u.domain) continue;
       domainCounts.set(u.domain, (domainCounts.get(u.domain) ?? 0) + 1);
     }
-    const domains = Array.from(domainCounts.entries()).map(([domain, urlCount]) => ({ domain, urlCount }));
+
+    // Phase L: RDAP domain intelligence — read-only, already-persisted
+    // (enriched asynchronously by the worker's CTI pipeline, see
+    // services/worker/src/cti-worker.ts). This route never performs a live
+    // RDAP/network call itself. Keyed by registrable domain, since that's
+    // what RDAP resolves and what DomainIntelligence is stored against.
+    const registrableByDomain = new Map(Array.from(domainCounts.keys()).map((d) => [d, psl.get(d)]));
+    const registrableDomains = Array.from(new Set(Array.from(registrableByDomain.values()).filter((d): d is string => !!d)));
+    const domainIntelRows = registrableDomains.length > 0
+      ? await prisma.domainIntelligence.findMany({ where: { registrableDomain: { in: registrableDomains } } })
+      : [];
+    const domainIntelByRegistrable = new Map(domainIntelRows.map((d) => [d.registrableDomain, d]));
+
+    const domains = Array.from(domainCounts.entries()).map(([domain, urlCount]) => {
+      const registrable = registrableByDomain.get(domain) ?? null;
+      const intel = registrable ? domainIntelByRegistrable.get(registrable) : undefined;
+      return {
+        domain,
+        urlCount,
+        domainIntelligence: intel
+          ? {
+            registrableDomain: intel.registrableDomain,
+            status: intel.status,
+            registrar: intel.registrar,
+            registrationDate: intel.registrationDate,
+            expirationDate: intel.expirationDate,
+            nameservers: intel.nameservers,
+            domainStatus: intel.domainStatus,
+            rdapSource: intel.rdapSource,
+            fetchedAt: intel.fetchedAt,
+          }
+          : null,
+      };
+    });
 
     await logAuditEvent({
       action: 'EMAIL_INTELLIGENCE_VIEWED',
@@ -802,6 +871,7 @@ export default async function emailRoutes(server: FastifyInstance) {
         relayHops: true,
         urls: true,
         attachments: true,
+        addresses: true,
       }
     });
 
@@ -814,20 +884,47 @@ export default async function emailRoutes(server: FastifyInstance) {
     const uniqueHashes = Array.from(new Set(email.attachments.map(a => a.sha256).filter(Boolean) as string[]));
     const ctiLookupValues = [...uniqueIps, ...uniqueDomains, ...uniqueHashes];
 
-    const [geoRows, indicatorRows] = await Promise.all([
+    const registrableDomains = Array.from(new Set(uniqueDomains.map((d) => psl.get(d.toLowerCase())).filter((d): d is string => !!d)));
+
+    const [geoRows, indicatorRows, caseRecord, domainIntelRows, ptrRows] = await Promise.all([
       uniqueIps.length > 0
         ? prisma.geoLocation.findMany({
-            where: { ipAddress: { in: uniqueIps } },
-            select: { ipAddress: true, country: true, city: true, asn: true, isp: true, provider: true }
-          })
+          where: { ipAddress: { in: uniqueIps } },
+          select: { ipAddress: true, country: true, city: true, asn: true, isp: true, provider: true }
+        })
         : Promise.resolve([]),
       ctiLookupValues.length > 0
         ? prisma.indicator.findMany({
-            where: { value: { in: ctiLookupValues } },
-            include: { observations: { orderBy: { observationTime: 'desc' }, take: 1 } }
-          })
+          where: { value: { in: ctiLookupValues } },
+          include: { observations: { orderBy: { observationTime: 'desc' }, take: 1 } }
+        })
+        : Promise.resolve([]),
+      // Only fetched when this email is actually linked to a case — never
+      // fabricated for an unlinked email (see evidenceGraph.ts's doc comment).
+      email.caseId
+        ? prisma.case.findUnique({
+          where: { id: email.caseId, organizationId },
+          include: {
+            evidence: {
+              where: { organizationId },
+              select: { id: true, type: true, sha256: true, filename: true, collectionTime: true, anchor: { select: { status: true, merkleRoot: true } } },
+            },
+            alerts: { where: { organizationId }, select: { id: true, title: true, severity: true, createdAt: true } },
+          },
+        })
+        : Promise.resolve(null),
+      registrableDomains.length > 0
+        ? prisma.domainIntelligence.findMany({ where: { registrableDomain: { in: registrableDomains } } })
+        : Promise.resolve([]),
+      uniqueIps.length > 0
+        ? prisma.dnsObservation.findMany({
+          where: { emailId: email.id, recordType: 'PTR', queryName: { in: uniqueIps } },
+          orderBy: { createdAt: 'desc' },
+        })
         : Promise.resolve([]),
     ]);
+
+    const reverseDnsByIp = buildReverseDnsByIp(ptrRows);
 
     const indicatorObservations = indicatorRows
       .filter(i => i.observations.length > 0)
@@ -852,7 +949,34 @@ export default async function emailRoutes(server: FastifyInstance) {
         id: a.id, filename: a.filename, sha256: a.sha256, apkMetadata: a.apkMetadata, qrFindings: a.qrFindings, threatIndicators: a.threatIndicators,
       })),
       geoLocations: geoRows,
+      reverseDnsObservations: Array.from(reverseDnsByIp.entries()).map(([ipAddress, hostnames]) => ({ ipAddress, hostnames })),
       indicatorObservations,
+      domainIntelligence: domainIntelRows.map((d) => ({
+        registrableDomain: d.registrableDomain,
+        status: d.status,
+        registrar: d.registrar,
+        registrationDate: d.registrationDate,
+        expirationDate: d.expirationDate,
+        nameservers: d.nameservers,
+        domainStatus: d.domainStatus,
+      })),
+      recipients: email.addresses
+        .filter(a => ['to', 'cc', 'bcc'].includes(a.headerName.toLowerCase()))
+        .map(a => ({ headerName: a.headerName, address: a.address })),
+      caseContext: caseRecord
+        ? {
+          caseId: caseRecord.id,
+          title: caseRecord.title,
+          status: caseRecord.status,
+          priority: caseRecord.priority,
+          evidence: caseRecord.evidence.map((e) => ({
+            id: e.id, type: e.type, sha256: e.sha256, filename: e.filename, collectionTime: e.collectionTime,
+            anchorStatus: e.anchor?.status ?? null,
+            merkleRoot: e.anchor?.merkleRoot ?? null,
+          })),
+          alerts: caseRecord.alerts,
+        }
+        : null,
     });
 
     await logAuditEvent({

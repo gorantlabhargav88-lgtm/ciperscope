@@ -3,6 +3,8 @@ import { prisma } from '@ciperscope/database';
 import { fastifyCreateCaseBodySchema, fastifyCaseListQuerySchema, fastifyCaseParamsSchema, uuidSchema, fastifyUpdateCaseBodySchema, fastifyAssignCaseBodySchema, fastifyLinkCaseEmailBodySchema, fastifyCreateCaseNoteBodySchema, fastifyCaseNoteListQuerySchema, fastifyCaseEmailParamsSchema, fastifyCaseNoteParamsSchema, fastifyUpdateCaseNoteBodySchema, fastifyCaseTimelineQuerySchema, fastifyCaseEmailListQuerySchema, fastifyCaseHistoryQuerySchema, fastifyCreateEvidenceBodySchema, fastifyEvidenceListQuerySchema, fastifyEvidenceParamsSchema, fastifyCustodyListQuerySchema, fastifyCreateReportBodySchema, fastifyReportListQuerySchema, fastifyReportParamsSchema, fastifyAlertListQuerySchema, fastifyAlertParamsSchema, fastifyUpdateAlertBodySchema, fastifyInvestigationListQuerySchema, fastifyInvestigationParamsSchema, fastifyCreateInvestigationBodySchema, fastifyUpdateInvestigationBodySchema } from '../../utils/validation';
 import { z } from 'zod';
 import { AuditAction, logAuditEvent } from '../../utils/audit';
+import { appendCustodyEvent } from '../../utils/custodyChain';
+import { computeEventHash } from '@ciperscope/integrity';
 import { ctiProvider } from '@ciperscope/providers';
 import { calculateThreatPriority, ForensicTimelineEvent, ForensicTimelineCategory } from '@ciperscope/types';
 
@@ -1779,8 +1781,22 @@ export default async function caseRoutes(server: FastifyInstance) {
         });
         if (!c) throw new Error('CASE_NOT_FOUND');
 
+        // Genesis custody event for brand-new evidence — always the first
+        // event in its chain (previousEventHash is the fixed GENESIS
+        // marker inside computeEventHash), so no chain-tip lookup is
+        // needed here the way appendCustodyEvent() does for later events.
+        const uploadTimestamp = new Date();
+        const genesisActorId = request.user?.sub ?? null;
+        const genesisEventHash = computeEventHash(null, {
+          action: 'UPLOADED',
+          actorId: genesisActorId,
+          description: null,
+          timestamp: uploadTimestamp,
+        });
+
         const e = await tx.evidence.create({
           data: {
+            organizationId,
             caseId,
             type: body.type,
             storageKey: body.storageKey,
@@ -1790,11 +1806,18 @@ export default async function caseRoutes(server: FastifyInstance) {
             sha256: body.sha256,
             status: 'ACTIVE',
             collectionTime: body.collectionTime ? new Date(body.collectionTime) : new Date(),
-            collectedById: body.collectedById || null,
+            collectedById: body.collectedById || request.user?.sub || null,
+            // This route is the case-management evidence upload endpoint —
+            // a human attaching an existing artifact to a case, not an
+            // automated analysis pipeline — so the source subsystem is
+            // always a manual upload here.
+            sourceSystem: 'MANUAL_UPLOAD',
             custodyEvents: {
               create: {
                 action: 'UPLOADED',
-                actorId: request.user?.sub
+                actorId: genesisActorId,
+                timestamp: uploadTimestamp,
+                eventHash: genesisEventHash,
               }
             }
           }
@@ -1921,14 +1944,9 @@ export default async function caseRoutes(server: FastifyInstance) {
           throw new Error('EVIDENCE_NOT_FOUND');
         }
 
-        // Log ACCESSED custody event atomically
-        await tx.chainOfCustodyEvent.create({
-          data: {
-            evidenceId: e.id,
-            action: 'ACCESSED',
-            actorId: request.user?.sub
-          }
-        });
+        // Log ACCESSED custody event atomically, chained (eventHash) from
+        // the current chain tip.
+        await appendCustodyEvent(tx, { evidenceId: e.id, action: 'ACCESSED', actorId: request.user?.sub ?? null });
 
         return e;
       });

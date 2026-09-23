@@ -21,6 +21,7 @@ function baseInput(overrides: Partial<ReportInput> = {}): ReportInput {
       riskScore: 80,
     },
     addresses: [{ address: 'victim@example.com', type: 'TO' }],
+    caseContext: null,
     relayHops: [],
     spf: [],
     dkim: [],

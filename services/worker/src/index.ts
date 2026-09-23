@@ -24,6 +24,7 @@ import { WebhookNotificationService } from './notifications/NotificationService'
 import { processWebhookDelivery } from './notifications/WebhookDeliveryWorker';
 import { ReportGenerationJobPayload } from '@ciperscope/queue';
 import { ReportGenerationWorker } from './reports/ReportGenerationWorker';
+import { runNotarizationSweep } from './integrity/NotarizationSweep';
 
 const redisUrl = env.REDIS_URL;
 
@@ -800,6 +801,43 @@ export async function start() {
 
   gmailWatchRenewalWorker.on('failed', (job, err) => {
     logger.error({ jobId: job?.id, queue: 'gmail-watch-renewal', err }, 'Gmail Watch Renewal Job failed');
+  });
+
+  // Phase M: evidence notarization sweep. Batching is inherently
+  // cross-evidence (it accumulates multiple items before acting), so — like
+  // gmail-watch-renewal above — this is a periodic repeatable job rather
+  // than a per-event trigger. Never blocks or fails the primary email
+  // ingestion/analysis pipeline; every failure inside the sweep is caught
+  // and logged per-organization (see NotarizationSweep.ts).
+  const notarizationQueue = queueManager.getQueue('evidence-notarization');
+  await notarizationQueue.add(
+    'sweep',
+    {},
+    {
+      repeat: { every: 5 * 60 * 1000 }, // every 5 minutes
+      jobId: 'evidence-notarization-sweep-repeat'
+    }
+  );
+  const notarizationWorker = queueManager.createWorker<Record<string, never>, unknown>(
+    'evidence-notarization',
+    async () => {
+      return runWithContext(
+        { requestId: generateRequestId(), jobId: 'evidence-notarization-sweep', tenantId: 'system' },
+        async () => {
+          const result = await runNotarizationSweep(prisma);
+          return { success: true, ...result };
+        }
+      );
+    },
+    1
+  );
+
+  notarizationWorker.on('completed', (job, result) => {
+    logger.info({ jobId: job.id, queue: 'evidence-notarization', result }, 'Evidence notarization sweep completed');
+  });
+
+  notarizationWorker.on('failed', (job, err) => {
+    logger.error({ jobId: job?.id, queue: 'evidence-notarization', err }, 'Evidence notarization sweep failed');
   });
 
   logger.info('Workers registered and listening for jobs.');

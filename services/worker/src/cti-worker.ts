@@ -1,4 +1,4 @@
-import { CTIEnrichmentJob, validateCTIJob } from '@ciperscope/queue/src/cti-job';
+import { CTIEnrichmentJob, validateCTIJob } from '@ciperscope/queue';
 import { PrismaClient, IndicatorType } from '@ciperscope/database';
 import { ctiProvider } from '@ciperscope/providers';
 import { createLogger } from '@ciperscope/logger';
@@ -6,6 +6,9 @@ import { env } from '@ciperscope/config';
 import IORedis from 'ioredis';
 import { CtiConfig } from './cti/CtiConfig';
 import { classifyIp } from './analyzer/IpClassifier';
+import { DomainIntelConfig } from './domain-intel/DomainIntelConfig';
+import { validateAndReduceDomain } from './domain-intel/DomainValidation';
+import { DnsResolver } from './verifier/DnsResolver';
 
 const logger = createLogger('cti-worker');
 
@@ -19,6 +22,15 @@ function getGeoProvider() {
     geoProviderInstance = CtiConfig.getGeoProvider(geoRedis);
   }
   return geoProviderInstance;
+}
+
+let domainIntelProviderInstance: ReturnType<typeof DomainIntelConfig.getDomainIntelProvider> | null = null;
+function getDomainIntelProvider() {
+  if (!domainIntelProviderInstance) {
+    const domainIntelRedis = new IORedis(env.REDIS_URL, { maxRetriesPerRequest: null });
+    domainIntelProviderInstance = DomainIntelConfig.getDomainIntelProvider(domainIntelRedis);
+  }
+  return domainIntelProviderInstance;
 }
 
 export async function processCTIJob(jobData: CTIEnrichmentJob) {
@@ -139,6 +151,92 @@ export async function processCTIJob(jobData: CTIEnrichmentJob) {
         }
       } else {
         logger.info({ category: classification.category }, 'Skipping GeoIP lookup for a non-public IP');
+      }
+
+      // Phase N: reverse-DNS (PTR) enrichment, public IP indicators only.
+      // Best-effort and attacker-influenceable (see DnsResolver.resolvePtr
+      // doc comment) — never a verified identity, and its failure must
+      // never fail the primary CTI result already persisted above. Uses
+      // dns.reverse() directly (no HTTP), so there is no SSRF surface here.
+      if (classification.isRoutablePublic) {
+        try {
+          const dnsResolver = new DnsResolver(5, 2000);
+          await dnsResolver.resolvePtr(indicator);
+          const observations = dnsResolver.getObservations();
+          if (observations.length > 0) {
+            // Delete+recreate inside one transaction (mirrors
+            // AuthenticationVerifier's DnsObservation persistence pattern)
+            // so a concurrent re-run of this same job never leaves a
+            // duplicate or a momentarily-empty window.
+            await prisma.$transaction([
+              prisma.dnsObservation.deleteMany({
+                where: { emailId: jobData.emailId, queryName: indicator, recordType: 'PTR' },
+              }),
+              prisma.dnsObservation.createMany({
+                data: observations.map((obs) => ({
+                  emailId: jobData.emailId,
+                  queryName: obs.queryName,
+                  recordType: obs.recordType,
+                  response: obs.response,
+                  rcode: obs.rcode,
+                  durationMs: obs.durationMs,
+                })),
+              }),
+            ]);
+          }
+        } catch (ptrError: unknown) {
+          logger.warn({ error: ptrError instanceof Error ? ptrError.message : 'Unknown error' }, 'Reverse DNS (PTR) enrichment failed (non-fatal)');
+        }
+      }
+    }
+
+    // Phase L: RDAP domain intelligence, domain indicators only. Same
+    // best-effort shape as GeoIP above — never fails the primary CTI
+    // result, and never queries RDAP for a malformed/reserved domain.
+    if (indicatorType === 'DOMAIN') {
+      const validation = validateAndReduceDomain(indicator);
+      if (!validation.ok) {
+        logger.info({ domain: indicator, reason: validation.reason }, 'Skipping RDAP lookup for a non-registrable domain');
+        try {
+          await prisma.domainIntelligence.upsert({
+            where: { registrableDomain: indicator },
+            create: { registrableDomain: indicator, status: validation.reason },
+            update: { status: validation.reason, fetchedAt: new Date() },
+          });
+        } catch (upsertError: unknown) {
+          logger.warn({ error: upsertError instanceof Error ? upsertError.message : 'Unknown error' }, 'Failed to persist non-registrable domain status (non-fatal)');
+        }
+      } else {
+        try {
+          const outcome = await getDomainIntelProvider().lookup(validation.registrableDomain);
+          await prisma.domainIntelligence.upsert({
+            where: { registrableDomain: validation.registrableDomain },
+            create: {
+              registrableDomain: validation.registrableDomain,
+              status: outcome.status,
+              errorMessage: outcome.errorMessage ?? null,
+              registrar: outcome.data?.registrar ?? null,
+              registrationDate: outcome.data?.registrationDate ?? null,
+              expirationDate: outcome.data?.expirationDate ?? null,
+              nameservers: outcome.data?.nameservers ?? undefined,
+              domainStatus: outcome.data?.domainStatus ?? undefined,
+              rdapSource: outcome.data?.rdapSource ?? null,
+            },
+            update: {
+              status: outcome.status,
+              errorMessage: outcome.errorMessage ?? null,
+              registrar: outcome.data?.registrar ?? null,
+              registrationDate: outcome.data?.registrationDate ?? null,
+              expirationDate: outcome.data?.expirationDate ?? null,
+              nameservers: outcome.data?.nameservers ?? undefined,
+              domainStatus: outcome.data?.domainStatus ?? undefined,
+              rdapSource: outcome.data?.rdapSource ?? null,
+              fetchedAt: new Date(),
+            },
+          });
+        } catch (rdapError: unknown) {
+          logger.warn({ error: rdapError instanceof Error ? rdapError.message : 'Unknown error' }, 'RDAP enrichment failed (non-fatal)');
+        }
       }
     }
   } catch (dbError: unknown) {
