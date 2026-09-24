@@ -77,6 +77,68 @@ function layoutGraph(nodes: EvidenceGraphNode[]): Map<string, LayoutNode> {
   return positioned;
 }
 
+/**
+ * Reverse DNS (PTR) is attacker-influenceable, honest forensic context —
+ * never presented as a verified hostname (see email.routes.ts's Phase N
+ * comment and evidenceGraph.ts's node data). Shown only when a lookup has
+ * actually happened; "Not resolved" for a real null, never fabricated.
+ */
+function IpNodeDetail({ data }: { data: Record<string, unknown> }) {
+  const reverseDns = data.reverseDns as string[] | null | undefined;
+  return (
+    <div className="border-t border-slate-800 pt-2">
+      <div className="text-slate-500 mb-1">Reverse DNS (PTR)</div>
+      {reverseDns && reverseDns.length > 0 ? (
+        <div className="space-y-1">
+          {reverseDns.map((hostname) => (
+            <div key={hostname} className="bg-slate-900 rounded p-1.5 text-slate-300 font-mono break-all">{hostname}</div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-slate-600 italic">Not resolved</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * RDAP domain intelligence — only present when a real lookup has actually
+ * happened (see evidenceGraph.ts's comment on this same field); "Not yet
+ * enriched" for a real null, never fabricated registrar/dates.
+ */
+function DomainNodeDetail({ data }: { data: Record<string, unknown> }) {
+  const intel = data.domainIntelligence as {
+    status?: string;
+    registrar?: string | null;
+    registrationDate?: string | null;
+    expirationDate?: string | null;
+    nameservers?: string[] | null;
+    domainStatus?: string[] | null;
+  } | null | undefined;
+
+  return (
+    <div className="border-t border-slate-800 pt-2">
+      <div className="text-slate-500 mb-1">Domain Intelligence (RDAP)</div>
+      {intel ? (
+        <div className="bg-slate-900 rounded p-2 space-y-1">
+          <div className="flex justify-between"><span className="text-slate-500">Status</span><span className="text-slate-300">{intel.status ?? 'Unknown'}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Registrar</span><span className="text-slate-300 truncate max-w-[140px]">{intel.registrar ?? 'Unknown'}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Registered</span><span className="text-slate-300">{intel.registrationDate ? new Date(intel.registrationDate).toLocaleDateString() : 'Unknown'}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Expires</span><span className="text-slate-300">{intel.expirationDate ? new Date(intel.expirationDate).toLocaleDateString() : 'Unknown'}</span></div>
+          {intel.nameservers && intel.nameservers.length > 0 && (
+            <div className="pt-1 border-t border-slate-800">
+              <span className="text-slate-500">Nameservers</span>
+              <div className="text-slate-400 mt-0.5">{intel.nameservers.join(', ')}</div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="text-slate-600 italic">Not yet enriched</div>
+      )}
+    </div>
+  );
+}
+
 export function EvidenceGraphView({ graph }: { graph: EvidenceGraphResponse }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -146,6 +208,9 @@ export function EvidenceGraphView({ graph }: { graph: EvidenceGraphResponse }) {
               <span className="text-[10px] text-slate-600">{selected.id}</span>
             </div>
             <div className="text-slate-300 break-all font-mono">{selected.label}</div>
+            {selected.type === 'IP' && <IpNodeDetail data={selected.data} />}
+            {selected.type === 'DOMAIN' && <DomainNodeDetail data={selected.data} />}
+
             <div className="border-t border-slate-800 pt-2">
               <div className="text-slate-500 mb-1">Evidence</div>
               <pre className="whitespace-pre-wrap break-all text-slate-400 bg-slate-900 rounded p-2 max-h-40 overflow-auto">

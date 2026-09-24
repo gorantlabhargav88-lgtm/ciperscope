@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Loader2, AlertTriangle, Briefcase, ChevronRight } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Loader2, AlertTriangle, Briefcase, ChevronRight, X } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { PriorityBadge } from '../components/threats/PriorityBadge';
 import type { CaseSummary } from '@ciperscope/types';
 
@@ -16,14 +16,27 @@ const STATUS_STYLES: Record<string, string> = {
 
 export const Cases = () => {
   const [cursor, setCursor] = useState<string | undefined>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Backend-supported filters (GET /cases's CaseListQuerySchema) — read
+  // from the URL so a link like Overview's "Critical Alerts" stat can deep
+  // link straight into a filtered view.
+  const priority = searchParams.get('priority');
+  const status = searchParams.get('status');
+
+  const queryString = new URLSearchParams({ limit: '20' });
+  if (cursor) queryString.set('cursor', cursor);
+  if (priority) queryString.set('priority', priority);
+  if (status) queryString.set('status', status);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['cases', cursor],
-    queryFn: () =>
-      api.get<{ items: CaseSummary[]; nextCursor?: string }>(
-        `/cases?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
-      ),
+    queryKey: ['cases', cursor, priority, status],
+    queryFn: () => api.get<{ items: CaseSummary[]; nextCursor?: string }>(`/cases?${queryString.toString()}`),
   });
+
+  const clearFilters = () => {
+    setCursor(undefined);
+    setSearchParams({});
+  };
 
   return (
     <div className="space-y-6 pb-20">
@@ -33,6 +46,23 @@ export const Cases = () => {
           <h1 className="text-3xl font-bold text-white tracking-tight">Active Cases</h1>
         </div>
         <p className="text-slate-400 mt-2">Manage and track security incidents across the organization.</p>
+        {(priority || status) && (
+          <div className="mt-3 flex items-center gap-2">
+            {priority && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium border bg-slate-800 text-slate-300 border-slate-700">
+                Priority: {priority}
+              </span>
+            )}
+            {status && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium border bg-slate-800 text-slate-300 border-slate-700">
+                Status: {status}
+              </span>
+            )}
+            <button onClick={clearFilters} className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300">
+              <X className="w-3 h-3" /> Clear filters
+            </button>
+          </div>
+        )}
       </header>
 
       {isLoading ? (
@@ -49,6 +79,7 @@ export const Cases = () => {
         </div>
       ) : (
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
+          <div className="overflow-x-auto">
           <table className="w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/50 text-slate-400 uppercase text-xs border-b border-slate-800">
               <tr>
@@ -64,7 +95,7 @@ export const Cases = () => {
               {data?.items?.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-6 py-12 text-center text-slate-500 italic">
-                    No cases found.
+                    {priority || status ? 'No cases match the current filters.' : 'No cases found.'}
                   </td>
                 </tr>
               ) : (
@@ -91,7 +122,8 @@ export const Cases = () => {
               )}
             </tbody>
           </table>
-          
+          </div>
+
           {data?.nextCursor && (
             <div className="p-4 border-t border-slate-800 flex justify-center">
               <button 

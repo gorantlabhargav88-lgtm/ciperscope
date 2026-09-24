@@ -1,4 +1,4 @@
-import { ShieldAlert, Activity, Server, Mail, Fingerprint, Search } from 'lucide-react';
+import { ShieldAlert, Activity, Server, Mail, Fingerprint, Search, Siren } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -32,7 +32,7 @@ export const Overview = () => {
         <p className="text-muted-foreground mt-1">SOC overview across your organization's cases and email intelligence</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard
           icon={<ShieldAlert className="w-5 h-5" />}
           label="Threats Detected"
@@ -40,6 +40,15 @@ export const Overview = () => {
           loading={statsLoading}
           accentClassName="text-security-critical"
         />
+        <Link to="/cases?priority=CRITICAL" className="block">
+          <StatCard
+            icon={<Siren className="w-5 h-5" />}
+            label="Critical Alerts"
+            value={stats?.criticalAlerts ?? 0}
+            loading={statsLoading}
+            accentClassName="text-security-critical"
+          />
+        </Link>
         <StatCard
           icon={<Activity className="w-5 h-5" />}
           label="Investigations"

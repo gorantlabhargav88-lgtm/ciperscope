@@ -21,6 +21,14 @@ import type {
   CaseTimelineEvent,
   ForensicTimelineEvent,
   ForensicReport,
+  EvidenceVaultItem,
+  EvidenceIntegrity,
+  Webhook,
+  WebhookWithSecret,
+  WebhookEventType,
+  CaseReport,
+  CaseHistoryEntry,
+  NetworkIntelligenceResponse,
 } from '@ciperscope/types';
 
 export interface ApiClientConfig {
@@ -77,7 +85,11 @@ export class CiperscopeApiClient {
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const fetchFn = this.config.fetchImpl ?? fetch;
     const headers = new Headers(init.headers);
-    headers.set('Content-Type', 'application/json');
+    // Only set Content-Type when there's an actual body — Fastify 5 rejects
+    // a request declaring 'application/json' with no body
+    // (FST_ERR_CTP_EMPTY_JSON_BODY), which every body-less POST (e.g.
+    // testWebhook, createEmailReport) would otherwise hit.
+    if (init.body !== undefined) headers.set('Content-Type', 'application/json');
     const orgId = this.config.getOrganizationId();
     if (orgId) headers.set('x-organization-id', orgId);
 
@@ -332,6 +344,81 @@ export class CiperscopeApiClient {
     | { status: 'connected'; emailAddress: string; connectedAt: string; lastUpdatedAt: string }
   > {
     return this.request('/integrations/gmail/connection');
+  }
+
+  // ============================================================
+  // Evidence vault (org-wide) — services/api/src/modules/evidence/evidence.routes.ts
+  // ============================================================
+
+  getEvidenceList(limit = 20, cursor?: string): Promise<{ items: EvidenceVaultItem[]; nextCursor: string | null }> {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (cursor) qs.set('cursor', cursor);
+    return this.request(`/evidence?${qs.toString()}`);
+  }
+
+  getEvidenceDetail(evidenceId: string): Promise<EvidenceVaultItem> {
+    return this.request(`/evidence/${evidenceId}`);
+  }
+
+  getEvidenceIntegrity(evidenceId: string): Promise<EvidenceIntegrity> {
+    return this.request(`/evidence/${evidenceId}/integrity`);
+  }
+
+  // ============================================================
+  // Webhooks — services/api/src/modules/webhook/webhook.routes.ts
+  // ============================================================
+
+  getWebhooks(): Promise<{ webhooks: Webhook[] }> {
+    return this.request('/webhooks');
+  }
+
+  createWebhook(input: { url: string; events: WebhookEventType[]; enabled?: boolean }): Promise<WebhookWithSecret> {
+    return this.request('/webhooks', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  updateWebhook(
+    webhookId: string,
+    input: { url?: string; events?: WebhookEventType[]; enabled?: boolean }
+  ): Promise<Webhook> {
+    return this.request(`/webhooks/${webhookId}`, { method: 'PATCH', body: JSON.stringify(input) });
+  }
+
+  deleteWebhook(webhookId: string): Promise<null> {
+    return this.request(`/webhooks/${webhookId}`, { method: 'DELETE' });
+  }
+
+  testWebhook(webhookId: string): Promise<{ message: string; eventId: string }> {
+    return this.request(`/webhooks/${webhookId}/test`, { method: 'POST' });
+  }
+
+  // ============================================================
+  // Case-scoped narrative reports — services/api/src/modules/case/case.routes.ts
+  // ============================================================
+
+  getCaseReports(caseId: string, limit = 20): Promise<{ items: CaseReport[]; nextCursor: string | null }> {
+    return this.request(`/cases/${caseId}/reports?limit=${limit}`);
+  }
+
+  getCaseReport(caseId: string, reportId: string): Promise<CaseReport> {
+    return this.request(`/cases/${caseId}/reports/${reportId}`);
+  }
+
+  createCaseReport(caseId: string, input: { title: string; contentHtml?: string }): Promise<CaseReport> {
+    return this.request(`/cases/${caseId}/reports`, { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  deleteCaseReport(caseId: string, reportId: string): Promise<null> {
+    return this.request(`/cases/${caseId}/reports/${reportId}`, { method: 'DELETE' });
+  }
+
+  /** GET /cases/:caseId/history — the case record's own change/audit trail (status, priority, assignment). */
+  getCaseHistory(caseId: string, limit = 20): Promise<{ items: CaseHistoryEntry[]; nextCursor: string | null }> {
+    return this.request(`/cases/${caseId}/history?limit=${limit}`);
+  }
+
+  /** GET /intelligence/network — org-wide relay-hop IP aggregation (geolocation + classification + reverse DNS). Backs Geo Intelligence and Infrastructure. */
+  getNetworkIntelligence(): Promise<NetworkIntelligenceResponse> {
+    return this.request('/intelligence/network');
   }
 
   // NOTE (Phase 3, Step 2): GET /emails/:emailId/analysis now returns

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
-import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle, AlertTriangle, ShieldOff, ShieldCheck } from 'lucide-react';
+import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle, AlertTriangle, ShieldOff, ShieldCheck, ArrowRight } from 'lucide-react';
 import { ForensicTimeline } from '../components/ForensicTimeline';
+import { SeverityBadge } from '../components/threats/SeverityBadge';
 import { ThreatPriorityExplanation } from '../components/threat/ThreatPriorityExplanation';
 import { ChainOfCustody } from '../components/evidence/ChainOfCustody';
 import { UnifiedForensicTimeline } from '../components/timeline/UnifiedForensicTimeline';
@@ -15,13 +16,6 @@ const PRIORITY_STYLES: Record<ThreatPriority, string> = {
   P1: 'bg-rose-500/20 text-rose-400 border-rose-500/30',
   P2: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
   P3: 'bg-slate-700/50 text-slate-300 border-slate-600/50',
-};
-
-const SEVERITY_STYLES: Record<string, string> = {
-  CRITICAL: 'bg-rose-500/20 text-rose-500 border-rose-500/30',
-  HIGH: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
-  MEDIUM: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-  LOW: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
 };
 
 export const EmailAnalysis = () => {
@@ -152,11 +146,7 @@ export const EmailAnalysis = () => {
               <span className={`text-xs px-2.5 py-1.5 rounded font-bold border ${PRIORITY_STYLES[priority.priority]}`} title={priority.reasons.join('; ')}>
                 {priority.priority}
               </span>
-              {severity && (
-                <span className={`text-xs px-2.5 py-1.5 rounded font-bold border ${SEVERITY_STYLES[severity] ?? SEVERITY_STYLES.LOW}`}>
-                  {severity}
-                </span>
-              )}
+              {severity && <SeverityBadge level={severity} className="px-2.5 py-1.5 text-xs font-bold" />}
             </div>
           )}
           {activeEmailId && !data && (
@@ -195,8 +185,9 @@ export const EmailAnalysis = () => {
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
                 <h2 className="font-medium text-slate-200">Threat Assessment</h2>
                 {severity && (
-                  <span className={`text-xs px-2 py-1 rounded font-bold border ${SEVERITY_STYLES[severity] ?? SEVERITY_STYLES.LOW}`}>
-                    {severity} (Score: {data.threat.score.value ?? 'N/A'}/100)
+                  <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                    <SeverityBadge level={severity} />
+                    (Score: {data.threat.score.value ?? 'N/A'}/100)
                   </span>
                 )}
               </div>
@@ -666,6 +657,12 @@ export const EmailAnalysis = () => {
                         <div className="flex justify-between"><span className="text-slate-500">Status</span><span className="text-slate-300">{data.investigationContext.case.status}</span></div>
                         <div className="flex justify-between"><span className="text-slate-500">Priority</span><span className="text-slate-300">{data.investigationContext.case.priority}</span></div>
                         <div className="flex justify-between"><span className="text-slate-500">Owner/Assignee</span><span className="text-slate-300">{data.investigationContext.case.assignedUserId ?? 'Unassigned'}</span></div>
+                        <Link
+                          to={`/cases/${data.investigationContext.case.id}`}
+                          className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 pt-1 font-medium"
+                        >
+                          View Case <ArrowRight className="w-3 h-3" />
+                        </Link>
                       </div>
                     )}
                     <div>
@@ -673,13 +670,13 @@ export const EmailAnalysis = () => {
                       {data.investigationContext.investigations.length > 0 ? (
                         <div className="space-y-2">
                           {data.investigationContext.investigations.map((inv) => (
-                            <a
+                            <Link
                               key={inv.id}
-                              href={`/cases/${inv.caseId}/investigations/${inv.id}/workspace`}
+                              to={`/cases/${inv.caseId}/investigations/${inv.id}/workspace`}
                               className="block bg-slate-950 border border-slate-800 rounded p-3 text-xs text-slate-300 hover:border-indigo-500/50 transition-colors"
                             >
                               {inv.title}
-                            </a>
+                            </Link>
                           ))}
                         </div>
                       ) : (

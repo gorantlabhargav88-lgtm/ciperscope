@@ -39,12 +39,18 @@ export const Header = () => {
             <div className="text-sm font-medium text-foreground">{user?.name}</div>
             <div className="text-xs text-muted-foreground">{user?.role}</div>
           </div>
-          <button
-            onClick={logout}
-            className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-foreground/80 hover:bg-accent transition-colors"
-          >
-            <User className="w-4 h-4" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={logout}
+                aria-label="Log out"
+                className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-foreground/80 hover:bg-accent transition-colors"
+              >
+                <User className="w-4 h-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Log out</TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </header>

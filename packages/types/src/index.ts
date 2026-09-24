@@ -8,3 +8,7 @@ export * from './investigation';
 export * from './email-forensics';
 export * from './caseTimeline';
 export * from './forensicTimeline';
+export * from './webhook';
+export * from './caseReport';
+export * from './caseHistory';
+export * from './networkIntelligence';

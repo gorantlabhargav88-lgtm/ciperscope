@@ -6,6 +6,8 @@ import { SeverityBadge } from '../components/threats/SeverityBadge';
 import { PriorityBadge } from '../components/threats/PriorityBadge';
 import { ChainOfCustody } from '../components/evidence/ChainOfCustody';
 import { UnifiedForensicTimeline } from '../components/timeline/UnifiedForensicTimeline';
+import { CaseReports } from '../components/case/CaseReports';
+import { CaseHistory } from '../components/case/CaseHistory';
 import type { CaseSummary, InvestigationSummary, Evidence } from '@ciperscope/types';
 
 const STATUS_STYLES: Record<string, string> = {
@@ -151,6 +153,19 @@ export const CaseDetail = () => {
       <section>
         <h2 className="text-xl font-semibold text-white mb-4">Forensic Timeline</h2>
         {caseId && <UnifiedForensicTimeline caseId={caseId} />}
+      </section>
+
+      <section>
+        <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+          <FileText className="w-5 h-5 text-slate-500" />
+          Reports
+        </h2>
+        {caseId && <CaseReports caseId={caseId} />}
+      </section>
+
+      <section>
+        <h2 className="text-xl font-semibold text-white mb-4">Change History</h2>
+        {caseId && <CaseHistory caseId={caseId} />}
       </section>
     </div>
   );

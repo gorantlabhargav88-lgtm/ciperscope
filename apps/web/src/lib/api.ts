@@ -13,8 +13,12 @@ class ApiClient {
 
   async fetch<T = unknown>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers || {});
-    
-    headers.set('Content-Type', 'application/json');
+
+    // Only set Content-Type when there's an actual body — Fastify 5 rejects
+    // a request declaring 'application/json' with no body
+    // (FST_ERR_CTP_EMPTY_JSON_BODY), which a body-less POST like
+    // AuthProvider's /auth/logout would otherwise hit.
+    if (options.body !== undefined) headers.set('Content-Type', 'application/json');
     if (this.organizationId) {
       headers.set('x-organization-id', this.organizationId);
     }

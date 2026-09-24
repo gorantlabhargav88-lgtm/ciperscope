@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { prisma, SYSTEM_ENFORCED_PERMISSIONS } from '@ciperscope/database';
 import { decryptToken, requireGmailTokenEncryptionKey } from '@ciperscope/config';
 import rbacPlugin from '../../../plugins/rbac';
+import tolerantJsonBodyParser from '../../../plugins/tolerantJsonBodyParser';
 import webhookRoutes from '../webhook.routes';
 
 /**
@@ -49,6 +50,7 @@ describe('Webhook management API (Integration)', () => {
 
   beforeAll(async () => {
     server = Fastify({ ajv: { customOptions: { removeAdditional: false } } });
+    server.register(tolerantJsonBodyParser);
     server.register(fastifyJwt, { secret: 'test-webhook-api-secret' });
     server.register(rbacPlugin);
     server.register(webhookRoutes, { prefix: '/api/v1/webhooks' });
@@ -240,6 +242,15 @@ describe('Webhook management API (Integration)', () => {
       });
       expect(res.statusCode).toBe(202);
       expect(res.json().eventId).toBeTruthy();
+    });
+
+    it('still enqueues a test delivery when the client sends Content-Type: application/json with an empty body (the real header apps/web sends on a body-less POST)', async () => {
+      const res = await server.inject({
+        method: 'POST',
+        url: `/api/v1/webhooks/${webhookAId}/test`,
+        headers: { authorization: `Bearer ${tokenA}`, 'x-organization-id': orgA, 'content-type': 'application/json' },
+      });
+      expect(res.statusCode).toBe(202);
     });
 
     it('tenant isolation — org B cannot trigger a test delivery for org A webhook', async () => {

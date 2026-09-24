@@ -60,6 +60,7 @@ export const Alerts = () => {
         </div>
       ) : (
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
+          <div className="overflow-x-auto">
           <table className="w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/50 text-slate-400 uppercase text-xs border-b border-slate-800">
               <tr>
@@ -107,7 +108,8 @@ export const Alerts = () => {
               )}
             </tbody>
           </table>
-          
+          </div>
+
           {data?.nextCursor && (
             <div className="p-4 border-t border-slate-800 flex justify-center">
               <button 

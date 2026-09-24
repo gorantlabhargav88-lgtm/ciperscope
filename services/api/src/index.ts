@@ -7,6 +7,7 @@ import fastifyRateLimit from '@fastify/rate-limit';
 import { prisma } from '@ciperscope/database';
 import authRoutes from './modules/auth/auth.routes';
 import rbacPlugin from './plugins/rbac';
+import tolerantJsonBodyParser from './plugins/tolerantJsonBodyParser';
 import emailRoutes from './modules/email/email.routes';
 import caseRoutes from './modules/case/case.routes';
 import dashboardRoutes from './modules/dashboard/dashboard.routes';
@@ -16,6 +17,7 @@ import evidenceRoutes from './modules/evidence/evidence.routes';
 import integrationRoutes from './modules/integration/integration.routes';
 import webhookRoutes from './modules/webhook/webhook.routes';
 import reportRoutes from './modules/report/report.routes';
+import intelligenceRoutes from './modules/intelligence/intelligence.routes';
 import fastifyMultipart from '@fastify/multipart';
 import { createRedisConnection } from '@ciperscope/queue';
 
@@ -33,6 +35,8 @@ const server: FastifyInstance = Fastify({
     },
   },
 });
+
+server.register(tolerantJsonBodyParser);
 
 // Setup Request Context
 server.addHook('onRequest', (request, reply, done) => {
@@ -74,6 +78,15 @@ server.register(fastifyHelmet);
 server.register(fastifyCors, {
   origin: env.CORS_ORIGIN,
   credentials: true,
+  // @fastify/cors 9→11 (this session's Fastify 5 migration) silently
+  // changed its default `methods` from allowing everything to
+  // 'GET,HEAD,POST' only — every real-browser PATCH/PUT/DELETE request
+  // (webhook update/delete, case report delete, Gmail disconnect, etc.)
+  // was blocked at the CORS preflight and never reached the API, while
+  // fastify.inject()-based tests never exercise CORS at all so this went
+  // undetected. Explicit allowlist so a future @fastify/cors bump can't
+  // silently narrow this again.
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
 });
 
 // Setup Metrics
@@ -141,6 +154,7 @@ server.register(investigationRoutes, { prefix: '/api/v1/investigations' });
 server.register(evidenceRoutes, { prefix: '/api/v1/evidence' });
 server.register(integrationRoutes, { prefix: '/api/v1/integrations' });
 server.register(webhookRoutes, { prefix: '/api/v1/webhooks' });
+server.register(intelligenceRoutes, { prefix: '/api/v1/intelligence' });
 server.register(reportRoutes, { prefix: '/api/v1/reports' });
 
 const start = async () => {

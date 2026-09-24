@@ -43,17 +43,35 @@ export interface Evidence {
   collectedById: string | null;
 }
 
+/** Org-wide evidence vault row — same shape as Evidence but without a guaranteed caseId scope (returned by GET /evidence, /evidence/:id). */
+export interface EvidenceVaultItem extends Evidence {
+  sourceSystem: string | null;
+}
+
+export type IntegrityOverallStatus = 'VALID' | 'INVALID' | 'INCOMPLETE' | 'NOT_CONFIGURED';
+
 /**
- * Real blockchain anchoring is not implemented in CiperScope today — the
- * `BlockchainAnchor` Prisma model and `BLOCKCHAIN_ANCHORED` custody action
- * exist, but only as schema plus one demo seed row; no code path ever
- * creates a real anchor (see CIPERSCOPE_NEXT_PHASE_AUDIT.md). This type
- * makes that limitation impossible to silently forget: `blockchainAnchored`
- * is always `false`.
+ * Response shape of GET /evidence/:evidenceId/integrity (services/api/src/
+ * modules/evidence/integrityVerification.ts). Real, cryptographic
+ * verification of the evidence hash, chain-of-custody linkage, and — when
+ * the evidence has been included in a notarization batch — the Merkle root
+ * and external blockchain anchor. `NOT_CONFIGURED` is its own honest
+ * outcome (everything verifiable was verified; no blockchain network is
+ * configured) — never conflated with VALID or INVALID.
  */
 export interface EvidenceIntegrity {
-  sha256: string;
-  blockchainAnchored: false;
+  status: IntegrityOverallStatus;
+  evidenceHash: string;
+  chainValid: boolean;
+  chainReason: string | null;
+  merkleValid: boolean | 'NOT_BATCHED';
+  anchorStatus: string;
+  network: string | null;
+  transactionId: string | null;
+  blockNumber: number | null;
+  anchoredAt: string | null;
+  reason: string;
+  verifiedAt: string;
 }
 
 export interface ChainOfCustodyActor {

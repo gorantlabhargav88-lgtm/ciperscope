@@ -15,8 +15,10 @@ import { toPublicForensicReport } from '../report/reportSerializer';
 
 // Phase N: builds a most-recent-per-IP map from raw PTR DnsObservation rows
 // (response is a JSON-encoded string[] of hostnames, or null on failure/no
-// record). Shared by /:emailId/intelligence and /:emailId/evidence-graph.
-function buildReverseDnsByIp(ptrRows: Array<{ queryName: string; response: string | null }>): Map<string, string[] | null> {
+// record). Shared by /:emailId/intelligence, /:emailId/evidence-graph, and
+// the org-wide network-intelligence module (services/api/src/modules/
+// intelligence/intelligence.routes.ts).
+export function buildReverseDnsByIp(ptrRows: Array<{ queryName: string; response: string | null }>): Map<string, string[] | null> {
   const reverseDnsByIp = new Map<string, string[] | null>();
   for (const row of ptrRows) {
     if (reverseDnsByIp.has(row.queryName)) continue;

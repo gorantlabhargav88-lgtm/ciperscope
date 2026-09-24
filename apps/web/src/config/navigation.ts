@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, Search, ShieldAlert, Briefcase,
   Mail, Archive, Link as LinkIcon, CheckCircle, Clock,
-  Map, FileText, BarChart2, Plug, ShieldCheck, Users, Settings,
+  Map, FileText, BarChart2, Plug, ShieldCheck, Users, Settings, Webhook, Server,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -40,6 +40,7 @@ export const NAVIGATION: NavGroup[] = [
     label: 'Intelligence',
     items: [
       { to: '/geo-intelligence', icon: Map, label: 'Geo Intelligence' },
+      { to: '/infrastructure', icon: Server, label: 'Infrastructure' },
       { to: '/reports', icon: FileText, label: 'Reports' },
       { to: '/analytics', icon: BarChart2, label: 'Analytics' },
     ],
@@ -48,6 +49,7 @@ export const NAVIGATION: NavGroup[] = [
     label: 'System',
     items: [
       { to: '/integrations', icon: Plug, label: 'Integrations' },
+      { to: '/webhooks', icon: Webhook, label: 'Webhooks' },
       { to: '/audit-log', icon: ShieldCheck, label: 'Audit Log' },
       { to: '/users', icon: Users, label: 'Users & Roles' },
       { to: '/settings', icon: Settings, label: 'Settings' },
