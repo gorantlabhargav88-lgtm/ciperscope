@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Bell, Check, Loader2 } from 'lucide-react';
-import { apiClient } from '../lib/apiClient';
+import { Bell, Check, Loader2, Radio } from 'lucide-react';
+import { apiClient, BASE_URL } from '../lib/apiClient';
 import { classifyApiError } from '../lib/apiErrorState';
+import { useAuth } from '../features/auth/AuthContext';
 import type { AlertSeverityValue } from '@ciperscope/types';
 
 const SEVERITY_DOT: Record<AlertSeverityValue, string> = {
@@ -14,31 +15,91 @@ const SEVERITY_DOT: Record<AlertSeverityValue, string> = {
   INFO: 'bg-security-info',
 };
 
+type StreamStatus = 'connecting' | 'live' | 'reconnecting' | 'unavailable';
+
 /**
  * Header notification bell — backed by the existing Alert model/API
- * (GET/PATCH /alerts, same data as the Alerts page). No WebSocket/SSE/
- * pub-sub infrastructure exists anywhere in this codebase (confirmed by
- * repository inspection), so this polls on an interval rather than
- * fabricating a live push channel — the "Polling" label below is honest
- * about that, never presented as realtime.
+ * (GET/PATCH /alerts, same data as the Alerts page). Real-time delivery is
+ * Server-Sent Events (GET /alerts/stream — Redis pub/sub relayed from the
+ * FusionEngine/gmail-sync Alert producers, see services/api/src/modules/
+ * alert/notificationHub.ts); an SSE event never carries the notification
+ * content itself, only a signal to refetch the one real data source
+ * (GET /alerts), so there is no risk of the push channel and the REST
+ * fetch ever showing different or duplicated data. Polling stays as a
+ * fallback baseline (a much longer interval than before SSE existed) in
+ * case the stream itself is unreachable — e.g. behind a proxy that blocks
+ * long-lived connections — never the sole delivery mechanism.
  */
 export const NotificationBell = () => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+  const { isAuthenticated, user } = useAuth();
+  const organizationId = user?.organizationId;
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('connecting');
 
   const { data: countData } = useQuery({
     queryKey: ['alerts-unread-count'],
     queryFn: () => apiClient.getUnreadAlertCount(),
-    refetchInterval: 30_000,
+    // SSE delivers unread-count-affecting events immediately; this interval
+    // only exists as a fallback for when the stream is down.
+    refetchInterval: streamStatus === 'live' ? 5 * 60_000 : 30_000,
   });
 
   const { data: listData, isLoading, error } = useQuery({
     queryKey: ['alerts-recent'],
     queryFn: () => apiClient.getAlerts({ limit: 8 }),
     enabled: open,
-    refetchInterval: open ? 30_000 : false,
+    refetchInterval: open && streamStatus !== 'live' ? 30_000 : false,
   });
+
+  // Server-Sent Events connection — opened whenever there's an
+  // authenticated org context, closed on logout/org change/unmount
+  // (satisfies "logout closes the SSE connection": isAuthenticated
+  // flipping to false re-runs this effect, and the cleanup below closes
+  // the EventSource before a new one — none — is opened).
+  useEffect(() => {
+    if (!isAuthenticated || !organizationId) {
+      setStreamStatus('unavailable');
+      return;
+    }
+
+    setStreamStatus('connecting');
+    const url = `${BASE_URL}/alerts/stream?organizationId=${encodeURIComponent(organizationId)}`;
+    const source = new EventSource(url, { withCredentials: true });
+
+    source.onopen = () => setStreamStatus('live');
+
+    source.addEventListener('notification', (evt) => {
+      try {
+        const event = JSON.parse((evt as MessageEvent).data) as { type: string };
+        if (event.type === 'ALERT_CREATED') {
+          queryClient.invalidateQueries({ queryKey: ['alerts-unread-count'] });
+          queryClient.invalidateQueries({ queryKey: ['alerts-recent'] });
+        } else if (event.type === 'INVITATION_ACCEPTED') {
+          // A real domain event (Users & Roles' pending-invitations list),
+          // not backed by an Alert row — see invitation.routes.ts's accept
+          // handler for why this doesn't also touch the alerts queries.
+          queryClient.invalidateQueries({ queryKey: ['invitations'] });
+          queryClient.invalidateQueries({ queryKey: ['members'] });
+        }
+      } catch {
+        // malformed payload — never let it break the connection
+      }
+    });
+
+    // The browser's EventSource retries automatically (honoring the
+    // `retry:` field the server sends) — this only tracks status for the
+    // "Live"/"Reconnecting" indicator below, never implements reconnection
+    // logic itself.
+    source.onerror = () => {
+      setStreamStatus((prev) => (prev === 'connecting' ? 'unavailable' : 'reconnecting'));
+    };
+
+    return () => {
+      source.close();
+    };
+  }, [isAuthenticated, organizationId, queryClient]);
 
   const markReadMutation = useMutation({
     mutationFn: (alertId: string) => apiClient.markAlertRead(alertId),
@@ -99,7 +160,13 @@ export const NotificationBell = () => {
           <div className="flex items-center justify-between px-4 py-3 border-b border-border">
             <div>
               <h3 className="text-sm font-medium text-foreground">Notifications</h3>
-              <p className="text-[11px] text-muted-foreground">Polling · updates every 30s</p>
+              <p className="text-[11px] text-muted-foreground flex items-center gap-1">
+                <Radio className={`w-2.5 h-2.5 ${streamStatus === 'live' ? 'text-security-low' : streamStatus === 'reconnecting' ? 'text-security-medium' : 'text-muted-foreground'}`} />
+                {streamStatus === 'live' && 'Live'}
+                {streamStatus === 'connecting' && 'Connecting…'}
+                {streamStatus === 'reconnecting' && 'Reconnecting…'}
+                {streamStatus === 'unavailable' && 'Polling · updates every 30s'}
+              </p>
             </div>
             {unreadCount > 0 && (
               <button

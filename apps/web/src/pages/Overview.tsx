@@ -1,9 +1,10 @@
+import { lazy, Suspense } from 'react';
 import { ShieldAlert, Activity, Server, Mail, Fingerprint, Search, Siren } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { StatCard } from '../components/dashboard/StatCard';
-import { PriorityDistribution } from '../components/dashboard/PriorityDistribution';
+const PriorityDistribution = lazy(() => import('../components/dashboard/PriorityDistribution').then(m => ({ default: m.PriorityDistribution })));
 import { PriorityBadge } from '../components/threats/PriorityBadge';
 import type { DashboardOverview } from '../types/dashboard';
 
@@ -81,7 +82,9 @@ export const Overview = () => {
           {statsLoading ? (
             <div className="h-64 bg-secondary/40 rounded animate-pulse" />
           ) : (
-            <PriorityDistribution breakdown={stats?.priorityBreakdown ?? { critical: 0, high: 0, medium: 0, low: 0 }} />
+            <Suspense fallback={<div className="h-64 bg-secondary/40 rounded animate-pulse" />}>
+              <PriorityDistribution breakdown={stats?.priorityBreakdown ?? { critical: 0, high: 0, medium: 0, low: 0 }} />
+            </Suspense>
           )}
         </div>
 
