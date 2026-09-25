@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
+import { env } from '@ciperscope/config';
 import {
   fastifyAlertListQuerySchema,
   fastifyGlobalAlertParamsSchema,
@@ -61,7 +62,25 @@ export default async function alertRoutes(server: FastifyInstance) {
 
     // Hands the raw response over to us — Fastify's normal reply
     // lifecycle (serialization, onSend hooks) never runs, since this
-    // response is a long-lived stream, not a single JSON payload.
+    // response is a long-lived stream, not a single JSON payload. That
+    // includes @fastify/cors's own onSend hook, which is where it adds
+    // Access-Control-Allow-Origin/-Credentials — so this route must set
+    // those two headers itself, using the exact same allowlist
+    // (env.CORS_ORIGIN) and credentials:true policy configured for the
+    // plugin in services/api/src/index.ts, or the browser silently blocks
+    // the whole response as a CORS violation (it did during development:
+    // the connection opened and streamed correctly at the TCP/HTTP level —
+    // confirmed with curl — while every browser fetch/EventSource attempt
+    // failed with a generic, header-free "Failed to fetch").
+    const requestOrigin = request.headers.origin;
+    const corsHeaders: Record<string, string> = {};
+    const allowedOrigins = env.CORS_ORIGIN.split(',').map(o => o.trim());
+    if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+      corsHeaders['Access-Control-Allow-Origin'] = requestOrigin;
+      corsHeaders['Access-Control-Allow-Credentials'] = 'true';
+      corsHeaders['Vary'] = 'Origin';
+    }
+
     reply.hijack();
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -72,6 +91,7 @@ export default async function alertRoutes(server: FastifyInstance) {
       // defeating the entire point of a push channel. A harmless no-op
       // when there's no such proxy in front of this API.
       'X-Accel-Buffering': 'no',
+      ...corsHeaders,
     });
     // Tells a reconnecting EventSource how long to wait before retrying,
     // and flushes the headers immediately so the browser's connection
@@ -95,6 +115,8 @@ export default async function alertRoutes(server: FastifyInstance) {
     };
     request.raw.on('close', cleanup);
     request.raw.on('error', cleanup);
+    reply.raw.on('close', cleanup);
+    reply.raw.on('error', cleanup);
   });
   server.get('/unread-count', {
     schema: { querystring: fastifyAlertUnreadCountQuerySchema },

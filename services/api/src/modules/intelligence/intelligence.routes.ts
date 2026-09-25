@@ -80,9 +80,9 @@ export default async function intelligenceRoutes(server: FastifyInstance) {
         : Promise.resolve([]),
       uniqueIps.length > 0
         ? prisma.dnsObservation.findMany({
-            where: { recordType: 'PTR', queryName: { in: uniqueIps }, email: { organizationId } },
-            orderBy: { createdAt: 'desc' },
-          })
+          where: { recordType: 'PTR', queryName: { in: uniqueIps }, email: { organizationId } },
+          orderBy: { createdAt: 'desc' },
+        })
         : Promise.resolve([]),
     ]);
     const geoByIp = new Map(geoRows.map((g) => [g.ipAddress, g]));
@@ -106,16 +106,16 @@ export default async function intelligenceRoutes(server: FastifyInstance) {
         reverseDns: reverseDnsByIp.has(ip) ? reverseDnsByIp.get(ip) : null,
         geolocation: geo
           ? {
-              country: geo.country,
-              region: geo.region,
-              city: geo.city,
-              latitude: geo.latitude,
-              longitude: geo.longitude,
-              asn: geo.asn,
-              isp: geo.isp,
-              provider: geo.provider,
-              updatedAt: geo.updatedAt,
-            }
+            country: geo.country,
+            region: geo.region,
+            city: geo.city,
+            latitude: geo.latitude,
+            longitude: geo.longitude,
+            asn: geo.asn,
+            isp: geo.isp,
+            provider: geo.provider,
+            updatedAt: geo.updatedAt,
+          }
           : null,
       };
     });
@@ -179,15 +179,15 @@ export default async function intelligenceRoutes(server: FastifyInstance) {
     const [observationRows, emailRows] = await Promise.all([
       allValues.length > 0
         ? prisma.indicator.findMany({
-            where: { value: { in: allValues } },
-            include: { observations: { orderBy: { observationTime: 'desc' }, take: 5 } },
-          })
+          where: { value: { in: allValues } },
+          include: { observations: { orderBy: { observationTime: 'desc' }, take: 5 } },
+        })
         : Promise.resolve([]),
       allEmailIds.length > 0
         ? prisma.email.findMany({
-            where: { id: { in: allEmailIds }, organizationId },
-            select: { id: true, caseId: true },
-          })
+          where: { id: { in: allEmailIds }, organizationId },
+          select: { id: true, caseId: true },
+        })
         : Promise.resolve([]),
     ]);
 
@@ -218,15 +218,15 @@ export default async function intelligenceRoutes(server: FastifyInstance) {
         extractionSources: Array.from(agg.extractionSources),
         cti: indicatorRow
           ? {
-              indicatorId: indicatorRow.id,
-              observations: indicatorRow.observations.map((o) => ({
-                id: o.id,
-                provider: o.provider,
-                verdict: o.verdict,
-                confidence: o.confidence,
-                observationTime: o.observationTime,
-              })),
-            }
+            indicatorId: indicatorRow.id,
+            observations: indicatorRow.observations.map((o) => ({
+              id: o.id,
+              provider: o.provider,
+              verdict: o.verdict,
+              confidence: o.confidence,
+              observationTime: o.observationTime,
+            })),
+          }
           : null,
         createdAt: agg.firstSeen,
       };
