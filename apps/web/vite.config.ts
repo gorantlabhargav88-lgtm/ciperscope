@@ -19,4 +19,17 @@ export default defineConfig({
   optimizeDeps: {
     include: ['@ciperscope/types', '@ciperscope/api-client'],
   },
+  // The API's CORS_ORIGIN allowlist (packages/config/src/index.ts,
+  // default "http://localhost:5173") is a fixed, exact-origin match — it
+  // does not pattern-match ports. Without strictPort, Vite silently falls
+  // forward to 5174, 5175, ... whenever 5173 is already taken by a stale
+  // dev server, and every API request from that origin then fails CORS
+  // preflight, which surfaces in the browser as an unhelpful, generic
+  // "Failed to fetch" with no indication of the real cause. Failing fast
+  // here instead of drifting to an unlisted port was the actual root cause
+  // of the intermittently "broken" dev startup.
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
 })

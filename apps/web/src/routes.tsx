@@ -3,8 +3,8 @@ import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom'
 import { AppLayout } from './layouts/AppLayout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { Login } from './pages/Login';
+import { AcceptInvite } from './pages/AcceptInvite';
 import { Overview } from './pages/Overview';
-import { PlaceholderPage } from './pages/PlaceholderPage';
 import { Cases } from './pages/Cases';
 import { Alerts } from './pages/Alerts';
 import { AuthProvider } from './features/auth/AuthProvider';
@@ -24,6 +24,13 @@ import { RouteLoading } from './components/RouteLoading';
 const EmailAnalysis = lazy(() => import('./pages/EmailAnalysis').then((m) => ({ default: m.EmailAnalysis })));
 const InvestigationWorkspace = lazy(() => import('./InvestigationWorkspace').then((m) => ({ default: m.InvestigationWorkspace })));
 const CaseDetail = lazy(() => import('./pages/CaseDetail').then((m) => ({ default: m.CaseDetail })));
+// Analytics pulls in recharts (a genuinely heavy dependency) — code-split
+// alongside the other drill-in pages so it never bloats the initial bundle.
+const Indicators = lazy(() => import('./pages/Indicators').then((m) => ({ default: m.Indicators })));
+const Analytics = lazy(() => import('./pages/Analytics').then((m) => ({ default: m.Analytics })));
+const AuditLog = lazy(() => import('./pages/AuditLog').then((m) => ({ default: m.AuditLog })));
+const Users = lazy(() => import('./pages/Users').then((m) => ({ default: m.Users })));
+const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
 
 const lazyElement = (el: React.ReactNode) => <Suspense fallback={<RouteLoading />}>{el}</Suspense>;
 
@@ -31,6 +38,10 @@ const router = createBrowserRouter([
   {
     path: '/login',
     element: <Login />,
+  },
+  {
+    path: '/accept-invite/:token',
+    element: <AcceptInvite />,
   },
   {
     path: '/unauthorized',
@@ -55,20 +66,10 @@ const router = createBrowserRouter([
           { path: 'cases/:caseId/investigations/:investigationId/workspace', element: lazyElement(<InvestigationWorkspace />) },
           { path: 'email-analysis', element: lazyElement(<EmailAnalysis />) },
           { path: 'email-analysis/:id', element: lazyElement(<EmailAnalysis />) },
-          // Indicators has no dedicated org-wide backend query today (IOCs
-          // are matched per-email against the Indicator/ThreatIntelObservation
-          // tables, never aggregated org-wide) — a genuine pending
-          // capability, not implemented here to avoid fabricating an
-          // aggregation the backend doesn't do.
-          {
-            path: 'indicators',
-            element: (
-              <PlaceholderPage
-                title="Indicators"
-                reason="Indicators are matched per-email (see an email's Threat Intelligence panel) — there is no org-wide indicator aggregation endpoint yet."
-              />
-            ),
-          },
+          // GET /intelligence/indicators aggregates the same Indicator/
+          // ThreatIntelObservation tables the per-email Threat Intelligence
+          // panel uses, across every email in the organization.
+          { path: 'indicators', element: lazyElement(<Indicators />) },
           { path: 'infrastructure', element: <Infrastructure /> },
           { path: 'geo-intelligence', element: <GeoIntelligence /> },
           { path: 'evidence', element: <EvidenceVault /> },
@@ -83,45 +84,18 @@ const router = createBrowserRouter([
           { path: 'verification', element: <Navigate to="/evidence" replace /> },
           { path: 'timeline', element: <Navigate to="/cases" replace /> },
           { path: 'reports', element: <Navigate to="/cases" replace /> },
-          {
-            path: 'analytics',
-            element: (
-              <PlaceholderPage
-                title="Analytics"
-                reason="No aggregate analytics endpoint exists yet. Per-case and per-email metrics are available on Overview, CaseDetail, and Email Analysis."
-              />
-            ),
-          },
+          // GET /analytics/overview — real aggregate metrics computed from
+          // persisted Email/Case/RiskAssessment/Indicator data.
+          { path: 'analytics', element: lazyElement(<Analytics />) },
           { path: 'webhooks', element: <Webhooks /> },
           { path: 'integrations', element: <Integrations /> },
           { path: 'settings/integrations', element: <Integrations /> },
-          {
-            path: 'audit-log',
-            element: (
-              <PlaceholderPage
-                title="Audit Log"
-                reason="There is no org-wide audit log endpoint yet — a case's own Change History (on its Case Detail page) is available today."
-              />
-            ),
-          },
-          {
-            path: 'users',
-            element: (
-              <PlaceholderPage
-                title="Users & Roles"
-                reason="No user/role management API exists yet — organization membership and roles are currently managed only via direct database administration."
-              />
-            ),
-          },
-          {
-            path: 'settings',
-            element: (
-              <PlaceholderPage
-                title="Settings"
-                reason="No organization settings API exists yet. Integration settings are available under Integrations."
-              />
-            ),
-          },
+          // GET /audit-log — organization-wide AuditLog listing (AUDIT_LOG_READ).
+          { path: 'audit-log', element: lazyElement(<AuditLog />) },
+          // GET/POST/PATCH/DELETE /members (USER_READ/USER_MANAGE).
+          { path: 'users', element: lazyElement(<Users />) },
+          // GET/PATCH /settings (USER_READ/USER_MANAGE).
+          { path: 'settings', element: lazyElement(<Settings />) },
         ],
       },
     ],

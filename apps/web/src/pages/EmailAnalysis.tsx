@@ -524,13 +524,22 @@ export const EmailAnalysis = () => {
             <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
                 <h2 className="font-medium text-slate-200">Indicators &amp; Threat Intelligence (CTI)</h2>
-                <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-1 rounded border border-rose-500/30">AbuseIPDB / VirusTotal</span>
+                <div className="flex items-center gap-3">
+                  <Link to="/indicators" className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                    View org-wide <ArrowRight className="w-3 h-3" />
+                  </Link>
+                  <span className="text-xs bg-rose-500/20 text-rose-400 px-2 py-1 rounded border border-rose-500/30">AbuseIPDB / VirusTotal</span>
+                </div>
               </div>
               <div className="p-5">
                  {data.indicators.length > 0 ? (
                    <div className="space-y-3">
                      {data.indicators.map((ti, i) => (
-                       <div key={i} className="bg-slate-950 border border-slate-800 rounded p-3 text-sm flex flex-col space-y-2">
+                       <Link
+                         key={i}
+                         to={`/indicators?q=${encodeURIComponent(ti.iocValue)}`}
+                         className="block bg-slate-950 border border-slate-800 rounded p-3 text-sm flex flex-col space-y-2 hover:border-blue-600/50 transition-colors"
+                       >
                          <div className="flex justify-between items-center border-b border-slate-800/50 pb-2 mb-1">
                            <span className="font-mono text-slate-300 break-all">{ti.iocValue}</span>
                            <span className={`text-xs px-2 py-1 rounded font-bold ${ti.status === 'MALICIOUS' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : (ti.status === 'SUSPICIOUS' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-slate-800 text-slate-400')}`}>{ti.status}</span>
@@ -540,7 +549,7 @@ export const EmailAnalysis = () => {
                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Source</span><span className="text-slate-300">{ti.provider}</span></div>
                            <div className="flex justify-between p-1 bg-slate-900 rounded"><span className="text-slate-500">Confidence</span><span className="text-slate-300">{ti.confidence ? `${ti.confidence}%` : 'N/A'}</span></div>
                          </div>
-                       </div>
+                       </Link>
                      ))}
                    </div>
                  ) : (

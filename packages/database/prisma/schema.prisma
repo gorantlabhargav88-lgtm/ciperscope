@@ -32,6 +32,7 @@ model Organization {
   Role         Role[]
   systemConfig SystemSetting[]
   webhooks     Webhook[]
+  invitations  Invitation[]
 }
 
 model User {
@@ -50,6 +51,7 @@ model User {
   custodyEvents ChainOfCustodyEvent[]
   memberships   OrganizationMember[]
   sessions      Session[]
+  sentInvitations Invitation[] @relation("InvitationInviter")
 }
 
 model OrganizationMember {
@@ -77,8 +79,74 @@ model Role {
   members        OrganizationMember[]
   organization   Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   permissions    RolePermission[]
+  invitations    Invitation[]
 
   @@unique([organizationId, name])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+// Organization member invitations (Phase 3 — no SMTP/email provider exists
+// anywhere in this repository, confirmed by inspection: the invited person
+// is given a URL out of band — see services/api/src/modules/invitation/
+// invitation.routes.ts for the dev-only-URL-exposure gate). Deliberately a
+// new model: nothing else in the schema represents a not-yet-accepted,
+// expiring, single-use, role-constrained grant of org access.
+//
+// tokenHash is SHA-256 (not argon2 like User.passwordHash/RefreshToken.
+// tokenHash) — this token is a full-entropy random value the invitee never
+// chooses, not a low-entropy secret an attacker could offline-guess, so a
+// slow password-hash function buys nothing and would force enumerating
+// every pending invitation per lookup instead of a direct indexed query.
+enum InvitationEmailStatus {
+  // No SMTP provider configured (packages/providers/src/email) — the
+  // invitation is still fully real and acceptable; only email delivery
+  // itself did not happen. Never presented as an error to the admin.
+  NOT_CONFIGURED
+  SENT
+  FAILED
+}
+
+model Invitation {
+  id             String                @id @default(uuid())
+  organizationId String
+  email          String
+  roleId         String
+  tokenHash      String                @unique
+  status         InvitationStatus      @default(PENDING)
+  invitedById    String?
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime              @default(now())
+  // Delivery status of the invitation EMAIL — deliberately separate from
+  // `status` (the invitation's own lifecycle: PENDING/ACCEPTED/EXPIRED/
+  // REVOKED). An email can fail to send while the invitation itself
+  // remains perfectly valid and acceptable via its link, so these two
+  // states must never be conflated into one field.
+  emailStatus    InvitationEmailStatus @default(NOT_CONFIGURED)
+  // Safe, human-readable failure reason only (e.g. an SMTP response
+  // message) — never the SMTP transporter config, which holds the
+  // password. See packages/providers/src/email's SmtpEmailProvider.
+  emailError     String?
+  // Supersession chain: when an invitation is resent, the OLD row is
+  // marked REVOKED and a NEW row is created (never reusing the old
+  // token) — this points the new row back at what it replaced, purely
+  // for admin-facing history/audit, not consulted by any auth check.
+  supersedesId   String?               @unique
+  organization   Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role           Role                  @relation(fields: [roleId], references: [id])
+  invitedBy      User?                 @relation("InvitationInviter", fields: [invitedById], references: [id])
+  supersedes     Invitation?           @relation("InvitationSupersession", fields: [supersedesId], references: [id])
+  supersededBy   Invitation?           @relation("InvitationSupersession")
+
+  @@index([organizationId])
+  @@index([email])
+  @@index([status, expiresAt])
 }
 
 model Permission {
@@ -874,6 +942,10 @@ model AuditLog {
 
   @@index([organizationId])
   @@index([createdAt])
+  // Org-wide audit log (GET /audit-log) lists by organization ordered by
+  // createdAt desc — a composite index lets that be an ordered index scan
+  // instead of a bitmap-AND of the two separate single-column indexes above.
+  @@index([organizationId, createdAt])
 }
 
 model SystemSetting {

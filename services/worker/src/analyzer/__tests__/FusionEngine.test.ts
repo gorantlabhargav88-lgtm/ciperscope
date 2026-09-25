@@ -43,6 +43,9 @@ describe('FusionEngine', () => {
       }),
       riskAssessment: {
         upsert: vi.fn().mockResolvedValue({ id: 'ra-1' })
+      },
+      alert: {
+        create: vi.fn().mockResolvedValue({ id: 'alert-1' })
       }
     };
 
@@ -511,6 +514,125 @@ describe('FusionEngine', () => {
       // Risk assessment must still be persisted — a notification failure
       // never rolls back or blocks the actual analysis result.
       expect(prismaMock.riskAssessment.upsert).toHaveBeenCalled();
+    });
+  });
+
+  describe('Phase 2 (real-time SSE) — publishes ALERT_CREATED to Redis after the transaction commits', () => {
+    it('publishes when a CRITICAL/HIGH Alert is created, with a real notificationRedis connection provided', async () => {
+      mockEmail.organizationId = 'org-1';
+      mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL };
+      mockEmail.urls = [{ indicators: ['OBFUSCATED'] }]; // CRITICAL
+
+      const publishMock = vi.fn().mockResolvedValue(1);
+      const fakeRedis = { publish: publishMock } as any;
+      fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient, undefined, fakeRedis);
+
+      await fusionEngine.evaluate('email-1');
+
+      expect(publishMock).toHaveBeenCalledTimes(1);
+      const [channel, payload] = publishMock.mock.calls[0];
+      expect(channel).toBe('notifications:org:org-1');
+      const parsed = JSON.parse(payload);
+      expect(parsed).toMatchObject({ type: 'ALERT_CREATED', organizationId: 'org-1', severity: 'CRITICAL' });
+      expect(parsed.alertId).toBe('alert-1');
+    });
+
+    it('never publishes for LOW/MEDIUM results', async () => {
+      const publishMock = vi.fn();
+      const fakeRedis = { publish: publishMock } as any;
+      fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient, undefined, fakeRedis);
+
+      await fusionEngine.evaluate('email-1'); // default mock scores 0 -> LOW
+
+      expect(publishMock).not.toHaveBeenCalled();
+    });
+
+    it('does nothing (never throws) when no notificationRedis was provided', async () => {
+      mockEmail.organizationId = 'org-1';
+      mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL };
+      mockEmail.urls = [{ indicators: ['OBFUSCATED'] }];
+      fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient);
+
+      await expect(fusionEngine.evaluate('email-1')).resolves.not.toThrow();
+    });
+
+    it('a Redis publish failure is swallowed — never fails evaluate() or blocks the already-persisted Alert', async () => {
+      mockEmail.organizationId = 'org-1';
+      mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL };
+      mockEmail.urls = [{ indicators: ['OBFUSCATED'] }];
+      const fakeRedis = { publish: vi.fn().mockRejectedValue(new Error('redis down')) } as any;
+      fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient, undefined, fakeRedis);
+
+      await expect(fusionEngine.evaluate('email-1')).resolves.not.toThrow();
+      expect(prismaMock.alert.create).toHaveBeenCalled();
+    });
+  });
+
+  describe('Phase 2 (notification bell) — Alert creation on CRITICAL/HIGH results', () => {
+    it('creates an org-scoped Alert when the result is CRITICAL', async () => {
+      mockEmail.organizationId = 'org-1';
+      mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL };
+      mockEmail.urls = [{ indicators: ['OBFUSCATED'] }]; // 40 + 40 = 80 -> CRITICAL
+
+      await fusionEngine.evaluate('email-1');
+
+      expect(prismaMock.alert.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ organizationId: 'org-1', severity: 'CRITICAL' }),
+        })
+      );
+    });
+
+    it('creates an Alert when the result is HIGH', async () => {
+      mockEmail.organizationId = 'org-1';
+      mockEmail.attachments = [
+        { sha256: 'b', threatIndicators: [{ category: 'APK_UNSIGNED', severity: 'HIGH', description: 'x', confidence: 'MEDIUM', source: 'ApkAnalyzer', analyzerVersion: '1.0.0' }] },
+      ]; // overallScore 35 -> HIGH tier by riskLevel thresholds (>=30 MEDIUM... need >=60 for HIGH)
+      mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL }; // +40 => 75 total -> HIGH (60-79)
+
+      await fusionEngine.evaluate('email-1');
+
+      expect(prismaMock.alert.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ severity: 'HIGH' }) })
+      );
+    });
+
+    it('does NOT create an Alert for LOW/MEDIUM results — no notification noise for routine emails', async () => {
+      // Default mockEmail (no signals) scores 0 -> LOW
+      await fusionEngine.evaluate('email-1');
+      expect(prismaMock.alert.create).not.toHaveBeenCalled();
+    });
+
+    it('the Alert message never fabricates content beyond real subject/sender/factor data', async () => {
+      mockEmail.organizationId = 'org-1';
+      (mockEmail as any).subject = 'Urgent wire transfer';
+      (mockEmail as any).senderAddress = 'ceo@example.com';
+      mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL };
+      mockEmail.urls = [{ indicators: ['OBFUSCATED'] }];
+
+      await fusionEngine.evaluate('email-1');
+
+      const call = (prismaMock.alert.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(call.data.message).toContain('Urgent wire transfer');
+      expect(call.data.message).toContain('ceo@example.com');
+    });
+
+    it('Alert creation happens inside the same transaction as the RiskAssessment write (atomic)', async () => {
+      mockEmail.organizationId = 'org-1';
+      mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL };
+      mockEmail.urls = [{ indicators: ['OBFUSCATED'] }];
+
+      const transactionCalls: unknown[] = [];
+      prismaMock.$transaction = vi.fn().mockImplementation(async (callback: (tx: unknown) => Promise<void>) => {
+        transactionCalls.push('transaction-start');
+        await callback(prismaMock);
+      });
+      fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient);
+
+      await fusionEngine.evaluate('email-1');
+
+      expect(transactionCalls).toHaveLength(1);
+      expect(prismaMock.alert.create).toHaveBeenCalled();
     });
   });
 

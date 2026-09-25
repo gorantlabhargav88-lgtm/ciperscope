@@ -29,6 +29,21 @@ import type {
   CaseReport,
   CaseHistoryEntry,
   NetworkIntelligenceResponse,
+  OrgIndicatorListResponse,
+  AnalyticsOverview,
+  AnalyticsRange,
+  AuditLogListResponse,
+  OrgMember,
+  OrgMemberWithTempPassword,
+  MemberListResponse,
+  MemberRole,
+  OrgSettingsResponse,
+  UpdateOrgSettingsInput,
+  AlertListResponse,
+  AlertItem,
+  CreatedInvitation,
+  InvitationListResponse,
+  InvitationPreview,
 } from '@ciperscope/types';
 
 export interface ApiClientConfig {
@@ -419,6 +434,176 @@ export class CiperscopeApiClient {
   /** GET /intelligence/network — org-wide relay-hop IP aggregation (geolocation + classification + reverse DNS). Backs Geo Intelligence and Infrastructure. */
   getNetworkIntelligence(): Promise<NetworkIntelligenceResponse> {
     return this.request('/intelligence/network');
+  }
+
+  // ============================================================
+  // Org-wide Indicators — services/api/src/modules/intelligence/intelligence.routes.ts
+  // ============================================================
+
+  getIndicators(params: {
+    page?: number;
+    limit?: number;
+    q?: string;
+    type?: string;
+    severity?: string;
+    source?: string;
+    status?: string;
+  } = {}): Promise<OrgIndicatorListResponse> {
+    const qs = new URLSearchParams();
+    if (params.page) qs.set('page', String(params.page));
+    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.q) qs.set('q', params.q);
+    if (params.type) qs.set('type', params.type);
+    if (params.severity) qs.set('severity', params.severity);
+    if (params.source) qs.set('source', params.source);
+    if (params.status) qs.set('status', params.status);
+    const suffix = qs.toString();
+    return this.request(`/intelligence/indicators${suffix ? `?${suffix}` : ''}`);
+  }
+
+  // ============================================================
+  // Security Analytics — services/api/src/modules/analytics/analytics.routes.ts
+  // ============================================================
+
+  getAnalyticsOverview(range: AnalyticsRange = '30d'): Promise<AnalyticsOverview> {
+    return this.request(`/analytics/overview?range=${range}`);
+  }
+
+  // ============================================================
+  // Org-wide Audit Log — services/api/src/modules/audit/audit.routes.ts
+  // ============================================================
+
+  getAuditLog(params: {
+    limit?: number;
+    cursor?: string;
+    action?: string;
+    actorId?: string;
+    resource?: string;
+    resourceId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    q?: string;
+  } = {}): Promise<AuditLogListResponse> {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.cursor) qs.set('cursor', params.cursor);
+    if (params.action) qs.set('action', params.action);
+    if (params.actorId) qs.set('actorId', params.actorId);
+    if (params.resource) qs.set('resource', params.resource);
+    if (params.resourceId) qs.set('resourceId', params.resourceId);
+    if (params.dateFrom) qs.set('dateFrom', params.dateFrom);
+    if (params.dateTo) qs.set('dateTo', params.dateTo);
+    if (params.q) qs.set('q', params.q);
+    const suffix = qs.toString();
+    return this.request(`/audit-log${suffix ? `?${suffix}` : ''}`);
+  }
+
+  // ============================================================
+  // Users & Roles — services/api/src/modules/members/members.routes.ts
+  // ============================================================
+
+  getMembers(params: { limit?: number; cursor?: string; q?: string; roleId?: string; isActive?: boolean } = {}): Promise<MemberListResponse> {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.cursor) qs.set('cursor', params.cursor);
+    if (params.q) qs.set('q', params.q);
+    if (params.roleId) qs.set('roleId', params.roleId);
+    if (params.isActive !== undefined) qs.set('isActive', String(params.isActive));
+    const suffix = qs.toString();
+    return this.request(`/members${suffix ? `?${suffix}` : ''}`);
+  }
+
+  getMember(memberId: string): Promise<OrgMember> {
+    return this.request(`/members/${memberId}`);
+  }
+
+  getMemberRoles(): Promise<{ roles: MemberRole[] }> {
+    return this.request('/members/roles');
+  }
+
+  createMember(input: { email: string; firstName?: string; lastName?: string; roleId: string }): Promise<OrgMemberWithTempPassword> {
+    return this.request('/members', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  updateMember(memberId: string, input: { roleId?: string; isActive?: boolean }): Promise<OrgMember> {
+    return this.request(`/members/${memberId}`, { method: 'PATCH', body: JSON.stringify(input) });
+  }
+
+  removeMember(memberId: string): Promise<null> {
+    return this.request(`/members/${memberId}`, { method: 'DELETE' });
+  }
+
+  // ============================================================
+  // Organization Settings — services/api/src/modules/settings/settings.routes.ts
+  // ============================================================
+
+  getOrgSettings(): Promise<OrgSettingsResponse> {
+    return this.request('/settings');
+  }
+
+  updateOrgSettings(input: UpdateOrgSettingsInput): Promise<OrgSettingsResponse> {
+    return this.request('/settings', { method: 'PATCH', body: JSON.stringify(input) });
+  }
+
+  // ============================================================
+  // Alerts / Notifications — services/api/src/modules/alert/alert.routes.ts
+  // ============================================================
+
+  getAlerts(params: { limit?: number; cursor?: string; severity?: string; isRead?: boolean } = {}): Promise<AlertListResponse> {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.cursor) qs.set('cursor', params.cursor);
+    if (params.severity) qs.set('severity', params.severity);
+    if (params.isRead !== undefined) qs.set('isRead', String(params.isRead));
+    const suffix = qs.toString();
+    return this.request(`/alerts${suffix ? `?${suffix}` : ''}`);
+  }
+
+  getUnreadAlertCount(): Promise<{ count: number }> {
+    return this.request('/alerts/unread-count');
+  }
+
+  markAlertRead(alertId: string): Promise<AlertItem> {
+    return this.request(`/alerts/${alertId}`, { method: 'PATCH', body: JSON.stringify({ isRead: true }) });
+  }
+
+  markAllAlertsRead(): Promise<{ count: number }> {
+    return this.request('/alerts/mark-all-read', { method: 'POST' });
+  }
+
+  // ============================================================
+  // Invitations — services/api/src/modules/invitation/invitation.routes.ts
+  // ============================================================
+
+  createInvitation(input: { email: string; roleId: string }): Promise<CreatedInvitation> {
+    return this.request('/invitations', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  getInvitations(params: { limit?: number; cursor?: string; status?: string } = {}): Promise<InvitationListResponse> {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.cursor) qs.set('cursor', params.cursor);
+    if (params.status) qs.set('status', params.status);
+    const suffix = qs.toString();
+    return this.request(`/invitations${suffix ? `?${suffix}` : ''}`);
+  }
+
+  revokeInvitation(invitationId: string): Promise<null> {
+    return this.request(`/invitations/${invitationId}`, { method: 'DELETE' });
+  }
+
+  resendInvitation(invitationId: string): Promise<CreatedInvitation> {
+    return this.request(`/invitations/${invitationId}/resend`, { method: 'POST' });
+  }
+
+  /** Public — no organization header, the token itself is the credential. */
+  getInvitationPreview(token: string): Promise<InvitationPreview> {
+    return this.request(`/invitations/${token}`);
+  }
+
+  /** Public. When the invited email already has an account, this requires the caller to be authenticated as that user. */
+  acceptInvitation(token: string, input: { password?: string; firstName?: string; lastName?: string }): Promise<{ status: string; organizationId: string }> {
+    return this.request(`/invitations/${token}/accept`, { method: 'POST', body: JSON.stringify(input) });
   }
 
   // NOTE (Phase 3, Step 2): GET /emails/:emailId/analysis now returns

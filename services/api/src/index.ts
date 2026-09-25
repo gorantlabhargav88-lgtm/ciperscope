@@ -18,6 +18,11 @@ import integrationRoutes from './modules/integration/integration.routes';
 import webhookRoutes from './modules/webhook/webhook.routes';
 import reportRoutes from './modules/report/report.routes';
 import intelligenceRoutes from './modules/intelligence/intelligence.routes';
+import analyticsRoutes from './modules/analytics/analytics.routes';
+import auditRoutes from './modules/audit/audit.routes';
+import membersRoutes from './modules/members/members.routes';
+import settingsRoutes from './modules/settings/settings.routes';
+import invitationRoutes from './modules/invitation/invitation.routes';
 import fastifyMultipart from '@fastify/multipart';
 import { createRedisConnection } from '@ciperscope/queue';
 
@@ -156,6 +161,11 @@ server.register(integrationRoutes, { prefix: '/api/v1/integrations' });
 server.register(webhookRoutes, { prefix: '/api/v1/webhooks' });
 server.register(intelligenceRoutes, { prefix: '/api/v1/intelligence' });
 server.register(reportRoutes, { prefix: '/api/v1/reports' });
+server.register(analyticsRoutes, { prefix: '/api/v1/analytics' });
+server.register(auditRoutes, { prefix: '/api/v1/audit-log' });
+server.register(membersRoutes, { prefix: '/api/v1/members' });
+server.register(settingsRoutes, { prefix: '/api/v1/settings' });
+server.register(invitationRoutes, { prefix: '/api/v1/invitations' });
 
 const start = async () => {
   try {

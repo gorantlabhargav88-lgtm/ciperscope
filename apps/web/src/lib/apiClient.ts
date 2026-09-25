@@ -3,7 +3,7 @@ import { api } from './api';
 
 export { ApiError };
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
+export const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
 
 /**
  * Typed client for the Email Forensics vertical slice (and any future slice

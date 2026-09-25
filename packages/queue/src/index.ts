@@ -4,6 +4,7 @@ import { logger } from '@ciperscope/logger';
 import { PrismaClient, IdempotencyOperationStatus } from '@ciperscope/database';
 
 export * from './cti-job';
+export * from './notificationChannel';
 
 // Standard connection options
 export const createRedisConnection = (url: string) => {

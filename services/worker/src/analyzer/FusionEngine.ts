@@ -2,6 +2,8 @@ import { PrismaClient, AuthResultStatus, EmailClassification, ThreatVerdict } fr
 import { logger } from '@ciperscope/logger';
 import { IocNormalizer } from '../cti/IocNormalizer';
 import { ThreatAnalysisNotifier } from '../notifications/NotificationService';
+import type IORedis from 'ioredis';
+import { publishNotification } from '@ciperscope/queue';
 
 // Mirrors the literal 'COMPLETED' written by the transaction below, kept as
 // a separate symbol rather than repeating that field-assignment text so
@@ -15,7 +17,13 @@ export class FusionEngine {
     // Optional and BullMQ-agnostic on purpose — FusionEngine's own tests
     // never need to mock a queue. Enqueueing (not delivery) is awaited, but
     // errors are caught and logged, never allowed to fail analysis itself.
-    private notifier?: ThreatAnalysisNotifier
+    private notifier?: ThreatAnalysisNotifier,
+    // Reuses the same Redis connection index.ts already keeps open for
+    // idempotency (never a new connection per FusionEngine instance, which
+    // — unlike this class's own fields — is constructed fresh per email
+    // job; see services/worker/src/index.ts). Optional so FusionEngine's
+    // own unit tests never need a real/mocked Redis client.
+    private notificationRedis?: IORedis
   ) {}
 
   public async evaluate(emailId: string): Promise<void> {
@@ -186,6 +194,7 @@ export class FusionEngine {
     else if (finalScore >= 30) riskLevel = 'MEDIUM';
 
     // Transactionally create Risk Assessment
+    let newAlert: { id: string; title: string; severity: 'CRITICAL' | 'HIGH' } | null = null;
     await this.prisma.$transaction(async (tx) => {
       // Upsert Assessment for idempotency per version
       await tx.riskAssessment.upsert({
@@ -253,7 +262,46 @@ export class FusionEngine {
             }
          });
       }
+
+      // Alert is the only real notification substrate in this codebase
+      // (backs both the Alerts page and the header notification bell —
+      // apps/web/src/pages/Alerts.tsx / layouts/Header.tsx). Only
+      // CRITICAL/HIGH results create one — analysts don't need a
+      // notification for every routine LOW/MEDIUM email, and this mirrors
+      // the same >=60 threshold already used for the P2/P1 priority tiers
+      // (packages/types/src/threat.ts's calculateThreatPriority).
+      if (riskLevel === 'CRITICAL' || riskLevel === 'HIGH') {
+        const topFactor = [...factors].sort((a, b) => b.scoreContribution - a.scoreContribution)[0];
+        const alertTitle = `${riskLevel} risk email analyzed`;
+        const createdAlert = await tx.alert.create({
+          data: {
+            organizationId: email.organizationId,
+            title: alertTitle,
+            message: topFactor
+              ? `${email.subject ?? '(no subject)'} from ${email.senderAddress ?? 'unknown sender'} — ${topFactor.description}`
+              : `${email.subject ?? '(no subject)'} from ${email.senderAddress ?? 'unknown sender'} scored ${finalScore}/100`,
+            severity: riskLevel,
+          },
+        });
+        newAlert = { id: createdAlert.id, title: alertTitle, severity: riskLevel };
+      }
     });
+
+    // Published AFTER the transaction commits (never inside it) — the
+    // real-time push is a best-effort side channel to an already-durable
+    // Alert row, same "never let a notification failure affect the
+    // primary write" policy as the webhook notifier call below.
+    const createdAlertForNotification = newAlert as { id: string; title: string; severity: 'CRITICAL' | 'HIGH' } | null;
+    if (createdAlertForNotification && this.notificationRedis) {
+      await publishNotification(this.notificationRedis, {
+        type: 'ALERT_CREATED',
+        organizationId: email.organizationId,
+        alertId: createdAlertForNotification.id,
+        severity: createdAlertForNotification.severity,
+        title: createdAlertForNotification.title,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     logger.info({ emailId, finalScore, riskLevel }, 'Fusion Engine evaluation completed');
 

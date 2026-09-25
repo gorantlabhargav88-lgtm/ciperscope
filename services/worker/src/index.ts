@@ -630,7 +630,7 @@ export async function start() {
             // Assessment. Phase 7D: a CTI-triggered re-evaluation skips
             // re-classification (see runMlEvaluationStage) since only the CTI
             // observations available to FusionEngine have changed.
-            const fusionEngine = new FusionEngine(prisma, notificationService);
+            const fusionEngine = new FusionEngine(prisma, notificationService, idempotencyRedis);
             await runMlEvaluationStage(job.data.resourceId, job.data.operation, {
               classifyEmail: (emailId) => mlClassifier.classifyEmail(emailId),
               evaluateFusion: (emailId) => fusionEngine.evaluate(emailId)

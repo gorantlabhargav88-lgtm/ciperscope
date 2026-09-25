@@ -11,10 +11,13 @@
   },
   "dependencies": {
     "@ciperscope/http-client": "workspace:*",
-    "ioredis": "^6.0.0"
+    "@ciperscope/logger": "workspace:*",
+    "ioredis": "^6.0.0",
+    "nodemailer": "^10.0.10"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/nodemailer": "^8.0.2",
     "typescript": "^5.0.0",
     "vitest": "^1.6.0"
   }

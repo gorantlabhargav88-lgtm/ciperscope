@@ -2,20 +2,21 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../features/auth/AuthContext';
 import type { MeResponse, Role } from '../features/auth/AuthContext';
-import { Shield } from 'lucide-react';
+import { Shield, WifiOff } from 'lucide-react';
 import { api } from '../lib/api';
+import { classifyApiError } from '../lib/apiErrorState';
 
 export const Login = () => {
   const navigate = useNavigate();
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<{ isNetwork: boolean; message: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError(null);
     setLoading(true);
 
     try {
@@ -37,8 +38,13 @@ export const Login = () => {
       });
 
       navigate('/overview');
-    } catch (err: any) {
-      setError(err.message || 'Authentication error');
+    } catch (err) {
+      // classifyApiError distinguishes "API unreachable" (a raw fetch()
+      // TypeError — the API process isn't running/reachable) from a real
+      // authentication failure message from the backend, so the user is
+      // never shown a bare, unactionable "Failed to fetch".
+      const classified = classifyApiError(err, 'sign-in');
+      setError({ isNetwork: classified.kind === 'network', message: classified.message });
     } finally {
       setLoading(false);
     }
@@ -54,8 +60,16 @@ export const Login = () => {
         </div>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-900/50 border border-red-500/50 rounded-lg text-red-200 text-sm text-center">
-            {error}
+          <div
+            role="alert"
+            className={`mb-4 p-3 rounded-lg text-sm text-center flex items-center justify-center gap-2 ${
+              error.isNetwork
+                ? 'bg-amber-900/50 border border-amber-500/50 text-amber-200'
+                : 'bg-red-900/50 border border-red-500/50 text-red-200'
+            }`}
+          >
+            {error.isNetwork && <WifiOff className="w-4 h-4 shrink-0" aria-hidden="true" />}
+            <span>{error.message}</span>
           </div>
         )}
 

@@ -136,6 +136,10 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
     }
     await prisma.email.deleteMany({ where: { id: { in: createdEmailIds } } });
     await prisma.integration.deleteMany({ where: { id: { in: [integrationAId, integrationBId] } } });
+    // Alert has no cascade-delete FK to Organization — clean up any
+    // "Integration failure" alerts (D2/STATUS-CAS-2) before the
+    // organization delete below, or that delete fails on the FK.
+    await prisma.alert.deleteMany({ where: { organizationId: { in: [orgA, orgB] } } });
     await prisma.organization.deleteMany({ where: { id: { in: [orgA, orgB] } } });
     await queueManager.closeAll();
     fs.rmSync(storeDir, { recursive: true, force: true });
@@ -275,6 +279,14 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
     const updated = await prisma.integration.findUnique({ where: { id: integrationAId } });
     expect(updated!.status).toBe('ERROR');
     assertNoSecretLeakage(); // a revoked-credential error from Google must never leak the dead credential
+
+    // Phase 2 (notification bell) — an "Integration failure" Alert is
+    // created, org-scoped, for the header bell/Alerts page to surface.
+    const alert = await prisma.alert.findFirst({ where: { organizationId: orgA, title: 'Gmail integration failure' } });
+    expect(alert).toBeTruthy();
+    expect(alert!.severity).toBe('HIGH');
+    expect(alert!.message).toContain(emailAddressA);
+    await prisma.alert.deleteMany({ where: { organizationId: orgA, title: 'Gmail integration failure' } });
   });
 
   it('D3: a transient/unrecognized Gmail API error propagates (so BullMQ retries it) rather than being silently swallowed', async () => {
@@ -715,6 +727,12 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
       expect(decryptToken(finalState!.accessToken, ENCRYPTION_KEY)).toBe(''); // disconnect's clearing survives, untouched
       expect(decryptToken(finalState!.refreshToken, ENCRYPTION_KEY)).toBe('');
       expect(allLoggedText()).toMatch(/ERROR status not persisted: integration already changed state/i);
+
+      // The CAS guard skipping the ERROR write must also skip the
+      // "Integration failure" Alert — this was a real disconnect, not a
+      // failure, and must never be reported as one.
+      const alert = await prisma.alert.findFirst({ where: { organizationId: orgA, title: 'Gmail integration failure' } });
+      expect(alert).toBeNull();
     }, 15000);
 
     it('STATUS-CAS-2 (named for traceability): no concurrent change — the CAS succeeds and ERROR persists, worker does not throw (see pre-existing D2 above for full coverage)', async () => {

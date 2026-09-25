@@ -3,7 +3,8 @@ import { prisma } from '@ciperscope/database';
 import { env, decryptToken, encryptToken, requireGmailTokenEncryptionKey } from '@ciperscope/config';
 import { logger, generateRequestId } from '@ciperscope/logger';
 import { RawEmailStore } from '@ciperscope/storage';
-import { QueueManager, EmailIngestionJobPayload } from '@ciperscope/queue';
+import { QueueManager, EmailIngestionJobPayload, createRedisConnection, publishNotification } from '@ciperscope/queue';
+import IORedis from 'ioredis';
 import crypto from 'crypto';
 import { Readable } from 'node:stream';
 
@@ -25,9 +26,16 @@ interface GoogleApiError {
 
 export class GmailSyncWorker {
   private queueManager: QueueManager;
+  private notificationRedis: IORedis;
 
   constructor(private rawEmailStore: RawEmailStore) {
     this.queueManager = new QueueManager(env.REDIS_URL);
+    // A dedicated connection, created once here (GmailSyncWorker itself is
+    // instantiated once at worker startup, never per-job — see
+    // services/worker/src/index.ts) — same self-contained pattern this
+    // class already uses for its own QueueManager above, rather than
+    // threading a shared connection through from index.ts.
+    this.notificationRedis = createRedisConnection(env.REDIS_URL);
   }
 
   async process(jobData: GmailSyncJobPayload) {
@@ -196,6 +204,28 @@ export class GmailSyncWorker {
               { integrationId },
               'Gmail sync ERROR status not persisted: integration already changed state'
             );
+          } else {
+            // Only alert when this execution actually made the transition
+            // (errorUpdateResult.count > 0) — never on a retry that finds
+            // the connection already marked ERROR, which would spam a
+            // duplicate "Integration failure" alert for the same outage.
+            const alertTitle = 'Gmail integration failure';
+            const createdAlert = await prisma.alert.create({
+              data: {
+                organizationId: integration.organizationId,
+                title: alertTitle,
+                message: `The Gmail connection for ${integration.emailAddress} has failed (credential invalid or revoked) and sync has stopped. Reconnect it under Integrations.`,
+                severity: 'HIGH',
+              },
+            });
+            await publishNotification(this.notificationRedis, {
+              type: 'ALERT_CREATED',
+              organizationId: integration.organizationId,
+              alertId: createdAlert.id,
+              severity: 'HIGH',
+              title: alertTitle,
+              timestamp: new Date().toISOString(),
+            });
           }
           return;
         }

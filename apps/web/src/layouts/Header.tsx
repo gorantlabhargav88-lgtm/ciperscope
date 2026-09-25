@@ -1,7 +1,8 @@
-import { Bell, Search, User } from 'lucide-react';
+import { Search, User } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
 import { useCommandPalette } from '../components/command-palette/CommandPaletteContext';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../components/ui/tooltip';
+import { NotificationBell } from '../components/NotificationBell';
 
 export const Header = () => {
   const { user, logout } = useAuth();
@@ -21,18 +22,7 @@ export const Header = () => {
       </div>
 
       <div className="flex items-center space-x-4">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              disabled
-              aria-label="Notifications (coming soon)"
-              className="text-muted-foreground/50 cursor-not-allowed"
-            >
-              <Bell className="w-5 h-5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>Notifications — coming soon, no live event source yet</TooltipContent>
-        </Tooltip>
+        <NotificationBell />
         <div className="h-5 w-px bg-border mx-2" />
         <div className="flex items-center space-x-3">
           <div className="text-right hidden sm:block">

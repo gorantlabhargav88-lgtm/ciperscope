@@ -21,10 +21,22 @@ describe('classifyApiError', () => {
     expect(result.message).toBe('Internal Server Error');
   });
 
-  it('a network-level error (not an ApiError) falls back to a generic context message', () => {
+  it('a network-level TypeError (API unreachable) is classified as network, never shown as raw "Failed to fetch"', () => {
     const result = classifyApiError(new TypeError('Failed to fetch'), 'chain of custody');
+    expect(result.kind).toBe('network');
+    expect(result.message).not.toBe('Failed to fetch');
+    expect(result.message).toMatch(/cannot reach the ciperscope api/i);
+  });
+
+  it('recognizes Firefox/Safari network-error wording too', () => {
+    expect(classifyApiError(new TypeError('NetworkError when attempting to fetch resource.'), 'x').kind).toBe('network');
+    expect(classifyApiError(new TypeError('Load failed'), 'x').kind).toBe('network');
+  });
+
+  it('a non-network TypeError still falls back to the generic error path', () => {
+    const result = classifyApiError(new TypeError('Cannot read properties of undefined'), 'chain of custody');
     expect(result.kind).toBe('error');
-    expect(result.message).toBe('Failed to fetch');
+    expect(result.message).toBe('Cannot read properties of undefined');
   });
 
   it('a completely unknown thrown value does not throw and falls back to a safe message', () => {

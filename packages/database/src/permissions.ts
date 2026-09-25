@@ -26,6 +26,9 @@ export const SYSTEM_ENFORCED_PERMISSIONS = [
   { action: 'INVESTIGATION_READ', description: 'Read investigations' },
   { action: 'EVIDENCE_READ', description: 'Read evidence records' },
   { action: 'INTEGRATION_MANAGE', description: 'Connect, view, and disconnect third-party integrations (e.g. Gmail)' },
+  { action: 'AUDIT_LOG_READ', description: 'Read the organization-wide audit log' },
+  { action: 'USER_READ', description: 'Read organization members and roles' },
+  { action: 'USER_MANAGE', description: 'Add, remove, and change the role/status of organization members' },
 ] as const;
 
 export type SystemEnforcedPermission = (typeof SYSTEM_ENFORCED_PERMISSIONS)[number];

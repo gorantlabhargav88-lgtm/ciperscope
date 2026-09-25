@@ -3,6 +3,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '@ciperscope/database';
 import { logAuditEvent } from '../utils/audit';
 import { uuidSchema } from '../utils/validation';
+import { userHasPermissionInOrg } from '../utils/permissionCheck';
+import { isSessionValid } from '../utils/sessionCheck';
 
 import '@fastify/jwt';
 
@@ -42,8 +44,7 @@ export default fp(async (fastify: FastifyInstance) => {
       await request.jwtVerify();
       // Check if session is revoked
       if (request.user && request.user.sid) {
-         const session = await prisma.session.findUnique({ where: { id: request.user.sid }});
-         if (!session || !session.isValid) {
+         if (!(await isSessionValid(request.user.sid))) {
             throw new Error('Session is invalid or revoked');
          }
       }
@@ -80,33 +81,18 @@ export default fp(async (fastify: FastifyInstance) => {
         return;
       }
 
-      // Check DB for exact permission
-      const membership = await prisma.organizationMember.findUnique({
-        where: {
-          userId_organizationId: {
-            userId,
-            organizationId: orgId,
-          },
-        },
-        include: {
-          role: {
-            include: {
-              permissions: {
-                include: { permission: true },
-              },
-            },
-          },
-        },
+      // Check DB for exact permission — same underlying check the SSE
+      // notification stream route uses directly (see utils/permissionCheck.ts).
+      const membershipExists = await prisma.organizationMember.findUnique({
+        where: { userId_organizationId: { userId, organizationId: orgId } },
+        select: { id: true },
       });
-
-      if (!membership) {
+      if (!membershipExists) {
         reply.code(403).send({ error: 'Forbidden', message: 'No membership found' });
         return;
       }
 
-      // If System Admin (isSystem role with high privileges), bypass or verify
-      // For this phase, we check if the permission exists in the role
-      const hasPermission = membership.role.permissions.some(rp => rp.permission.action === action);
+      const hasPermission = await userHasPermissionInOrg(userId, orgId, action);
 
       if (!hasPermission) {
         // Create audit log for denied action

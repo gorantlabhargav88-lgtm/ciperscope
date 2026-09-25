@@ -46,6 +46,17 @@ export const envSchema = z.object({
   // (public protocol), but this lets ops disable outbound RDAP lookups
   // entirely; when unset/true, RDAP is used. See DomainIntelConfig.ts.
   RDAP_ENABLED: z.enum(['true', 'false']).optional(),
+  // Organization-invitation email delivery (packages/providers/src/email).
+  // All optional — when SMTP_HOST/SMTP_PORT/SMTP_FROM are unset, invitation
+  // creation falls back to NullEmailProvider (no email sent, never
+  // fabricated) and, outside production only, returns a dev invite URL
+  // directly in the API response instead.
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASSWORD: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  SMTP_SECURE: z.enum(['true', 'false']).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
