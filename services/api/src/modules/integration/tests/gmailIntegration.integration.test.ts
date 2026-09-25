@@ -352,7 +352,7 @@ describe('Gmail Integration — token encryption, disconnect, webhook isolation 
       const integration = await prisma.integration.findFirst({ where: { emailAddress } });
       const job = await queue.getJob(`sync-${integration!.id}-${historyId}`);
       expect(job).toBeDefined();
-      if (job) await job.remove();
+      if (job) await job.remove().catch(() => {});
       await queueManager.closeAll();
     });
 
