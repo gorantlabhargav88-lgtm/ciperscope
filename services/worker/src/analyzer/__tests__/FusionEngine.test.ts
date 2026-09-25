@@ -524,7 +524,7 @@ describe('FusionEngine', () => {
       mockEmail.urls = [{ indicators: ['OBFUSCATED'] }]; // CRITICAL
 
       const publishMock = vi.fn().mockResolvedValue(1);
-      const fakeRedis = { publish: publishMock } as any;
+      const fakeRedis = { publish: publishMock } as unknown as ConstructorParameters<typeof FusionEngine>[2];
       fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient, undefined, fakeRedis);
 
       await fusionEngine.evaluate('email-1');
@@ -539,7 +539,7 @@ describe('FusionEngine', () => {
 
     it('never publishes for LOW/MEDIUM results', async () => {
       const publishMock = vi.fn();
-      const fakeRedis = { publish: publishMock } as any;
+      const fakeRedis = { publish: publishMock } as unknown as ConstructorParameters<typeof FusionEngine>[2];
       fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient, undefined, fakeRedis);
 
       await fusionEngine.evaluate('email-1'); // default mock scores 0 -> LOW
@@ -560,7 +560,7 @@ describe('FusionEngine', () => {
       mockEmail.organizationId = 'org-1';
       mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL };
       mockEmail.urls = [{ indicators: ['OBFUSCATED'] }];
-      const fakeRedis = { publish: vi.fn().mockRejectedValue(new Error('redis down')) } as any;
+      const fakeRedis = { publish: vi.fn().mockRejectedValue(new Error('redis down')) } as unknown as ConstructorParameters<typeof FusionEngine>[2];
       fusionEngine = new FusionEngine(prismaMock as unknown as PrismaClient, undefined, fakeRedis);
 
       await expect(fusionEngine.evaluate('email-1')).resolves.not.toThrow();
@@ -605,8 +605,8 @@ describe('FusionEngine', () => {
 
     it('the Alert message never fabricates content beyond real subject/sender/factor data', async () => {
       mockEmail.organizationId = 'org-1';
-      (mockEmail as any).subject = 'Urgent wire transfer';
-      (mockEmail as any).senderAddress = 'ceo@example.com';
+      mockEmail.subject = 'Urgent wire transfer';
+      mockEmail.senderAddress = 'ceo@example.com';
       mockEmail.authAnalysis = { spf: AuthResultStatus.FAIL, dkim: AuthResultStatus.FAIL };
       mockEmail.urls = [{ indicators: ['OBFUSCATED'] }];
 

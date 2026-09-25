@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Readable } from 'stream';
 import * as zlib from 'zlib';
 import { AttachmentAnalyzer } from '../AttachmentAnalyzer';
@@ -164,10 +164,14 @@ describe('AttachmentAnalyzer + APK — unmocked end-to-end', () => {
   });
 
   it('never spawns a process or shells out while analyzing an APK (static byte analysis only)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- technically unavoidable: ESM namespace objects (await import('child_process')) are non-configurable in Node, preventing vi.spyOn() from overriding spawn/exec. We must use require() to spy on the CommonJS exports.
     const originalSpawn = require('child_process').spawn;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- technically unavoidable for the same reason.
     const originalExec = require('child_process').exec;
     let called = false;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- technically unavoidable.
     require('child_process').spawn = (...args: unknown[]) => { called = true; return originalSpawn(...(args as [])); };
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- technically unavoidable.
     require('child_process').exec = (...args: unknown[]) => { called = true; return originalExec(...(args as [])); };
 
     try {
@@ -176,7 +180,9 @@ describe('AttachmentAnalyzer + APK — unmocked end-to-end', () => {
       await AttachmentAnalyzer.analyze(Readable.from([apkBytes]), 'application/vnd.android.package-archive', 'apk');
       expect(called).toBe(false);
     } finally {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires -- technically unavoidable.
       require('child_process').spawn = originalSpawn;
+      // eslint-disable-next-line @typescript-eslint/no-var-requires -- technically unavoidable.
       require('child_process').exec = originalExec;
     }
   });

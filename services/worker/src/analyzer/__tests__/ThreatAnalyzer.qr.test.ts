@@ -65,13 +65,13 @@ describe('ThreatAnalyzer — QR code integration (Phase G)', () => {
   });
 
   function makeMocks() {
-    const createdUrls: any[] = [];
-    const createdAttachments: any[] = [];
+    const createdUrls: Record<string, unknown>[] = [];
+    const createdAttachments: Record<string, unknown>[] = [];
 
     const txMock = {
-      emailUrl: { createMany: vi.fn((args: any) => { createdUrls.push(...args.data); return Promise.resolve(); }) },
+      emailUrl: { createMany: vi.fn((args: { data: Record<string, unknown>[] }) => { createdUrls.push(...args.data); return Promise.resolve(); }) },
       emailAttachment: {
-        createMany: vi.fn((args: any) => { createdAttachments.push(...args.data); return Promise.resolve(); }),
+        createMany: vi.fn((args: { data: Record<string, unknown>[] }) => { createdAttachments.push(...args.data); return Promise.resolve(); }),
         update: vi.fn().mockResolvedValue({}),
       },
     };
@@ -183,10 +183,10 @@ describe('ThreatAnalyzer — QR code integration (Phase G)', () => {
 
     await analyzer.analyzeEmail('email-qr-1');
 
-    const findFirstMock = (prismaMock as any).emailAttachment.findFirst as ReturnType<typeof vi.fn>;
+    const findFirstMock = (prismaMock as unknown as { emailAttachment: { findFirst: ReturnType<typeof vi.fn> } }).emailAttachment.findFirst;
     expect(findFirstMock).toHaveBeenCalled();
     for (const call of findFirstMock.mock.calls) {
-      expect(call[0].where.email.organizationId).toBe('org-1');
+      expect((call[0] as { where: { email: { organizationId: string } } }).where.email.organizationId).toBe('org-1');
     }
   });
 

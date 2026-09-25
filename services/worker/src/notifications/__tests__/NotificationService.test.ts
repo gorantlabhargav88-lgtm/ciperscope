@@ -4,9 +4,9 @@ import { WebhookNotificationService } from '../NotificationService';
 vi.mock('@ciperscope/logger', () => ({ logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() } }));
 
 describe('WebhookNotificationService.notifyThreatAnalysisCompleted', () => {
-  let prismaMock: any;
+  let prismaMock: { webhook: { findMany: ReturnType<typeof vi.fn> } };
   let addMock: ReturnType<typeof vi.fn>;
-  let queueManagerMock: any;
+  let queueManagerMock: { getQueue: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     addMock = vi.fn().mockResolvedValue({ id: 'job-1' });
@@ -74,7 +74,7 @@ describe('WebhookNotificationService.notifyThreatAnalysisCompleted', () => {
   });
 
   it('two organizations with independent webhooks each only get their own event delivered', async () => {
-    prismaMock.webhook.findMany.mockImplementation(({ where }: any) => {
+    prismaMock.webhook.findMany.mockImplementation(({ where }: { where: { organizationId: string } }) => {
       if (where.organizationId === 'org-A') {
         return Promise.resolve([{ id: 'wh-A', organizationId: 'org-A', enabled: true, events: ['THREAT_ANALYSIS_COMPLETED'] }]);
       }

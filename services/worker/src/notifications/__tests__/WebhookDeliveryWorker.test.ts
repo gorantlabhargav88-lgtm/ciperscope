@@ -27,7 +27,7 @@ import { logger } from '@ciperscope/logger';
 import { Prisma } from '@ciperscope/database';
 import { signWebhookPayload } from '../webhookSigning';
 
-function makePrismaMock(overrides: any = {}) {
+function makePrismaMock(overrides: Record<string, unknown> = {}) {
   return {
     webhook: {
       findUnique: vi.fn().mockResolvedValue({
@@ -45,7 +45,7 @@ function makePrismaMock(overrides: any = {}) {
   };
 }
 
-function makeJob(overrides: any = {}) {
+function makeJob(overrides: Record<string, unknown> = {}) {
   return {
     data: {
       organizationId: 'org-1',
@@ -77,7 +77,7 @@ describe('processWebhookDelivery', () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200 });
     const prisma = makePrismaMock();
 
-    await processWebhookDelivery(prisma as any, makeJob());
+    await processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob());
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(prisma.webhookDelivery.update).toHaveBeenCalledWith(
@@ -89,7 +89,7 @@ describe('processWebhookDelivery', () => {
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
     const prisma = makePrismaMock();
 
-    await expect(processWebhookDelivery(prisma as any, makeJob())).rejects.toThrow(/status 500/);
+    await expect(processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob())).rejects.toThrow(/status 500/);
     expect(prisma.webhookDelivery.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED', lastStatusCode: 500 }) })
     );
@@ -101,7 +101,7 @@ describe('processWebhookDelivery', () => {
     fetchMock.mockRejectedValue(abortError);
     const prisma = makePrismaMock();
 
-    await expect(processWebhookDelivery(prisma as any, makeJob())).rejects.toThrow();
+    await expect(processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob())).rejects.toThrow();
     expect(prisma.webhookDelivery.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED', lastError: 'Request timed out' }) })
     );
@@ -112,7 +112,7 @@ describe('processWebhookDelivery', () => {
     const prisma = makePrismaMock();
 
     // attemptsMade=0 with attempts:3 -> this is attempt 1 of 3, not final.
-    await expect(processWebhookDelivery(prisma as any, makeJob({ attemptsMade: 0, opts: { attempts: 3 } }))).rejects.toThrow();
+    await expect(processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob({ attemptsMade: 0, opts: { attempts: 3 } }))).rejects.toThrow();
     expect(prisma.webhookDelivery.update).not.toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'EXHAUSTED' }) })
     );
@@ -121,7 +121,7 @@ describe('processWebhookDelivery', () => {
     fetchMock.mockResolvedValue({ ok: false, status: 503 });
     const prisma2 = makePrismaMock();
     // attemptsMade=2 with attempts:3 -> this is attempt 3 of 3, final.
-    await expect(processWebhookDelivery(prisma2 as any, makeJob({ attemptsMade: 2, opts: { attempts: 3 } }))).rejects.toThrow();
+    await expect(processWebhookDelivery(prisma2 as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob({ attemptsMade: 2, opts: { attempts: 3 } }))).rejects.toThrow();
     expect(prisma2.webhookDelivery.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'EXHAUSTED' }) })
     );
@@ -132,7 +132,7 @@ describe('processWebhookDelivery', () => {
     const prisma = makePrismaMock();
     const job = makeJob();
 
-    await processWebhookDelivery(prisma as any, job);
+    await processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], job);
 
     const [, options] = fetchMock.mock.calls[0];
     const expectedSignature = signWebhookPayload(JSON.stringify(job.data.payload), 'plaintext-webhook-secret');
@@ -149,7 +149,7 @@ describe('processWebhookDelivery', () => {
       },
     });
 
-    await processWebhookDelivery(prisma as any, makeJob());
+    await processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob());
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -158,12 +158,12 @@ describe('processWebhookDelivery', () => {
     const prisma = makePrismaMock({
       webhookDelivery: {
         findUnique: vi.fn().mockResolvedValue(null),
-        create: vi.fn().mockRejectedValue(new (Prisma as any).PrismaClientKnownRequestError('duplicate', 'P2002')),
+        create: vi.fn().mockRejectedValue(new (Prisma as unknown as { PrismaClientKnownRequestError: new (msg: string, code: string) => Error }).PrismaClientKnownRequestError('duplicate', 'P2002')),
         update: vi.fn(),
       },
     });
 
-    await processWebhookDelivery(prisma as any, makeJob());
+    await processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob());
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -175,7 +175,7 @@ describe('processWebhookDelivery', () => {
       secretEncrypted: 'encrypted:xyz', enabled: false, events: ['THREAT_ANALYSIS_COMPLETED'],
     });
 
-    await processWebhookDelivery(prisma as any, makeJob());
+    await processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob());
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -184,7 +184,7 @@ describe('processWebhookDelivery', () => {
     const prisma = makePrismaMock();
     prisma.webhook.findUnique.mockResolvedValue(null); // simulates no row for this org+id combination
 
-    await processWebhookDelivery(prisma as any, makeJob({ data: { ...makeJob().data, organizationId: 'org-attacker' } }));
+    await processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob({ data: { ...makeJob().data, organizationId: 'org-attacker' } }));
 
     expect(prisma.webhook.findUnique).toHaveBeenCalledWith({
       where: { id_organizationId: { id: 'wh-1', organizationId: 'org-attacker' } },
@@ -196,12 +196,12 @@ describe('processWebhookDelivery', () => {
     fetchMock.mockResolvedValue({ ok: false, status: 502 });
     const prisma = makePrismaMock();
 
-    await expect(processWebhookDelivery(prisma as any, makeJob())).rejects.toThrow();
+    await expect(processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob())).rejects.toThrow();
 
     const allLogCalls = [
-      ...(logger.info as any).mock.calls,
-      ...(logger.warn as any).mock.calls,
-      ...(logger.error as any).mock.calls,
+      ...(logger.info as ReturnType<typeof vi.fn>).mock.calls,
+      ...(logger.warn as ReturnType<typeof vi.fn>).mock.calls,
+      ...(logger.error as ReturnType<typeof vi.fn>).mock.calls,
     ];
     const serialized = JSON.stringify(allLogCalls);
     expect(serialized).not.toContain('plaintext-webhook-secret');
@@ -212,7 +212,7 @@ describe('processWebhookDelivery', () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200 });
     const prisma = makePrismaMock();
 
-    await processWebhookDelivery(prisma as any, makeJob());
+    await processWebhookDelivery(prisma as unknown as Parameters<typeof processWebhookDelivery>[0], makeJob() as unknown as Job);
 
     const [, options] = fetchMock.mock.calls[0];
     expect(options.headers['Authorization']).toBeUndefined();
