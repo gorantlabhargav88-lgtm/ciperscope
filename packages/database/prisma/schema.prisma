@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   // "native" covers local dev; "linux-musl-openssl-3.0.x" is needed for the
   // node:20-alpine Docker runtime images (services/api/Dockerfile,
   // services/worker/Dockerfile) — that Alpine version ships OpenSSL 3.x
@@ -36,22 +36,22 @@ model Organization {
 }
 
 model User {
-  id            String                @id @default(uuid())
-  email         String                @unique
-  passwordHash  String
-  firstName     String?
-  lastName      String?
-  isActive      Boolean               @default(true)
-  lastLoginAt   DateTime?
-  createdAt     DateTime              @default(now())
-  updatedAt     DateTime              @updatedAt
-  assignedCases Case[]                @relation("CaseAssignee")
-  createdCases  Case[]                @relation("CaseCreator")
-  caseNotes     CaseNote[]
-  custodyEvents ChainOfCustodyEvent[]
-  memberships   OrganizationMember[]
-  sessions      Session[]
-  sentInvitations Invitation[] @relation("InvitationInviter")
+  id              String                @id @default(uuid())
+  email           String                @unique
+  passwordHash    String
+  firstName       String?
+  lastName        String?
+  isActive        Boolean               @default(true)
+  lastLoginAt     DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  assignedCases   Case[]                @relation("CaseAssignee")
+  createdCases    Case[]                @relation("CaseCreator")
+  caseNotes       CaseNote[]
+  custodyEvents   ChainOfCustodyEvent[]
+  memberships     OrganizationMember[]
+  sessions        Session[]
+  sentInvitations Invitation[]          @relation("InvitationInviter")
 }
 
 model OrganizationMember {
@@ -355,6 +355,7 @@ model Email {
 
   @@unique([organizationId, sha256])
   @@index([organizationId])
+  @@index([organizationId, createdAt])
   @@index([messageId])
   @@index([senderAddress])
   @@index([caseId])
@@ -390,29 +391,30 @@ model RelayHop {
   email            Email     @relation(fields: [emailId], references: [id], onDelete: Cascade)
 
   @@index([emailId])
+  @@index([createdAt])
 }
 
 model EmailAttachment {
-  id              String   @id @default(uuid())
-  emailId         String
-  filename        String
-  mimeType        String
-  sizeBytes       Int
-  sha256          String?
-  storageKey      String?
-  createdAt       DateTime @default(now())
-  actualMimeType  String?
-  archiveMetadata Json?
-  isArchive       Boolean  @default(false)
-  isMismatch      Boolean  @default(false)
-  magicBytes      String?
+  id               String   @id @default(uuid())
+  emailId          String
+  filename         String
+  mimeType         String
+  sizeBytes        Int
+  sha256           String?
+  storageKey       String?
+  createdAt        DateTime @default(now())
+  actualMimeType   String?
+  archiveMetadata  Json?
+  isArchive        Boolean  @default(false)
+  isMismatch       Boolean  @default(false)
+  magicBytes       String?
   // Structured, deterministic findings from AttachmentThreatIndicators —
   // never a fabricated malware verdict, see services/worker's analyzer.
   threatIndicators Json?
   // Populated only when this attachment was identified as an Android APK
   // (via AndroidManifest.xml presence, not filename/extension); see
   // services/worker/src/analyzer/apk/ApkAnalyzer.ts. Null for non-APK files.
-  apkMetadata     Json?
+  apkMetadata      Json?
   // Populated only when this attachment was identified as an image and QR
   // code(s) were decoded from it; see
   // services/worker/src/analyzer/QrCodeAnalyzer.ts. Null when no QR codes
@@ -421,10 +423,11 @@ model EmailAttachment {
   // they flow through the existing URL/CTI/risk-scoring pipeline
   // unchanged — this field is the raw QR-decode record, not a second
   // source of truth for URL analysis.
-  qrFindings      Json?
-  email           Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  qrFindings       Json?
+  email            Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
 
   @@index([emailId])
+  @@index([createdAt])
 }
 
 model EmailUrl {
@@ -440,6 +443,7 @@ model EmailUrl {
   email         Email               @relation(fields: [emailId], references: [id], onDelete: Cascade)
 
   @@index([emailId])
+  @@index([createdAt])
 }
 
 model MimePart {
@@ -477,6 +481,7 @@ model EmailAddress {
   email       Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
 
   @@index([emailId])
+  @@index([createdAt])
 }
 
 model EmailAuthenticationAnalysis {
@@ -705,37 +710,37 @@ model CampaignEmail {
 }
 
 model Evidence {
-  id               String                @id @default(uuid())
+  id             String                @id @default(uuid())
   // Denormalized from case.organizationId (same rationale as
   // ForensicReport.organizationId, see its own comment below): lets every
   // query enforce tenant isolation directly on Evidence without requiring a
   // join through Case, and gives the Phase-I evidence model a first-class
   // tenant boundary independent of the case relation.
-  organizationId   String
-  caseId           String
-  type             EvidenceType
-  storageKey       String
-  filename         String?
-  mimeType         String?
-  sizeBytes        Int?
-  sha256           String                @unique
-  status           EvidenceStatus        @default(ACTIVE)
-  collectionTime   DateTime              @default(now())
-  collectedById    String?
+  organizationId String
+  caseId         String
+  type           EvidenceType
+  storageKey     String
+  filename       String?
+  mimeType       String?
+  sizeBytes      Int?
+  sha256         String                @unique
+  status         EvidenceStatus        @default(ACTIVE)
+  collectionTime DateTime              @default(now())
+  collectedById  String?
   // Provenance: which subsystem produced this evidence (e.g.
   // 'MANUAL_UPLOAD', 'EMAIL_INGESTION', 'THREAT_ANALYSIS') — distinct from
   // collectedById (the human actor, when there is one). Null for evidence
   // predating this field.
-  sourceSystem     String?
+  sourceSystem   String?
   // Phase M — set exactly once, the moment this evidence is selected into a
   // batch (BlockchainAnchor), and never cleared. This is the idempotency
   // guard against double-anchoring: batch selection is a single UPDATE
   // ... WHERE anchorId IS NULL, so two concurrent workers can never select
   // the same evidence into two different batches.
-  anchorId         String?
-  anchor           BlockchainAnchor?     @relation(fields: [anchorId], references: [id])
-  custodyEvents    ChainOfCustodyEvent[]
-  case             Case                  @relation(fields: [caseId], references: [id])
+  anchorId       String?
+  anchor         BlockchainAnchor?     @relation(fields: [anchorId], references: [id])
+  custodyEvents  ChainOfCustodyEvent[]
+  case           Case                  @relation(fields: [caseId], references: [id])
 
   @@index([caseId])
   @@index([organizationId])
