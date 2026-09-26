@@ -6,6 +6,8 @@ WORKDIR /build
 # Install pnpm
 RUN npm install -g pnpm@10.28.0
 
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+
 # Copy workspace configuration
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 

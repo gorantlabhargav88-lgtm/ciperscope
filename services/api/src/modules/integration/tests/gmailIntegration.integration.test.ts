@@ -105,6 +105,32 @@ describe('Gmail Integration — token encryption, disconnect, webhook isolation 
     return integration;
   }
 
+  async function setupIsolatedOrgWithAccess() {
+    const isolatedOrgId = crypto.randomUUID();
+    await prisma.organization.create({ data: { id: isolatedOrgId, name: 'Gmail Status Isolated Org' } });
+    const permission = await prisma.permission.upsert({
+      where: { action: 'INTEGRATION_MANAGE' },
+      update: {},
+      create: { action: 'INTEGRATION_MANAGE', description: 'Connect, view, and disconnect third-party integrations' }
+    });
+    const role = await prisma.role.create({ data: { name: 'Integration Manager', organizationId: isolatedOrgId } });
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    await prisma.organizationMember.create({ data: { userId: userIdWithPerm, organizationId: isolatedOrgId, roleId: role.id } });
+    const token = server.jwt.sign({ sub: userIdWithPerm, orgs: [isolatedOrgId], sid: sessionIdWithPerm });
+    return {
+      isolatedOrgId,
+      token,
+      cleanup: async () => {
+        await prisma.integration.deleteMany({ where: { organizationId: isolatedOrgId } });
+        await prisma.organizationMember.deleteMany({ where: { organizationId: isolatedOrgId } });
+        await prisma.rolePermission.deleteMany({ where: { roleId: role.id } });
+        await prisma.role.deleteMany({ where: { id: role.id } });
+        await prisma.organization.deleteMany({ where: { id: isolatedOrgId } });
+      }
+    };
+  }
+
+
   describe('Token encryption at rest', () => {
     it('stored accessToken/refreshToken are never the plaintext value', async () => {
       const integration = await createIntegration(orgId, `plaintext-check-${crypto.randomUUID()}@example.com`);
@@ -163,31 +189,6 @@ describe('Gmail Integration — token encryption, disconnect, webhook isolation 
     // possibly-multi-row ACTIVE state for an org), so reusing `orgId`
     // across these specific tests would let one test's created integration
     // leak into another's assertions.
-    async function setupIsolatedOrgWithAccess() {
-      const isolatedOrgId = crypto.randomUUID();
-      await prisma.organization.create({ data: { id: isolatedOrgId, name: 'Gmail Status Isolated Org' } });
-      const permission = await prisma.permission.upsert({
-        where: { action: 'INTEGRATION_MANAGE' },
-        update: {},
-        create: { action: 'INTEGRATION_MANAGE', description: 'Connect, view, and disconnect third-party integrations' }
-      });
-      const role = await prisma.role.create({ data: { name: 'Integration Manager', organizationId: isolatedOrgId } });
-      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
-      await prisma.organizationMember.create({ data: { userId: userIdWithPerm, organizationId: isolatedOrgId, roleId: role.id } });
-      const token = server.jwt.sign({ sub: userIdWithPerm, orgs: [isolatedOrgId], sid: sessionIdWithPerm });
-      return {
-        isolatedOrgId,
-        token,
-        cleanup: async () => {
-          await prisma.integration.deleteMany({ where: { organizationId: isolatedOrgId } });
-          await prisma.organizationMember.deleteMany({ where: { organizationId: isolatedOrgId } });
-          await prisma.rolePermission.deleteMany({ where: { roleId: role.id } });
-          await prisma.role.deleteMany({ where: { id: role.id } });
-          await prisma.organization.deleteMany({ where: { id: isolatedOrgId } });
-        }
-      };
-    }
-
     it('returns not_connected when no ACTIVE integration exists for the org', async () => {
       const { isolatedOrgId, token, cleanup } = await setupIsolatedOrgWithAccess();
       try {
@@ -279,55 +280,70 @@ describe('Gmail Integration — token encryption, disconnect, webhook isolation 
 
   describe('DELETE /gmail/connection — disconnect behavior', () => {
     it('disconnects an active connection: marks it DISCONNECTED, clears tokens, never returns a token', async () => {
-      const emailAddress = `disconnect-me-${crypto.randomUUID()}@example.com`;
-      await createIntegration(orgId, emailAddress);
+      const { isolatedOrgId, token, cleanup } = await setupIsolatedOrgWithAccess();
+      try {
+        const emailAddress = `disconnect-me-${crypto.randomUUID()}@example.com`;
+        await createIntegration(isolatedOrgId, emailAddress);
 
-      const response = await server.inject({
-        method: 'DELETE',
-        url: '/api/v1/integrations/gmail/connection',
-        headers: { 'x-organization-id': orgId, authorization: `Bearer ${tokenWithPerm}` }
-      });
+        const response = await server.inject({
+          method: 'DELETE',
+          url: '/api/v1/integrations/gmail/connection',
+          headers: { 'x-organization-id': isolatedOrgId, authorization: `Bearer ${token}` }
+        });
 
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.status).toBe('disconnected');
-      expect(JSON.stringify(body)).not.toContain('fake-access-token-value');
-      expect(JSON.stringify(body)).not.toContain('fake-refresh-token-value');
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.status).toBe('disconnected');
+        expect(JSON.stringify(body)).not.toContain('fake-access-token-value');
+        expect(JSON.stringify(body)).not.toContain('fake-refresh-token-value');
 
-      const updated = await prisma.integration.findUnique({ where: { organizationId_provider_emailAddress: { organizationId: orgId, provider: 'GMAIL', emailAddress } } });
-      expect(updated?.status).toBe('DISCONNECTED');
-      expect(decryptToken(updated!.accessToken, ENCRYPTION_KEY)).toBe('');
-      expect(decryptToken(updated!.refreshToken, ENCRYPTION_KEY)).toBe('');
+        const updated = await prisma.integration.findUnique({ where: { organizationId_provider_emailAddress: { organizationId: isolatedOrgId, provider: 'GMAIL', emailAddress } } });
+        expect(updated?.status).toBe('DISCONNECTED');
+        expect(decryptToken(updated!.accessToken, ENCRYPTION_KEY)).toBe('');
+        expect(decryptToken(updated!.refreshToken, ENCRYPTION_KEY)).toBe('');
+      } finally {
+        await cleanup();
+      }
     });
 
     it('is idempotent: disconnecting again when nothing is active returns not_connected, not an error', async () => {
-      const response = await server.inject({
-        method: 'DELETE',
-        url: '/api/v1/integrations/gmail/connection',
-        headers: { 'x-organization-id': orgId, authorization: `Bearer ${tokenWithPerm}` }
-      });
-      expect(response.statusCode).toBe(200);
-      expect(response.json().status).toBe('not_connected');
+      const { isolatedOrgId, token, cleanup } = await setupIsolatedOrgWithAccess();
+      try {
+        const response = await server.inject({
+          method: 'DELETE',
+          url: '/api/v1/integrations/gmail/connection',
+          headers: { 'x-organization-id': isolatedOrgId, authorization: `Bearer ${token}` }
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().status).toBe('not_connected');
+      } finally {
+        await cleanup();
+      }
     });
 
     it('does not delete historical Email records or Case data associated with the organization', async () => {
-      const testCase = await prisma.case.create({ data: { organizationId: orgId, title: 'Gmail disconnect retention test case' } });
-      const email = await prisma.email.create({
-        data: { organizationId: orgId, caseId: testCase.id, sha256: crypto.randomUUID().replace(/-/g, ''), subject: 'Retained after disconnect' }
-      });
+      const { isolatedOrgId, token, cleanup } = await setupIsolatedOrgWithAccess();
+      try {
+        const testCase = await prisma.case.create({ data: { organizationId: isolatedOrgId, title: 'Gmail disconnect retention test case' } });
+        const email = await prisma.email.create({
+          data: { organizationId: isolatedOrgId, caseId: testCase.id, sha256: crypto.randomUUID().replace(/-/g, ''), subject: 'Retained after disconnect' }
+        });
 
-      await createIntegration(orgId, `retention-check-${crypto.randomUUID()}@example.com`);
-      await server.inject({
-        method: 'DELETE',
-        url: '/api/v1/integrations/gmail/connection',
-        headers: { 'x-organization-id': orgId, authorization: `Bearer ${tokenWithPerm}` }
-      });
+        await createIntegration(isolatedOrgId, `retention-check-${crypto.randomUUID()}@example.com`);
+        await server.inject({
+          method: 'DELETE',
+          url: '/api/v1/integrations/gmail/connection',
+          headers: { 'x-organization-id': isolatedOrgId, authorization: `Bearer ${token}` }
+        });
 
-      const stillExists = await prisma.email.findUnique({ where: { id: email.id } });
-      expect(stillExists).not.toBeNull();
+        const stillExists = await prisma.email.findUnique({ where: { id: email.id } });
+        expect(stillExists).not.toBeNull();
 
-      await prisma.email.deleteMany({ where: { id: email.id } });
-      await prisma.case.deleteMany({ where: { id: testCase.id } });
+        await prisma.email.deleteMany({ where: { id: email.id } });
+        await prisma.case.deleteMany({ where: { id: testCase.id } });
+      } finally {
+        await cleanup();
+      }
     });
   });
 

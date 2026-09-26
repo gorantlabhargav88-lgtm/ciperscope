@@ -74,7 +74,7 @@ export default async function alertRoutes(server: FastifyInstance) {
     // failed with a generic, header-free "Failed to fetch").
     const requestOrigin = request.headers.origin;
     const corsHeaders: Record<string, string> = {};
-    const allowedOrigins = env.CORS_ORIGIN.split(',').map(o => o.trim());
+    const allowedOrigins = Array.isArray(env.CORS_ORIGIN) ? env.CORS_ORIGIN : [env.CORS_ORIGIN];
     if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
       corsHeaders['Access-Control-Allow-Origin'] = requestOrigin;
       corsHeaders['Access-Control-Allow-Credentials'] = 'true';

@@ -37,10 +37,10 @@ services:
       context: ../../services/ml-worker
     container_name: ciperscope_ml_worker
     environment:
-      - ML_SERVICE_TOKEN=internal-secret-token
+      - ML_SERVICE_TOKEN=${ML_SERVICE_TOKEN}
     # No ports exposed to host. Only accessible via internal Docker network.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s
       timeout: 5s
       retries: 3

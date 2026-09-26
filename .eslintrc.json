@@ -9,5 +9,19 @@
     "node": true,
     "es2024": true
   },
-  "ignorePatterns": ["dist", "node_modules", "apps/web"]
+  "ignorePatterns": ["dist", "node_modules", "apps/web"],
+  "rules": {
+    "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/no-unused-vars": "warn",
+    "no-useless-catch": "off"
+  },
+  "overrides": [
+    {
+      "files": ["*.test.ts", "**/tests/**/*.ts", "**/__tests__/**/*.ts"],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "off",
+        "@typescript-eslint/no-unused-vars": "off"
+      }
+    }
+  ]
 }

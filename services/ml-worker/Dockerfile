@@ -12,8 +12,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY ./app /app
 
-# Secure ownership
+# Secure ownership for app and cache volume
 RUN chown -R mluser:mluser /app
+RUN mkdir -p /home/mluser/.cache/huggingface/hub && chown -R mluser:mluser /home/mluser/.cache
+ENV HF_HOME=/home/mluser/.cache/huggingface
+ENV TRANSFORMERS_CACHE=/home/mluser/.cache/huggingface/hub
 USER mluser
 
 # Expose port (internal only via docker-compose)

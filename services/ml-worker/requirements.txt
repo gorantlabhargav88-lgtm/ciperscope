@@ -7,5 +7,6 @@ python-dotenv==1.0.0
 torch==2.1.1 --index-url https://download.pytorch.org/whl/cpu
 transformers==4.35.2
 safetensors==0.4.0
+numpy<2.0.0
 pytest==7.4.3
 httpx==0.25.2

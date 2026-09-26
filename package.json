@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "turbo run build",
+    "typecheck": "turbo run build",
     "dev": "turbo run dev --concurrency=20",
     "lint": "turbo run lint",
     "test": "turbo run test"
@@ -12,6 +13,7 @@
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.57.1",
+    "playwright-core": "^1.63.0",
     "tsx": "^4.23.13",
     "turbo": "^2.1.0"
   },

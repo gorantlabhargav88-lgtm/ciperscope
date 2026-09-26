@@ -3745,6 +3745,7 @@ describe('Investigation API (Integration)', () => {
       url: `/api/v1/cases/${testCaseId}/investigations/${testInvestigationId}/workspace`,
       headers: { 'x-organization-id': testOrgId }
     });
+    if (res.statusCode !== 200) console.error("TEST FAILED", res.payload);
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body.investigation).toBeDefined();

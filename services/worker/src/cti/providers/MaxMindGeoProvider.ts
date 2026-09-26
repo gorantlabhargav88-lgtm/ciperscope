@@ -35,7 +35,7 @@ export class MaxMindGeoProvider implements IGeoProvider {
     private readonly accountId: string,
     private readonly licenseKey: string
   ) {
-    this.client = new HttpClient('MaxMindGeoIP', { timeout: 5000, baseURL: 'https://geoip.maxmind.com' });
+    this.client = new HttpClient('MaxMindGeoIP', { timeout: 5000, baseURL: 'https://geolite.info' });
   }
 
   public async lookup(ipAddress: string): Promise<GeoLocationResult | null> {
