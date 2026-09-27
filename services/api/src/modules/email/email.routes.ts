@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import psl from 'psl';
 import { EmailIngestionService } from './ingestion.service';
-import { prisma } from '@ciperscope/database';
+import { prisma, Prisma } from '@ciperscope/database';
 import { LocalRawEmailStore, S3RawEmailStore, RawEmailStore } from '@ciperscope/storage';
 import { QueueManager, IdempotencyManager, createRedisConnection } from '@ciperscope/queue';
 import { env, defaultRawEmailStoragePath } from '@ciperscope/config';
@@ -54,6 +54,234 @@ export default async function emailRoutes(server: FastifyInstance) {
   server.addHook('onClose', async () => {
     await queueManager.closeAll();
     redisConnection.disconnect();
+  });
+
+  // GET / — List ingested emails for authenticated tenant with search, filtering, and pagination
+  server.get('/', {
+    preValidation: [server.authenticate, server.requirePermission('EMAIL_READ')]
+  }, async (request, reply) => {
+    const organizationId = request.headers['x-organization-id'] as string;
+    if (!organizationId) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User lacks organization context' });
+    }
+
+    if (request.user?.orgs && Array.isArray(request.user.orgs) && !request.user.orgs.includes(organizationId)) {
+      return reply.status(403).send({ error: 'Tenant isolation failed', message: 'User not authorized for this organization' });
+    }
+
+    const query = request.query as {
+      page?: string;
+      limit?: string;
+      search?: string;
+      status?: string;
+      classification?: string;
+      source?: string;
+    };
+
+    const page = Math.max(1, parseInt(query.page || '1', 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit || '20', 10) || 20));
+    const skip = (page - 1) * limit;
+
+    const andConditions: Prisma.EmailWhereInput[] = [{ organizationId }];
+
+    if (query.status && query.status !== 'ALL') {
+      andConditions.push({ analysisStatus: query.status as any });
+    }
+
+    if (query.classification && query.classification !== 'ALL') {
+      andConditions.push({ classification: query.classification as any });
+    }
+
+    if (query.source && query.source !== 'ALL') {
+      if (query.source === 'GMAIL') {
+        andConditions.push({
+          OR: [
+            { ingestionSrc: 'GMAIL' },
+            { headers: { some: { name: 'delivered-to' } } }
+          ]
+        });
+      } else if (query.source === 'UPLOAD') {
+        andConditions.push({
+          AND: [
+            { ingestionSrc: 'UPLOAD' },
+            { headers: { none: { name: 'delivered-to' } } }
+          ]
+        });
+      } else {
+        andConditions.push({ ingestionSrc: query.source });
+      }
+    }
+
+    if (query.search && query.search.trim().length > 0) {
+      const term = query.search.trim();
+      andConditions.push({
+        OR: [
+          { subject: { contains: term, mode: 'insensitive' } },
+          { senderAddress: { contains: term, mode: 'insensitive' } },
+          {
+            headers: {
+              some: {
+                name: { in: ['subject', 'from', 'to'] },
+                value: { contains: term, mode: 'insensitive' }
+              }
+            }
+          },
+          {
+            addresses: {
+              some: {
+                OR: [
+                  { address: { contains: term, mode: 'insensitive' } },
+                  { displayName: { contains: term, mode: 'insensitive' } },
+                  { raw: { contains: term, mode: 'insensitive' } }
+                ]
+              }
+            }
+          }
+        ]
+      });
+    }
+
+    const where: Prisma.EmailWhereInput = { AND: andConditions };
+
+    const [total, emails] = await Promise.all([
+      prisma.email.count({ where }),
+      prisma.email.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          headers: {
+            where: {
+              name: { in: ['subject', 'from', 'to', 'date', 'delivered-to'] }
+            }
+          },
+          addresses: {
+            where: {
+              headerName: { in: ['from', 'to', 'cc'] }
+            }
+          },
+          attachments: {
+            select: {
+              id: true,
+              filename: true,
+              mimeType: true,
+              sizeBytes: true,
+              threatIndicators: true,
+            }
+          },
+          riskAssessments: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: {
+              overallScore: true,
+              riskLevel: true,
+            }
+          }
+        }
+      })
+    ]);
+
+    const items = emails.map(email => {
+      const subjectHeader = email.headers.find(h => h.name.toLowerCase() === 'subject')?.value;
+      const fromHeader = email.headers.find(h => h.name.toLowerCase() === 'from')?.value;
+      const toHeader = email.headers.find(h => h.name.toLowerCase() === 'to')?.value;
+      const dateHeader = email.headers.find(h => h.name.toLowerCase() === 'date')?.value;
+
+      const fromAddress = email.addresses.find(a => a.headerName.toLowerCase() === 'from');
+      const toAddress = email.addresses.find(a => a.headerName.toLowerCase() === 'to');
+
+      const sender = email.senderAddress || fromAddress?.address || fromAddress?.raw || fromHeader || 'Unknown Sender';
+      const recipient = toAddress?.address || toAddress?.raw || toHeader || 'Unknown Recipient';
+      const subject = email.subject || subjectHeader || '(No Subject)';
+
+      let date: string;
+      if (email.date) {
+        date = email.date.toISOString();
+      } else if (dateHeader) {
+        try {
+          const d = new Date(dateHeader);
+          date = isNaN(d.getTime()) ? email.createdAt.toISOString() : d.toISOString();
+        } catch {
+          date = email.createdAt.toISOString();
+        }
+      } else {
+        date = email.createdAt.toISOString();
+      }
+
+      const latestAssessment = email.riskAssessments[0];
+      const riskScore = email.riskScore ?? latestAssessment?.overallScore ?? null;
+      let priority: 'P1' | 'P2' | 'P3' | null = null;
+      if (latestAssessment?.riskLevel) {
+        if (latestAssessment.riskLevel === 'CRITICAL' || latestAssessment.riskLevel === 'HIGH') {
+          priority = 'P1';
+        } else if (latestAssessment.riskLevel === 'MEDIUM') {
+          priority = 'P2';
+        } else {
+          priority = 'P3';
+        }
+      } else if (riskScore != null) {
+        if (riskScore >= 70) priority = 'P1';
+        else if (riskScore >= 40) priority = 'P2';
+        else priority = 'P3';
+      }
+
+      const hasMaliciousAttachment = email.attachments.some(a => Array.isArray(a.threatIndicators) && a.threatIndicators.length > 0);
+      const isSuspiciousOrMalicious =
+        email.classification === 'PHISHING' ||
+        email.classification === 'MALWARE' ||
+        email.classification === 'BEC' ||
+        email.classification === 'IMPERSONATION' ||
+        email.classification === 'FRAUD' ||
+        email.classification === 'SUSPICIOUS' ||
+        (riskScore != null && riskScore >= 70) ||
+        priority === 'P1' ||
+        hasMaliciousAttachment;
+
+      const isGmail = email.ingestionSrc === 'GMAIL' || email.headers.some(h => h.name.toLowerCase() === 'delivered-to');
+      const resolvedIngestionSrc = isGmail ? 'GMAIL' : email.ingestionSrc;
+
+      return {
+        id: email.id,
+        messageId: email.messageId,
+        subject,
+        sender,
+        recipient,
+        date,
+        createdAt: email.createdAt.toISOString(),
+        ingestionSrc: resolvedIngestionSrc,
+        classification: email.classification,
+        riskScore,
+        priority,
+        analysisStatus: email.analysisStatus,
+        attachmentCount: email.attachments.length,
+        attachments: email.attachments.map(a => ({
+          id: a.id,
+          filename: a.filename,
+          mimeType: a.mimeType,
+          sizeBytes: a.sizeBytes,
+        })),
+        isSuspiciousOrMalicious,
+        caseId: email.caseId,
+      };
+    });
+
+    await logAuditEvent({
+      action: 'EMAIL_LIST_VIEWED',
+      resource: 'Email',
+      organizationId,
+      actorId: request.user?.sub,
+      status: 'SUCCESS',
+      req: request,
+    });
+
+    return reply.status(200).send({
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit) || 1,
+    });
   });
 
   server.post('/ingest', {

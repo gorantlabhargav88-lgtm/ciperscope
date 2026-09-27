@@ -244,11 +244,18 @@ export class FusionEngine {
       // the same transaction as the RiskAssessment upsert makes the two
       // atomic: a caller can never observe 'COMPLETED' with a null
       // riskAssessment, or vice versa.
+function toEmailClassification(prediction: string): EmailClassification {
+  if (prediction === 'PHISHING_OR_SPAM' || prediction === 'PHISHING') return EmailClassification.PHISHING;
+  if (prediction === 'LEGITIMATE' || prediction === 'HAM' || prediction === 'BENIGN') return EmailClassification.LEGITIMATE;
+  if (prediction in EmailClassification) return (EmailClassification as any)[prediction];
+  return EmailClassification.SUSPICIOUS;
+}
+
       if (ml && ml.status === 'MODEL_PREDICTION' && ml.prediction) {
          await tx.email.update({
             where: { id: email.id },
             data: {
-               classification: ml.prediction as EmailClassification,
+               classification: toEmailClassification(ml.prediction),
                riskScore: finalScore,
                analysisStatus: 'COMPLETED'
             }

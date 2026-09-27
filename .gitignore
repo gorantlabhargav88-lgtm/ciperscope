@@ -15,3 +15,7 @@ query.sql
 # Local database dumps (root-level only — Prisma migration .sql files
 # under packages/database/prisma/migrations/ must stay tracked)
 /*.sql
+
+# Agent workspace customizations
+.agents/
+skills-lock.json

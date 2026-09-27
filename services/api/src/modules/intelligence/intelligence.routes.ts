@@ -115,6 +115,8 @@ export default async function intelligenceRoutes(server: FastifyInstance) {
             isp: geo.isp,
             provider: geo.provider,
             updatedAt: geo.updatedAt,
+            accuracyRadius: (geo as any).accuracyRadius ?? (geo.latitude != null ? (geo.city ? 20 : geo.region ? 100 : geo.country ? 1000 : 50) : null),
+            timeZone: (geo as any).timeZone ?? null,
           }
           : null,
       };

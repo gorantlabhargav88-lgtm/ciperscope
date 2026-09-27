@@ -163,7 +163,7 @@ describe('GmailWatchRenewalWorker.renewAll (Integration — real Postgres, mocke
   }
 
   it('renews watch() for every ACTIVE Gmail integration, across all organizations', async () => {
-    const result = await worker.renewAll();
+    const result = await worker.renewAll([orgA, orgB]);
 
     expect(watchMock).toHaveBeenCalledTimes(2); // activeIntegrationId + otherOrgActiveIntegrationId only
     expect(result.renewed).toBe(2);
@@ -172,7 +172,7 @@ describe('GmailWatchRenewalWorker.renewAll (Integration — real Postgres, mocke
   });
 
   it('does NOT call watch() for a DISCONNECTED integration', async () => {
-    await worker.renewAll();
+    await worker.renewAll([orgA, orgB]);
 
     const calledOrgIds = watchMock.mock.calls.length;
     expect(calledOrgIds).toBe(2); // never 3 — the DISCONNECTED row is excluded by the query itself
@@ -182,7 +182,7 @@ describe('GmailWatchRenewalWorker.renewAll (Integration — real Postgres, mocke
   });
 
   it('does NOT call watch() for an ERROR integration, and does not flip it back to ACTIVE', async () => {
-    await worker.renewAll();
+    await worker.renewAll([orgA, orgB]);
 
     const errored = await prisma.integration.findUnique({ where: { id: errorIntegrationId } });
     expect(errored!.status).toBe('ERROR'); // unchanged — renewal never touches non-ACTIVE rows
@@ -201,7 +201,7 @@ describe('GmailWatchRenewalWorker.renewAll (Integration — real Postgres, mocke
       return { data: { historyId: '999', expiration: String(Date.now() + 7 * 24 * 60 * 60 * 1000) } };
     });
 
-    const result = await worker.renewAll();
+    const result = await worker.renewAll([orgA, orgB]);
 
     expect(result.renewed).toBe(1);
     expect(result.failed).toBe(1);
@@ -216,9 +216,9 @@ describe('GmailWatchRenewalWorker.renewAll (Integration — real Postgres, mocke
   });
 
   it('running renewAll() multiple times is idempotent — no destructive overwrite of credentials across repeated runs', async () => {
-    await worker.renewAll();
-    await worker.renewAll();
-    const result = await worker.renewAll();
+    await worker.renewAll([orgA, orgB]);
+    await worker.renewAll([orgA, orgB]);
+    const result = await worker.renewAll([orgA, orgB]);
 
     expect(result.renewed).toBe(2);
     expect(result.failed).toBe(0);
@@ -230,7 +230,7 @@ describe('GmailWatchRenewalWorker.renewAll (Integration — real Postgres, mocke
   });
 
   it('each integration\'s own credentials are used for its own watch() call — never mixed across organizations/integrations', async () => {
-    await worker.renewAll();
+    await worker.renewAll([orgA, orgB]);
 
     const setCredentialsCalls = setCredentialsMock.mock.calls.map((c) => c[0]);
     const accessTokensUsed = setCredentialsCalls.map((c) => c.access_token).sort();
@@ -243,7 +243,7 @@ describe('GmailWatchRenewalWorker.renewAll (Integration — real Postgres, mocke
   it('existing integration credentials remain intact regardless of renewal outcome', async () => {
     watchMock.mockRejectedValue({ code: 500, message: 'Internal error' });
 
-    await worker.renewAll();
+    await worker.renewAll([orgA, orgB]);
 
     const active = await prisma.integration.findUnique({ where: { id: activeIntegrationId } });
     expect(decryptToken(active!.accessToken, ENCRYPTION_KEY)).toBe('active-org-a-access-token');
@@ -261,7 +261,7 @@ describe('GmailWatchRenewalWorker.renewAll (Integration — real Postgres, mocke
       throw err;
     });
 
-    await worker.renewAll();
+    await worker.renewAll([orgA, orgB]);
 
     const logged = allLoggedText();
     expect(logged).not.toContain('active-org-a-access-token');

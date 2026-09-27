@@ -1,5 +1,5 @@
 import { PrismaClient, Prisma, BlockchainAnchor } from '@ciperscope/database';
-import { computeEvidenceHash, buildMerkleRoot, sha256Hex } from '@ciperscope/integrity';
+import { computeEvidenceHash, buildMerkleRoot, sha256Hex, computeEventHash } from '@ciperscope/integrity';
 import { logger } from '@ciperscope/logger';
 import { IBlockchainAnchorProvider } from './providers/IBlockchainAnchorProvider';
 
@@ -40,8 +40,9 @@ export async function runNotarizationBatch(
     where: { organizationId, status: { in: ['BATCHED', 'FAILED'] } },
     orderBy: { createdAt: 'asc' },
   });
+  let lastRetried: BlockchainAnchor | null = null;
   for (const anchor of retryable) {
-    await attemptExternalAnchor(prisma, anchor, provider);
+    lastRetried = await attemptExternalAnchor(prisma, anchor, provider);
   }
 
   for (let attempt = 0; attempt < MAX_SERIALIZATION_RETRIES; attempt++) {
@@ -95,7 +96,7 @@ export async function runNotarizationBatch(
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
       );
 
-      if (!anchor) return null;
+      if (!anchor) return lastRetried;
       if (anchor.status === 'ANCHORED' || anchor.status === 'NOT_CONFIGURED') return anchor; // idempotent replay of an already-finished batch
       return await attemptExternalAnchor(prisma, anchor, provider);
     } catch (err) {
@@ -116,6 +117,60 @@ export async function runNotarizationBatch(
  * evidence already linked to this anchor — the batch/Merkle work already
  * happened and is real; only the external confirmation is pending/failed.
  */
+async function recordCustodyAnchoredEvents(
+  prisma: PrismaClient,
+  anchor: BlockchainAnchor,
+  outcome: { network: string; transactionId: string; blockNumber: number | null; contractAddress?: string | null }
+): Promise<void> {
+  const evidenceIds = Array.isArray(anchor.evidenceIds) ? (anchor.evidenceIds as string[]) : [];
+  for (const evidenceId of evidenceIds) {
+    try {
+      // Avoid duplicate events if retried
+      const existing = await prisma.chainOfCustodyEvent.findFirst({
+        where: {
+          evidenceId,
+          action: 'BLOCKCHAIN_ANCHORED',
+          description: { contains: outcome.transactionId },
+        },
+      });
+      if (existing) continue;
+
+      const tip = await prisma.chainOfCustodyEvent.findFirst({
+        where: { evidenceId, next: null },
+      });
+
+      const timestamp = new Date();
+      const description = `Anchored to ${outcome.network} (tx: ${outcome.transactionId}${
+        outcome.blockNumber ? `, block: ${outcome.blockNumber}` : ''
+      }${outcome.contractAddress ? `, contract: ${outcome.contractAddress}` : ''})`;
+
+      const eventHash = computeEventHash(tip?.eventHash ?? null, {
+        action: 'BLOCKCHAIN_ANCHORED',
+        actorId: null,
+        description,
+        timestamp,
+      });
+
+      await prisma.chainOfCustodyEvent.create({
+        data: {
+          evidenceId,
+          action: 'BLOCKCHAIN_ANCHORED',
+          actorId: null,
+          description,
+          timestamp,
+          previousEventId: tip?.id ?? null,
+          eventHash,
+        },
+      });
+    } catch (custodyErr) {
+      logger.warn(
+        { evidenceId, err: custodyErr instanceof Error ? custodyErr.message : String(custodyErr) },
+        'Failed to append BLOCKCHAIN_ANCHORED custody event (non-fatal)'
+      );
+    }
+  }
+}
+
 async function attemptExternalAnchor(
   prisma: PrismaClient,
   anchor: BlockchainAnchor,
@@ -130,7 +185,7 @@ async function attemptExternalAnchor(
     });
 
     if (outcome.status === 'ANCHORED') {
-      return prisma.blockchainAnchor.update({
+      const updated = await prisma.blockchainAnchor.update({
         where: { id: anchor.id },
         data: {
           status: 'ANCHORED',
@@ -141,6 +196,8 @@ async function attemptExternalAnchor(
           errorDetails: null,
         },
       });
+      await recordCustodyAnchoredEvents(prisma, updated, outcome);
+      return updated;
     }
     if (outcome.status === 'NOT_CONFIGURED') {
       return prisma.blockchainAnchor.update({ where: { id: anchor.id }, data: { status: 'NOT_CONFIGURED', errorDetails: null } });

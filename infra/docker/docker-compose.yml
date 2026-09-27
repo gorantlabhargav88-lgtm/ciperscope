@@ -12,7 +12,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ciperscope_user -d ciperscope_db"]
+      test: [ "CMD-SHELL", "pg_isready -U ciperscope_user -d ciperscope_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,7 +26,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -36,11 +36,11 @@ services:
     build:
       context: ../../services/ml-worker
     container_name: ciperscope_ml_worker
-    environment:
-      - ML_SERVICE_TOKEN=${ML_SERVICE_TOKEN}
+    env_file:
+      - ../../.env
     # No ports exposed to host. Only accessible via internal Docker network.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -81,7 +81,7 @@ services:
     # Healthcheck is inherited from services/api/Dockerfile's own
     # HEALTHCHECK instruction — one definition, not duplicated here.
 
-  # Worker service. Same build-context rationale as `api` above.
+    # Worker service. Same build-context rationale as `api` above.
   worker:
     build:
       context: ../..

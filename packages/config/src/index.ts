@@ -46,6 +46,9 @@ export const envSchema = z.object({
   // (public protocol), but this lets ops disable outbound RDAP lookups
   // entirely; when unset/true, RDAP is used. See DomainIntelConfig.ts.
   RDAP_ENABLED: z.enum(['true', 'false']).optional(),
+  // ML Service configuration (DistilBERT inference service)
+  ML_SERVICE_TOKEN: z.string().optional(),
+  ML_SERVICE_URL: z.string().optional(),
   // Organization-invitation email delivery (packages/providers/src/email).
   // All optional — when SMTP_HOST/SMTP_PORT/SMTP_FROM are unset, invitation
   // creation falls back to NullEmailProvider (no email sent, never
@@ -57,6 +60,13 @@ export const envSchema = z.object({
   SMTP_PASSWORD: z.string().optional(),
   SMTP_FROM: z.string().optional(),
   SMTP_SECURE: z.enum(['true', 'false']).optional(),
+  // Blockchain evidence notarization & anchoring configuration
+  BLOCKCHAIN_ENABLED: z.enum(['true', 'false']).default('false').optional(),
+  BLOCKCHAIN_NETWORK: z.string().default('sepolia').optional(),
+  BLOCKCHAIN_RPC_URL: z.string().optional(),
+  BLOCKCHAIN_CHAIN_ID: z.coerce.number().int().optional(),
+  BLOCKCHAIN_PRIVATE_KEY: z.string().optional(),
+  BLOCKCHAIN_CONTRACT_ADDRESS: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -89,4 +99,19 @@ export function requireGmailTokenEncryptionKey(): string {
     );
   }
   return env.GMAIL_TOKEN_ENCRYPTION_KEY;
+}
+
+/** Returns true if blockchain anchoring is enabled in configuration. */
+export function isBlockchainEnabled(): boolean {
+  return env.BLOCKCHAIN_ENABLED === 'true';
+}
+
+/** Returns true if blockchain anchoring has full configuration (enabled, RPC URL, contract, private key). */
+export function isBlockchainConfigured(): boolean {
+  return (
+    env.BLOCKCHAIN_ENABLED === 'true' &&
+    !!env.BLOCKCHAIN_RPC_URL &&
+    !!env.BLOCKCHAIN_CONTRACT_ADDRESS &&
+    !!env.BLOCKCHAIN_PRIVATE_KEY
+  );
 }

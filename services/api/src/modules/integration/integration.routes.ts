@@ -70,7 +70,8 @@ export default async function integrationRoutes(server: FastifyInstance) {
     }
   }, async (request, reply) => {
     const frontendUrl = (status: 'success' | 'error') => {
-      const url = new URL('/settings/integrations', env.CORS_ORIGIN || 'http://localhost:5173');
+      const baseOrigin = Array.isArray(env.CORS_ORIGIN) ? env.CORS_ORIGIN[0] : (env.CORS_ORIGIN || 'http://localhost:5173');
+      const url = new URL('/settings/integrations', baseOrigin);
       url.searchParams.set('integration', status);
       return url.toString();
     };

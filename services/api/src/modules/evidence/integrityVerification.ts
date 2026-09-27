@@ -15,6 +15,7 @@ export interface IntegrityVerificationInput {
     transactionId: string | null;
     blockNumber: number | null;
     anchoredAt: Date | null;
+    contractAddress?: string | null;
   } | null;
   // Present only when `anchor` is non-null: every evidence hash in that
   // batch, freshly recomputed (never read from storage) in the exact
@@ -34,6 +35,7 @@ export interface IntegrityVerificationResult {
   anchorStatus: string; // BlockchainAnchorStatus value, or 'NOT_BATCHED'
   network: string | null;
   transactionId: string | null;
+  contractAddress: string | null;
   blockNumber: number | null;
   anchoredAt: Date | null;
   reason: string;
@@ -114,6 +116,7 @@ export function verifyEvidenceIntegrity(input: IntegrityVerificationInput): Inte
     anchorStatus,
     network: input.anchor?.network ?? null,
     transactionId: input.anchor?.transactionId ?? null,
+    contractAddress: input.anchor?.contractAddress ?? null,
     blockNumber: input.anchor?.blockNumber ?? null,
     anchoredAt: input.anchor?.anchoredAt ?? null,
     reason,

@@ -1,4 +1,5 @@
 import { PrismaClient, CaseStatus, Priority, IndicatorType, ThreatVerdict, EvidenceType, CustodyAction } from '@prisma/client';
+import { computeEventHash } from '@ciperscope/integrity';
 import { SYSTEM_ENFORCED_PERMISSIONS } from '../src/permissions';
 
 const prisma = new PrismaClient();
@@ -134,6 +135,14 @@ async function main() {
     where: { sha256: emailSha256 }
   });
   if (!evidence) {
+    const uploadTimestamp = new Date();
+    const genesisEventHash = computeEventHash(null, {
+      action: CustodyAction.COLLECTED,
+      actorId: adminUser.id,
+      description: 'Initial ingest of suspicious email',
+      timestamp: uploadTimestamp,
+    });
+
     evidence = await prisma.evidence.create({
       data: {
         organizationId: devOrg.id,
@@ -151,6 +160,8 @@ async function main() {
             action: CustodyAction.COLLECTED,
             actorId: adminUser.id,
             description: 'Initial ingest of suspicious email',
+            timestamp: uploadTimestamp,
+            eventHash: genesisEventHash,
           },
         },
       },

@@ -53,8 +53,12 @@ export function ChainOfCustody({ caseId, evidence }: ChainOfCustodyProps) {
         <div className="flex justify-between"><span className="text-slate-500">Type</span><span className="text-slate-300">{evidence.type}</span></div>
         <div className="flex justify-between"><span className="text-slate-500">SHA-256 Integrity</span><span className="text-slate-300 font-mono truncate max-w-[140px]" title={evidence.sha256}>{evidence.sha256 || 'Not available'}</span></div>
         <div className="flex justify-between"><span className="text-slate-500">Status</span><span className="text-slate-300">{evidence.status}</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Collected</span><span className="text-slate-300">{new Date(evidence.collectionTime).toLocaleString()}</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Blockchain Anchoring</span><span className="text-slate-500 italic">Not configured</span></div>
+        <div className="flex justify-between">
+          <span className="text-slate-500">Blockchain Anchoring</span>
+          <span className={chain.some((c) => c.action === 'BLOCKCHAIN_ANCHORED') ? 'text-security-verified font-medium' : 'text-slate-500 italic'}>
+            {chain.some((c) => c.action === 'BLOCKCHAIN_ANCHORED') ? 'Anchored on-chain' : 'Not configured'}
+          </span>
+        </div>
       </div>
 
       <button

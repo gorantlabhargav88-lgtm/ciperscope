@@ -83,10 +83,13 @@ describe('GET /:emailId/intelligence (Integration)', () => {
       },
     });
 
+    await prisma.domainIntelligence.deleteMany({ where: { registrableDomain: 'example.com' } });
+
     await server.ready();
   });
 
   afterAll(async () => {
+    await prisma.domainIntelligence.deleteMany({ where: { registrableDomain: 'example.com' } });
     await prisma.dnsObservation.deleteMany({ where: { emailId: emailAId } });
     await prisma.threatIntelObservation.deleteMany({ where: { indicator: { value: '203.0.113.50' } } });
     await prisma.indicator.deleteMany({ where: { value: '203.0.113.50' } });
@@ -182,14 +185,20 @@ describe('GET /:emailId/intelligence (Integration)', () => {
   });
 
   it('attaches persisted RDAP domain intelligence, read-only (no live RDAP call from this route)', async () => {
+    const domainData = {
+      registrableDomain: 'example.com',
+      status: 'SUCCESS' as const,
+      registrar: 'Test Registrar, Inc.',
+      registrationDate: new Date('1995-08-14T00:00:00Z'),
+      expirationDate: new Date('2030-08-13T00:00:00Z'),
+      nameservers: ['a.iana-servers.net', 'b.iana-servers.net'],
+      domainStatus: ['clientTransferProhibited'],
+      rdapSource: 'https://rdap.verisign.com/com/v1/',
+    };
     await prisma.domainIntelligence.upsert({
       where: { registrableDomain: 'example.com' },
-      create: {
-        registrableDomain: 'example.com', status: 'SUCCESS', registrar: 'Test Registrar, Inc.',
-        registrationDate: new Date('1995-08-14T00:00:00Z'), expirationDate: new Date('2030-08-13T00:00:00Z'),
-        nameservers: ['a.iana-servers.net', 'b.iana-servers.net'], domainStatus: ['clientTransferProhibited'], rdapSource: 'https://rdap.verisign.com/com/v1/',
-      },
-      update: {},
+      create: domainData,
+      update: domainData,
     });
 
     try {

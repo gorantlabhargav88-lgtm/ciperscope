@@ -231,3 +231,44 @@ export interface ForensicReport {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface EmailListItem {
+  id: string;
+  messageId: string | null;
+  subject: string;
+  sender: string;
+  recipient: string;
+  date: string;
+  createdAt: string;
+  ingestionSrc: string;
+  classification: EmailClassification;
+  riskScore: number | null;
+  priority: string | null;
+  analysisStatus: AnalysisState;
+  attachmentCount: number;
+  attachments: Array<{
+    id: string;
+    filename: string | null;
+    mimeType: string | null;
+    sizeBytes: number | null;
+  }>;
+  isSuspiciousOrMalicious: boolean;
+  caseId: string | null;
+}
+
+export interface EmailListQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+  status?: string;
+  classification?: string;
+  source?: string;
+}
+
+export interface EmailListResponse {
+  items: EmailListItem[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}

@@ -23,6 +23,7 @@ import auditRoutes from './modules/audit/audit.routes';
 import membersRoutes from './modules/members/members.routes';
 import settingsRoutes from './modules/settings/settings.routes';
 import invitationRoutes from './modules/invitation/invitation.routes';
+import blockchainRoutes from './modules/blockchain/blockchain.routes';
 import fastifyMultipart from '@fastify/multipart';
 import { createRedisConnection } from '@ciperscope/queue';
 
@@ -166,6 +167,7 @@ server.register(auditRoutes, { prefix: '/api/v1/audit-log' });
 server.register(membersRoutes, { prefix: '/api/v1/members' });
 server.register(settingsRoutes, { prefix: '/api/v1/settings' });
 server.register(invitationRoutes, { prefix: '/api/v1/invitations' });
+server.register(blockchainRoutes, { prefix: '/api/v1/blockchain' });
 
 const start = async () => {
   try {

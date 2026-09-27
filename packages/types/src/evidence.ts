@@ -46,6 +46,7 @@ export interface Evidence {
 /** Org-wide evidence vault row — same shape as Evidence but without a guaranteed caseId scope (returned by GET /evidence, /evidence/:id). */
 export interface EvidenceVaultItem extends Evidence {
   sourceSystem: string | null;
+  relatedEmailId?: string | null;
 }
 
 export type IntegrityOverallStatus = 'VALID' | 'INVALID' | 'INCOMPLETE' | 'NOT_CONFIGURED';
@@ -68,9 +69,51 @@ export interface EvidenceIntegrity {
   anchorStatus: string;
   network: string | null;
   transactionId: string | null;
+  contractAddress?: string | null;
   blockNumber: number | null;
   anchoredAt: string | null;
   reason: string;
+  verifiedAt: string;
+}
+
+export type BlockchainAnchorStatus =
+  | 'HASHED'
+  | 'BATCHED'
+  | 'ANCHORED'
+  | 'NOT_CONFIGURED'
+  | 'FAILED';
+
+export interface BlockchainAnchorItem {
+  id: string;
+  organizationId: string;
+  batchKey: string;
+  merkleRoot: string;
+  evidenceCount: number;
+  hashAlgorithm: string;
+  status: BlockchainAnchorStatus;
+  network: string | null;
+  transactionId: string | null;
+  blockNumber: number | null;
+  errorDetails: string | null;
+  anchoredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BlockchainAnchorVerification {
+  verified: boolean;
+  transactionHash: string | null;
+  network: string;
+  contractAddress: string | null;
+  anchoredMerkleRoot: string | null;
+  localMerkleRoot: string;
+  reconstructedMerkleRoot: string | null;
+  localMerkleMatches: boolean;
+  blockNumber: number | null;
+  anchoredAt: string | null;
+  anchorStatus: string;
+  evidenceCount: number;
+  reason?: string;
   verifiedAt: string;
 }
 

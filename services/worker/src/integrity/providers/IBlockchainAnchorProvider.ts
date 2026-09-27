@@ -6,8 +6,8 @@ export interface AnchorRequest {
 }
 
 export type AnchorOutcome =
-  | { status: 'ANCHORED'; network: string; transactionId: string; blockNumber: number | null; anchoredAt: Date }
-  | { status: 'NOT_CONFIGURED' }
+  | { status: 'ANCHORED'; network: string; transactionId: string; blockNumber: number | null; contractAddress?: string | null; anchoredAt: Date }
+  | { status: 'NOT_CONFIGURED'; reason?: string }
   | { status: 'FAILED'; errorMessage: string };
 
 /**

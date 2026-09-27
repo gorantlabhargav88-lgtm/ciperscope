@@ -56,3 +56,61 @@
 .animate-spin-slow {
   animation: spin-slow 3s linear infinite;
 }
+
+/* Leaflet Dark Cybersecurity Styling */
+.cipherscope-leaflet-container {
+  background-color: #020617 !important;
+}
+
+.cipherscope-leaflet-container .leaflet-tile {
+  filter: brightness(0.75) invert(1) contrast(3) hue-rotate(200deg) saturate(0.3) brightness(0.8);
+}
+
+.cipherscope-popup .leaflet-popup-content-wrapper {
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
+  border: 1px solid #1e293b !important;
+  border-radius: 0.75rem !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5) !important;
+  padding: 4px !important;
+}
+
+.cipherscope-popup .leaflet-popup-tip {
+  background-color: #0f172a !important;
+  border: 1px solid #1e293b !important;
+}
+
+.cipherscope-popup .leaflet-popup-content {
+  margin: 8px 12px !important;
+  line-height: 1.4 !important;
+}
+
+.cipherscope-popup .leaflet-popup-close-button {
+  color: #94a3b8 !important;
+  padding: 6px !important;
+}
+
+.cipherscope-popup .leaflet-popup-close-button:hover {
+  color: #f8fafc !important;
+}
+
+.leaflet-bar a {
+  background-color: #0f172a !important;
+  color: #cbd5e1 !important;
+  border-bottom: 1px solid #1e293b !important;
+}
+
+.leaflet-bar a:hover {
+  background-color: #1e293b !important;
+  color: #ffffff !important;
+}
+
+.leaflet-control-attribution {
+  background-color: rgba(2, 6, 23, 0.85) !important;
+  color: #64748b !important;
+  font-size: 10px !important;
+}
+
+.leaflet-control-attribution a {
+  color: #38bdf8 !important;
+}

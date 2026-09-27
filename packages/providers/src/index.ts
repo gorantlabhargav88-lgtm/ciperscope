@@ -32,3 +32,4 @@ export interface EmailPipelineProvider {
 
 export * from './cti';
 export * from './email';
+export * from './blockchain';

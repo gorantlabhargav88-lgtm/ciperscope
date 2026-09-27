@@ -34,7 +34,7 @@ export interface GmailWatchRenewalResult {
  * the next scheduled run.
  */
 export class GmailWatchRenewalWorker {
-  async renewAll(): Promise<GmailWatchRenewalResult> {
+  async renewAll(targetOrganizationIds?: string[]): Promise<GmailWatchRenewalResult> {
     if (!env.GOOGLE_PUBSUB_TOPIC) {
       logger.warn('Gmail watch renewal skipped: GOOGLE_PUBSUB_TOPIC is not configured');
       return { renewed: 0, failed: 0, skipped: 0 };
@@ -46,8 +46,16 @@ export class GmailWatchRenewalWorker {
     // integrations are excluded by this query itself, not by a
     // post-fetch filter — there is no path in this file that can ever
     // act on a non-ACTIVE integration.
+    const whereClause: { provider: 'GMAIL'; status: 'ACTIVE'; organizationId?: { in: string[] } } = {
+      provider: 'GMAIL',
+      status: 'ACTIVE'
+    };
+    if (targetOrganizationIds && targetOrganizationIds.length > 0) {
+      whereClause.organizationId = { in: targetOrganizationIds };
+    }
+
     const integrations = await prisma.integration.findMany({
-      where: { provider: 'GMAIL', status: 'ACTIVE' }
+      where: whereClause
     });
 
     let renewed = 0;

@@ -10,8 +10,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ciperscope/config": "workspace:*",
     "@ciperscope/http-client": "workspace:*",
     "@ciperscope/logger": "workspace:*",
+    "ethers": "^6.17.0",
     "ioredis": "^6.0.0",
     "nodemailer": "^10.0.10"
   },

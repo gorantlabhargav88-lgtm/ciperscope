@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { prisma } from '@ciperscope/database';
+import { env } from '@ciperscope/config';
 import { computeEvidenceHash } from '@ciperscope/integrity';
 import { fastifyEvidenceListQuerySchema, fastifyGlobalEvidenceParamsSchema } from '../../utils/validation';
 import { logAuditEvent } from '../../utils/audit';
@@ -97,6 +98,17 @@ export default async function evidenceRoutes(server: FastifyInstance) {
       return reply.status(404).send({ error: 'Not Found', message: 'Evidence not found' });
     }
 
+    let relatedEmailId: string | null = null;
+    if (evidence.type === 'RAW_EMAIL') {
+      const email = await prisma.email.findFirst({
+        where: { sha256: evidence.sha256, organizationId },
+        select: { id: true }
+      });
+      if (email) {
+        relatedEmailId = email.id;
+      }
+    }
+
     await logAuditEvent({
       action: 'EVIDENCE_VIEWED',
       resource: 'Evidence',
@@ -107,7 +119,10 @@ export default async function evidenceRoutes(server: FastifyInstance) {
       req: request,
     });
 
-    return reply.status(200).send(evidence);
+    return reply.status(200).send({
+      ...evidence,
+      relatedEmailId
+    });
   });
 
   // Phase M — integrity verification. Never returns storageKey, evidence
@@ -169,6 +184,7 @@ export default async function evidenceRoutes(server: FastifyInstance) {
           transactionId: anchor.transactionId,
           blockNumber: anchor.blockNumber,
           anchoredAt: anchor.anchoredAt,
+          contractAddress: env.BLOCKCHAIN_CONTRACT_ADDRESS ?? null,
         };
       }
     }

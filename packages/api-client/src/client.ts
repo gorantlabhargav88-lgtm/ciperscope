@@ -1,5 +1,8 @@
 import type {
   EmailAnalysisSummary,
+  EmailListItem,
+  EmailListQuery,
+  EmailListResponse,
   EmailHeader,
   EmailRelayHop,
   EmailMimePart,
@@ -44,6 +47,8 @@ import type {
   CreatedInvitation,
   InvitationListResponse,
   InvitationPreview,
+  BlockchainAnchorItem,
+  BlockchainAnchorVerification,
 } from '@ciperscope/types';
 
 export interface ApiClientConfig {
@@ -127,6 +132,18 @@ export class CiperscopeApiClient {
   // ============================================================
   // Email forensics — services/api/src/modules/email/email.routes.ts
   // ============================================================
+
+  getEmails(params: EmailListQuery = {}): Promise<EmailListResponse> {
+    const qs = new URLSearchParams();
+    if (params.page !== undefined) qs.set('page', String(params.page));
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    if (params.search) qs.set('search', params.search);
+    if (params.status) qs.set('status', params.status);
+    if (params.classification) qs.set('classification', params.classification);
+    if (params.source) qs.set('source', params.source);
+    const suffix = qs.toString();
+    return this.request(`/emails${suffix ? `?${suffix}` : ''}`);
+  }
 
   getEmailAnalysis(emailId: string): Promise<EmailAnalysisSummary> {
     return this.request(`/emails/${emailId}/analysis`);
@@ -604,6 +621,36 @@ export class CiperscopeApiClient {
   /** Public. When the invited email already has an account, this requires the caller to be authenticated as that user. */
   acceptInvitation(token: string, input: { password?: string; firstName?: string; lastName?: string }): Promise<{ status: string; organizationId: string }> {
     return this.request(`/invitations/${token}/accept`, { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  // ============================================================
+  // Blockchain Anchors — services/api/src/modules/blockchain/blockchain.routes.ts
+  // ============================================================
+
+  getBlockchainAnchors(params: { limit?: number; cursor?: string } = {}): Promise<{
+    items: BlockchainAnchorItem[];
+    nextCursor: string | null;
+    contractAddress: string | null;
+    network: string;
+    blockchainEnabled: boolean;
+  }> {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.cursor) qs.set('cursor', params.cursor);
+    const suffix = qs.toString();
+    return this.request(`/blockchain/anchors${suffix ? `?${suffix}` : ''}`);
+  }
+
+  getBlockchainAnchor(id: string): Promise<BlockchainAnchorItem & { contractAddress: string | null; evidence?: any[] }> {
+    return this.request(`/blockchain/anchors/${id}`);
+  }
+
+  triggerBlockchainNotarization(): Promise<{ message: string; unbatchedEvidenceCount: number; pendingAnchorsCount: number; enqueued: boolean }> {
+    return this.request('/blockchain/anchors', { method: 'POST' });
+  }
+
+  verifyBlockchainAnchor(id: string): Promise<BlockchainAnchorVerification> {
+    return this.request(`/blockchain/anchors/${id}/verify`, { method: 'POST' });
   }
 
   // NOTE (Phase 3, Step 2): GET /emails/:emailId/analysis now returns

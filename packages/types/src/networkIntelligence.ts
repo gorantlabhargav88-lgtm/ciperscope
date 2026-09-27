@@ -15,6 +15,8 @@ export interface NetworkIntelligenceGeo {
   isp: string | null;
   provider: string;
   updatedAt: string;
+  accuracyRadius?: number | null;
+  timeZone?: string | null;
 }
 
 export interface NetworkIntelligenceItem {

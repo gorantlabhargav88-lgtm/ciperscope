@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
-import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle, AlertTriangle, ShieldOff, ShieldCheck, ArrowRight } from 'lucide-react';
+import { Mail, FileText, Server, UploadCloud, Loader2, CheckCircle, XCircle, AlertTriangle, ShieldOff, ShieldCheck, ArrowRight, ArrowLeft } from 'lucide-react';
+import { IngestedEmailsList } from '../components/email/IngestedEmailsList';
 import { ForensicTimeline } from '../components/ForensicTimeline';
 import { SeverityBadge } from '../components/threats/SeverityBadge';
 import { ThreatPriorityExplanation } from '../components/threat/ThreatPriorityExplanation';
@@ -108,39 +109,62 @@ export const EmailAnalysis = () => {
   return (
     <div className="space-y-6 pb-20">
 
+      {activeEmailId && (
+        <div className="flex items-center justify-between">
+          <Link
+            to="/email-analysis"
+            onClick={() => {
+              setUploadResult(null);
+              setData(null);
+              setAnalysisStatus(null);
+              setLoadError(null);
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs font-medium text-slate-300 hover:text-indigo-400 hover:border-slate-700 transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back to Ingested Emails</span>
+          </Link>
+          <div className="text-xs text-slate-500 font-mono truncate max-w-md">
+            ID: {activeEmailId}
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-between items-start">
         <div>
           <h1 className="text-2xl font-semibold text-slate-100 flex items-center">
             <Mail className="w-6 h-6 mr-3 text-slate-400" />
-            Email Forensics
+            {activeEmailId ? 'Email Forensics' : 'Email Analysis & Ingested Inbox'}
           </h1>
-          <p className="text-slate-400 mt-1">Detailed forensics, threat scoring, and prioritization for the email artifact.</p>
+          <p className="text-slate-400 mt-1">
+            {activeEmailId
+              ? 'Detailed forensics, threat scoring, and prioritization for the selected email artifact.'
+              : 'Real-time stream of Gmail-ingested and uploaded emails ready for forensic analysis.'}
+          </p>
         </div>
         <div className="flex items-center space-x-4">
-          {!routeEmailId && (
-            <div className="flex flex-col items-end">
-              <input
-                 type="file"
-                 ref={fileInputRef}
-                 className="hidden"
-                 accept=".eml"
-                 onChange={handleFileUpload}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center transition-colors disabled:opacity-50"
-              >
-                {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <UploadCloud className="w-4 h-4 mr-2" />}
-                {uploading ? 'Ingesting...' : 'Ingest Raw Email'}
-              </button>
-              {uploadResult && (
-                 <div className={`text-xs mt-2 ${uploadResult.error ? 'text-rose-400' : (uploadResult.duplicate ? 'text-amber-400' : 'text-emerald-400')}`}>
-                   {uploadResult.error || uploadResult.message}
-                 </div>
-              )}
-            </div>
-          )}
+          <div className="flex flex-col items-end">
+            <input
+               type="file"
+               ref={fileInputRef}
+               className="hidden"
+               accept=".eml"
+               onChange={handleFileUpload}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium text-sm flex items-center transition-colors disabled:opacity-50"
+            >
+              {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <UploadCloud className="w-4 h-4 mr-2" />}
+              {uploading ? 'Ingesting...' : 'Ingest Raw Email'}
+            </button>
+            {uploadResult && (
+               <div className={`text-xs mt-2 ${uploadResult.error ? 'text-rose-400' : (uploadResult.duplicate ? 'text-amber-400' : 'text-emerald-400')}`}>
+                 {uploadResult.error || uploadResult.message}
+               </div>
+            )}
+          </div>
           {data && priority && (
             <div className="flex items-center gap-3">
               <span className={`text-xs px-2.5 py-1.5 rounded font-bold border ${PRIORITY_STYLES[priority.priority]}`} title={priority.reasons.join('; ')}>
@@ -165,9 +189,7 @@ export const EmailAnalysis = () => {
       </div>
 
       {!activeEmailId && (
-        <div className="p-8 text-center text-slate-500 border border-slate-800 rounded-lg border-dashed">
-          Upload an .eml file, or open this page via a link to a specific email, to begin analysis.
-        </div>
+        <IngestedEmailsList />
       )}
 
       {loadError && (

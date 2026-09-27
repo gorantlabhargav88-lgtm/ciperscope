@@ -151,4 +151,102 @@ describe('EvidenceBatchingService (Integration, real Postgres)', () => {
     await prisma.case.deleteMany({ where: { id: caseD.id } });
     await prisma.organization.deleteMany({ where: { id: orgD } });
   });
+
+  it('records BLOCKCHAIN_ANCHORED chain of custody event when provider returns ANCHORED', async () => {
+    const orgE = crypto.randomUUID();
+    await prisma.organization.create({ data: { id: orgE, name: 'Batching Test Org E' } });
+    const caseE = await prisma.case.create({ data: { organizationId: orgE, title: 'Batching Case E' } });
+    const [evidence] = await makeEvidence(orgE, caseE.id, 1);
+
+    const successfulProvider: IBlockchainAnchorProvider = {
+      name: 'mock-success',
+      async anchorMerkleRoot() {
+        return {
+          status: 'ANCHORED',
+          network: 'sepolia',
+          transactionId: '0xtesttx1234567890abcdef',
+          blockNumber: 54321,
+          contractAddress: '0x1234567890123456789012345678901234567890',
+          anchoredAt: new Date(),
+        };
+      },
+      async getAnchorStatus() {
+        return { status: 'NOT_CONFIGURED' };
+      },
+    };
+
+    const anchor = await runNotarizationBatch(prisma, orgE, successfulProvider);
+    expect(anchor).not.toBeNull();
+    expect(anchor!.status).toBe('ANCHORED');
+    expect(anchor!.transactionId).toBe('0xtesttx1234567890abcdef');
+    expect(anchor!.network).toBe('sepolia');
+    expect(anchor!.blockNumber).toBe(54321);
+
+    // Verify ChainOfCustodyEvent was created
+    const custodyEvents = await prisma.chainOfCustodyEvent.findMany({
+      where: { evidenceId: evidence.id },
+    });
+    expect(custodyEvents.length).toBeGreaterThanOrEqual(1);
+    const anchorEvent = custodyEvents.find((c) => c.action === 'BLOCKCHAIN_ANCHORED');
+    expect(anchorEvent).toBeDefined();
+    expect(anchorEvent!.description).toContain('0xtesttx1234567890abcdef');
+    expect(anchorEvent!.eventHash).toBeDefined();
+
+    await prisma.chainOfCustodyEvent.deleteMany({ where: { evidenceId: evidence.id } });
+    await prisma.evidence.deleteMany({ where: { organizationId: orgE } });
+    await prisma.blockchainAnchor.deleteMany({ where: { organizationId: orgE } });
+    await prisma.case.deleteMany({ where: { id: caseE.id } });
+    await prisma.organization.deleteMany({ where: { id: orgE } });
+  });
+
+  it('marks anchor as FAILED when provider fails and retries on subsequent run', async () => {
+    const orgF = crypto.randomUUID();
+    await prisma.organization.create({ data: { id: orgF, name: 'Batching Test Org F' } });
+    const caseF = await prisma.case.create({ data: { organizationId: orgF, title: 'Batching Case F' } });
+    const [evidence] = await makeEvidence(orgF, caseF.id, 1);
+
+    let attempts = 0;
+    const retryableProvider: IBlockchainAnchorProvider = {
+      name: 'mock-retry',
+      async anchorMerkleRoot() {
+        attempts += 1;
+        if (attempts === 1) {
+          return { status: 'FAILED', errorMessage: 'Simulated network timeout' };
+        }
+        return {
+          status: 'ANCHORED',
+          network: 'sepolia',
+          transactionId: '0xretrysuccess123',
+          blockNumber: 54322,
+          contractAddress: '0x1234567890123456789012345678901234567890',
+          anchoredAt: new Date(),
+        };
+      },
+      async getAnchorStatus() {
+        return { status: 'NOT_CONFIGURED' };
+      },
+    };
+
+    // First run fails
+    const failedAnchor = await runNotarizationBatch(prisma, orgF, retryableProvider);
+    expect(failedAnchor).not.toBeNull();
+    expect(failedAnchor!.status).toBe('FAILED');
+    expect(failedAnchor!.errorDetails).toContain('Simulated network timeout');
+
+    // Second run retries the existing failed batch
+    const retryAnchor = await runNotarizationBatch(prisma, orgF, retryableProvider);
+    expect(retryAnchor).not.toBeNull();
+    expect(retryAnchor!.status).toBe('ANCHORED');
+    expect(retryAnchor!.transactionId).toBe('0xretrysuccess123');
+
+    // Total anchors should remain 1 (no duplicate batch created!)
+    const totalAnchors = await prisma.blockchainAnchor.count({ where: { organizationId: orgF } });
+    expect(totalAnchors).toBe(1);
+
+    await prisma.chainOfCustodyEvent.deleteMany({ where: { evidenceId: evidence.id } });
+    await prisma.evidence.deleteMany({ where: { organizationId: orgF } });
+    await prisma.blockchainAnchor.deleteMany({ where: { organizationId: orgF } });
+    await prisma.case.deleteMany({ where: { id: caseF.id } });
+    await prisma.organization.deleteMany({ where: { id: orgF } });
+  });
 });
