@@ -87,7 +87,7 @@ export const loginHandler = (fastify: FastifyInstance) => async (request: Fastif
     .send({
       message: 'Login successful',
       accessToken,
-      refreshToken: rawRefreshToken, // Send opaque token exactly once
+      refreshToken: `${session.id}:${rawRefreshToken}`,
       user: {
         id: user.id,
         email: user.email,

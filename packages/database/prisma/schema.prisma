@@ -33,6 +33,7 @@ model Organization {
   systemConfig SystemSetting[]
   webhooks     Webhook[]
   invitations  Invitation[]
+  emailOutbox  EmailDispatchOutbox[]
 }
 
 model User {
@@ -352,13 +353,51 @@ model Email {
   riskAssessments   RiskAssessment[]
   spfVerifications  SpfVerification[]
   forensicReports   ForensicReport[]
+  dispatchEvents    EmailDispatchOutbox[]
 
+  @@unique([id, organizationId])
   @@unique([organizationId, sha256])
   @@index([organizationId])
   @@index([organizationId, createdAt])
   @@index([messageId])
   @@index([senderAddress])
   @@index([caseId])
+}
+
+enum EmailDispatchState {
+  PENDING
+  DISPATCHING
+  DISPATCHED
+  COMPLETED
+}
+
+model EmailDispatchOutbox {
+  id             String             @id @default(uuid())
+  organizationId String
+  emailId        String
+  stage          String
+  eventKey       String             @unique
+  queueName      String
+  jobName        String
+  priority       Int?
+  payload        Json
+  state          EmailDispatchState @default(PENDING)
+  attemptCount   Int                @default(0)
+  nextAttemptAt  DateTime           @default(now())
+  claimedAt      DateTime?
+  claimToken     String?
+  lockedUntil    DateTime?
+  dispatchedAt   DateTime?
+  lastError      String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          Email              @relation(fields: [emailId, organizationId], references: [id, organizationId], onDelete: Cascade)
+
+  @@unique([organizationId, emailId, stage])
+  @@index([state, nextAttemptAt, createdAt])
+  @@index([state, updatedAt])
+  @@index([organizationId, state, nextAttemptAt])
 }
 
 model EmailHeader {

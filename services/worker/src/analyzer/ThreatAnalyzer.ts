@@ -12,6 +12,11 @@ import { logger } from '@ciperscope/logger';
 import { simpleParser } from 'mailparser';
 import { Readable } from 'stream';
 import psl from 'psl';
+import {
+  completeEmailOutboxEvent,
+  EmailProcessingStage,
+  ensureEmailOutboxEvent,
+} from '@ciperscope/queue';
 
 type UrlCreateData = {
   emailId: string;
@@ -22,6 +27,13 @@ type UrlCreateData = {
   indicators: string[];
   domain: string | null;
 };
+
+interface EmailStageHandoff {
+  outboxEventId?: string;
+  organizationId: string;
+  requestId?: string;
+  traceId?: string;
+}
 
 /** Registrable domain for a URL (same `psl` library already used by
  *  BrandImpersonationDetector) — populates the previously-always-null
@@ -50,7 +62,7 @@ export class ThreatAnalyzer {
     private readonly rawEmailStore: RawEmailStore
   ) {}
 
-  public async analyzeEmail(emailId: string): Promise<void> {
+  public async analyzeEmail(emailId: string, handoff?: EmailStageHandoff): Promise<void> {
     const email = await this.prisma.email.findUnique({
       where: { id: emailId },
       include: {
@@ -79,7 +91,7 @@ export class ThreatAnalyzer {
 
     if (!email.rawStorageKey) {
        logger.warn({ emailId }, 'No rawStorageKey found for email, cannot perform threat analysis');
-       return;
+       throw new Error(`Raw email storage key missing for threat analysis: ${emailId}`);
     }
 
     const rawExists = await this.rawEmailStore.exists(email.rawStorageKey);
@@ -295,6 +307,25 @@ export class ThreatAnalyzer {
           await tx.emailAttachment.update({
              where: { id: update.id },
              data: update.data
+          });
+       }
+
+       if (handoff) {
+          await completeEmailOutboxEvent(tx, handoff.outboxEventId);
+          await ensureEmailOutboxEvent(tx, {
+             organizationId: handoff.organizationId,
+             emailId,
+             stage: EmailProcessingStage.CTI_ENRICHMENT,
+             queueName: 'email-cti-enrichment',
+             jobName: 'cti-enrichment',
+             payload: {
+                organizationId: handoff.organizationId,
+                resourceId: emailId,
+                emailId,
+                operation: 'cti-enrichment',
+                ...(handoff.requestId ? { requestId: handoff.requestId } : {}),
+                ...(handoff.traceId ? { traceId: handoff.traceId } : {}),
+             },
           });
        }
     });

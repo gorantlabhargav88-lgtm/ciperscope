@@ -7,17 +7,9 @@ class AuthState {
   final bool isLoading;
   final String? error;
 
-  AuthState({
-    this.isAuthenticated = false,
-    this.isLoading = false,
-    this.error,
-  });
+  AuthState({this.isAuthenticated = false, this.isLoading = false, this.error});
 
-  AuthState copyWith({
-    bool? isAuthenticated,
-    bool? isLoading,
-    String? error,
-  }) {
+  AuthState copyWith({bool? isAuthenticated, bool? isLoading, String? error}) {
     return AuthState(
       isAuthenticated: isAuthenticated ?? this.isAuthenticated,
       isLoading: isLoading ?? this.isLoading,
@@ -38,30 +30,47 @@ class AuthNotifier extends Notifier<AuthState> {
   AuthState build() {
     _repository = ref.watch(authRepositoryProvider);
     _storage = ref.watch(secureStorageProvider);
-    _checkAuthStatus();
-    return AuthState();
+    _restoreSession();
+    return AuthState(isLoading: true);
   }
 
-  Future<void> _checkAuthStatus() async {
-    final token = await _storage.getToken();
-    if (token != null) {
-      state = state.copyWith(isAuthenticated: true);
+  Future<void> _restoreSession() async {
+    try {
+      final token = await _storage.getToken();
+      state = AuthState(isAuthenticated: token != null);
+    } catch (error) {
+      state = AuthState(error: error.toString());
     }
   }
 
   Future<void> login(String email, String password) async {
-    state = state.copyWith(isLoading: true, error: null);
+    state = AuthState(isAuthenticated: state.isAuthenticated, isLoading: true);
     try {
       final token = await _repository.login(email, password);
       await _storage.saveToken(token);
-      state = state.copyWith(isLoading: false, isAuthenticated: true);
+      state = AuthState(isAuthenticated: true);
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+      state = AuthState(
+        isAuthenticated: state.isAuthenticated,
+        error: e.toString(),
+      );
     }
   }
 
   Future<void> logout() async {
-    await _storage.deleteToken();
-    state = state.copyWith(isAuthenticated: false);
+    state = AuthState(isAuthenticated: state.isAuthenticated, isLoading: true);
+    String? error;
+    try {
+      await _repository.logout();
+    } catch (exception) {
+      error = exception.toString();
+    }
+
+    try {
+      await _storage.deleteToken();
+      state = AuthState(error: error);
+    } catch (exception) {
+      state = AuthState(isAuthenticated: true, error: exception.toString());
+    }
   }
 }

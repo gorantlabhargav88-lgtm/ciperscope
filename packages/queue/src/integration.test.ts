@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { PrismaClient, IdempotencyOperationStatus } from '@ciperscope/database';
 import IORedis from 'ioredis';
 import { IdempotencyManager, createTenantScopedWorker, TenantAwareJobPayload } from './index';
-import { Queue } from 'bullmq';
+import { Queue, QueueEvents } from 'bullmq';
 
 const prisma = new PrismaClient({
   datasources: {
@@ -29,7 +29,18 @@ describe('Integration: IdempotencyManager (Real PostgreSQL + Real Redis)', () =>
   
   beforeEach(async () => {
     await prisma.idempotencyOperation.deleteMany({ where: { organizationId: orgId } });
-    await redis.flushdb();
+    let cursor = '0';
+    do {
+      const [nextCursor, keys] = await redis.scan(
+        cursor,
+        'MATCH',
+        `idempotency_lock:${orgId}:*`,
+        'COUNT',
+        100
+      );
+      cursor = nextCursor;
+      if (keys.length > 0) await redis.del(...keys);
+    } while (cursor !== '0');
   });
 
   it('1. First operation succeeds and persists to database', async () => {
@@ -47,15 +58,16 @@ describe('Integration: IdempotencyManager (Real PostgreSQL + Real Redis)', () =>
   it('2. Concurrent duplicate requests are serialized (Redis lock)', async () => {
     const opKey = 'op-concurrent';
     // Simulate concurrent requests
-    const results = await Promise.all([
+    const results = await Promise.allSettled([
       manager.acquireLock(orgId, opKey, 'res-2', 'analyze', 10),
       manager.acquireLock(orgId, opKey, 'res-2', 'analyze', 10),
       manager.acquireLock(orgId, opKey, 'res-2', 'analyze', 10)
     ]);
     
     // Only one should acquire the lock
-    const acquiredCount = results.filter(r => r === true).length;
+    const acquiredCount = results.filter(r => r.status === 'fulfilled' && r.value === true).length;
     expect(acquiredCount).toBe(1);
+    expect(results.filter(r => r.status === 'rejected')).toHaveLength(2);
     
     // Check DB has exactly one record
     const dbRecords = await prisma.idempotencyOperation.findMany({
@@ -72,6 +84,48 @@ describe('Integration: IdempotencyManager (Real PostgreSQL + Real Redis)', () =>
     // Attempt again
     const acquired = await manager.acquireLock(orgId, opKey, 'res-3', 'analyze', 10);
     expect(acquired).toBe(false); // Should be false because it is already completed in DB
+  });
+
+  it('delays active-lock contention until the existing operation can be retried', async () => {
+    const opKey = `op-lock-delay-${Date.now()}`;
+    const resourceId = `res-lock-delay-${Date.now()}`;
+    const queueName = `idempotency-delay-${Date.now()}`;
+    await manager.acquireLock(orgId, opKey, resourceId, 'analyze', 2);
+
+    const bullRedis = new IORedis('redis://127.0.0.1:6379', { maxRetriesPerRequest: null });
+    const queue = new Queue(queueName, { connection: bullRedis });
+    const queueEvents = new QueueEvents(queueName, { connection: bullRedis.duplicate() });
+    let processorRuns = 0;
+    const worker = createTenantScopedWorker(
+      queueName,
+      bullRedis,
+      async (job) => {
+        processorRuns++;
+        await manager.acquireLock(orgId, opKey, resourceId, 'analyze', 2);
+        await manager.markCompleted(orgId, opKey, resourceId, 'result-ref');
+        return { resourceId: job.data.resourceId };
+      }
+    );
+
+    try {
+      await Promise.all([worker.waitUntilReady(), queueEvents.waitUntilReady()]);
+      const job = await queue.add('analyze', {
+        organizationId: orgId,
+        resourceId,
+        jobId: 'lock-delay-job',
+        operation: 'analyze',
+      });
+      const result = await job.waitUntilFinished(queueEvents, 10_000);
+
+      expect(result).toEqual({ resourceId });
+      expect(processorRuns).toBe(2);
+      expect(await (await queue.getJob(job.id!))?.getState()).toBe('completed');
+    } finally {
+      await worker.close();
+      await queueEvents.close();
+      await queue.close();
+      await bullRedis.quit();
+    }
   });
 
   it('4. Retries do not repeat irreversible side effects (Failed operations allow retry)', async () => {

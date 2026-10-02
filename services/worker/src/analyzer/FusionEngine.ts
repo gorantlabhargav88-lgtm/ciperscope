@@ -3,7 +3,7 @@ import { logger } from '@ciperscope/logger';
 import { IocNormalizer } from '../cti/IocNormalizer';
 import { ThreatAnalysisNotifier } from '../notifications/NotificationService';
 import type IORedis from 'ioredis';
-import { publishNotification } from '@ciperscope/queue';
+import { completeEmailOutboxEvent, publishNotification } from '@ciperscope/queue';
 
 // Mirrors the literal 'COMPLETED' written by the transaction below, kept as
 // a separate symbol rather than repeating that field-assignment text so
@@ -26,7 +26,7 @@ export class FusionEngine {
     private notificationRedis?: IORedis
   ) {}
 
-  public async evaluate(emailId: string): Promise<void> {
+  public async evaluate(emailId: string, outboxEventId?: string): Promise<void> {
     logger.info({ emailId }, 'Starting Fusion Engine evaluation');
 
     const email = await this.prisma.email.findUnique({
@@ -269,6 +269,8 @@ function toEmailClassification(prediction: string): EmailClassification {
             }
          });
       }
+
+      await completeEmailOutboxEvent(tx, outboxEventId);
 
       // Alert is the only real notification substrate in this codebase
       // (backs both the Alerts page and the header notification bell —

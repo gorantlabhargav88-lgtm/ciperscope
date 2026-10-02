@@ -1,6 +1,9 @@
-import { PrismaClient, EmailClassification } from '@ciperscope/database';
+import { PrismaClient, EmailClassification, Prisma } from '@ciperscope/database';
 import { RawEmailStore } from '@ciperscope/storage';
-import { QueueManager, IdempotencyManager } from '@ciperscope/queue';
+import {
+  ensureEmailOutboxEvent,
+  EmailProcessingStage,
+} from '@ciperscope/queue';
 import { logger } from '@ciperscope/logger';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -20,9 +23,7 @@ export interface IngestionOptions {
 export class EmailIngestionService {
   constructor(
     private prisma: PrismaClient,
-    private storage: RawEmailStore,
-    private idempotencyManager: IdempotencyManager,
-    private queueManager: QueueManager
+    private storage: RawEmailStore
   ) {}
 
   /**
@@ -79,62 +80,79 @@ export class EmailIngestionService {
 
       if (existingEmail) {
         logger.info({ emailId: existingEmail.id, rawSha256 }, 'Duplicate email detected');
-        return { emailId: existingEmail.id, status: existingEmail.ingestionSrc, duplicate: true };
+        if (existingEmail.analysisStatus !== 'COMPLETED' && existingEmail.rawStorageKey) {
+          await this.ensureInitialDispatch(existingEmail, organizationId, requestId, traceId, userId);
+        }
+        return { emailId: existingEmail.id, status: existingEmail.analysisStatus, duplicate: true };
       }
 
-      // 3. Durable Idempotency Integration
-      // In this case, idempotency operationKey can be the SHA256 of the payload.
-      const operationKey = `ingest-${rawSha256}`;
-      // Use a dummy resourceId 'email' until we generate the actual ID.
-      const locked = await this.idempotencyManager.acquireLock(organizationId, operationKey, 'email', 'INGEST_EMAIL');
-      
-      if (!locked) {
-        // Another process is currently handling this exact email hash. 
-        // We will consider it a duplicate to be safe, or we could wait. For now, fail or return duplicate.
-        throw new Error('Concurrent ingestion detected for the same email hash. Please retry if it fails.');
-      }
+      // 3. Store raw bytes. Database uniqueness serializes concurrent
+      // tenant/hash ingestions; Redis is not required for durable ingestion.
+      const storageKey = `${organizationId}/${rawSha256}.eml`;
+      await this.storage.put(storageKey, fs.createReadStream(tempFilePath));
 
       try {
-        // 4. Store raw bytes
-        const storageKey = `${organizationId}/${rawSha256}.eml`;
-        const readStream = fs.createReadStream(tempFilePath);
-        
-        await this.storage.put(storageKey, readStream);
-
-        // 5. Database Persistence
-        const email = await this.prisma.email.create({
-          data: {
+        // 4. Persist the Email and its dispatch intent atomically.
+        const email = await this.prisma.$transaction(async (tx) => {
+          const createdEmail = await tx.email.create({
+            data: {
+              organizationId,
+              ingestionSrc: source,
+              rawStorageKey: storageKey,
+              sha256: rawSha256,
+              classification: EmailClassification.UNKNOWN,
+            },
+          });
+          await ensureEmailOutboxEvent(tx, {
             organizationId,
-            ingestionSrc: source,
-            rawStorageKey: storageKey,
-            sha256: rawSha256,
-            classification: EmailClassification.UNKNOWN,
-            // Additional extraction happens in the worker
+            emailId: createdEmail.id,
+            stage: EmailProcessingStage.PROCESSING,
+            queueName: 'email-processing',
+            jobName: 'process-email',
+            payload: {
+              organizationId,
+              resourceId: createdEmail.id,
+              jobId: `ingest-${createdEmail.id}`,
+              emailId: createdEmail.id,
+              operation: 'ingest',
+              ...(userId ? { actorId: userId } : {}),
+              ...(requestId ? { requestId } : {}),
+              ...(traceId ? { traceId } : {}),
+              storageReference: storageKey,
+              rawSha256,
+              source,
+            },
+          });
+          return createdEmail;
+        });
+
+        return { emailId: email.id, status: email.analysisStatus, duplicate: false };
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          const concurrentEmail = await this.prisma.email.findUnique({
+            where: { organizationId_sha256: { organizationId, sha256: rawSha256 } },
+          });
+          if (concurrentEmail) {
+            if (concurrentEmail.analysisStatus !== 'COMPLETED' && concurrentEmail.rawStorageKey) {
+              await this.ensureInitialDispatch(
+                concurrentEmail,
+                organizationId,
+                requestId,
+                traceId,
+                userId
+              );
+            }
+            return {
+              emailId: concurrentEmail.id,
+              status: concurrentEmail.analysisStatus,
+              duplicate: true,
+            };
           }
-        });
-        // 6. Enqueue BullMQ job
-        const queue = this.queueManager.getQueue('email-processing');
-        await queue.add('process-email', {
-          organizationId,
-          resourceId: email.id,
-          emailId: email.id,
-          jobId: email.id, // Or unique job id
-          operation: 'PROCESS_EMAIL',
-          actorId: userId,
-          requestId,
-          traceId,
-          storageReference: storageKey,
-          rawSha256,
-          source
-        });
-
-        // Mark idempotent op complete
-        await this.idempotencyManager.markCompleted(organizationId, operationKey, 'email', email.id);
-
-        return { emailId: email.id, status: 'RECEIVED', duplicate: false };
-      } catch (err: unknown) {
-        await this.idempotencyManager.markFailed(organizationId, operationKey, 'email', err instanceof Error ? err.message : String(err));
-        throw err;
+        }
+        throw error;
       }
     } finally {
       // Always cleanup temp file
@@ -142,5 +160,36 @@ export class EmailIngestionService {
         await fs.promises.unlink(tempFilePath).catch(() => {});
       }
     }
+  }
+
+  private async ensureInitialDispatch(
+    email: { id: string; rawStorageKey: string | null; sha256: string; ingestionSrc: string },
+    organizationId: string,
+    requestId?: string,
+    traceId?: string,
+    userId?: string
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await ensureEmailOutboxEvent(tx, {
+        organizationId,
+        emailId: email.id,
+        stage: EmailProcessingStage.PROCESSING,
+        queueName: 'email-processing',
+        jobName: 'process-email',
+        payload: {
+          organizationId,
+          resourceId: email.id,
+          jobId: `ingest-${email.id}`,
+          emailId: email.id,
+          operation: 'ingest',
+          ...(userId ? { actorId: userId } : {}),
+          ...(requestId ? { requestId } : {}),
+          ...(traceId ? { traceId } : {}),
+          storageReference: email.rawStorageKey!,
+          rawSha256: email.sha256,
+          source: email.ingestionSrc,
+        },
+      });
+    });
   }
 }

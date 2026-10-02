@@ -6,6 +6,18 @@ import { DkimVerifier, DkimResult } from './DkimVerifier';
 import { DmarcVerifier } from './DmarcVerifier';
 import { splitRawMessage, RawHeader } from './dkim/rawMessage';
 import { logger } from '@ciperscope/logger';
+import {
+  completeEmailOutboxEvent,
+  EmailProcessingStage,
+  ensureEmailOutboxEvent,
+} from '@ciperscope/queue';
+
+interface EmailStageHandoff {
+  outboxEventId?: string;
+  organizationId: string;
+  requestId?: string;
+  traceId?: string;
+}
 
 export class AuthenticationVerifier {
   constructor(
@@ -37,7 +49,7 @@ export class AuthenticationVerifier {
     }
   }
 
-  public async verifyEmail(emailId: string): Promise<void> {
+  public async verifyEmail(emailId: string, handoff?: EmailStageHandoff): Promise<void> {
     const resolver = new DnsResolver(50, 5000); // Max 50 lookups, 5s timeout per lookup
     const spfVerifier = new SpfVerifier(resolver);
     const dkimVerifier = new DkimVerifier(resolver);
@@ -253,6 +265,25 @@ export class AuthenticationVerifier {
             rcode: obs.rcode,
             durationMs: obs.durationMs
           }))
+        });
+      }
+
+      if (handoff) {
+        await completeEmailOutboxEvent(tx, handoff.outboxEventId);
+        await ensureEmailOutboxEvent(tx, {
+          organizationId: handoff.organizationId,
+          emailId,
+          stage: EmailProcessingStage.THREAT_ANALYSIS,
+          queueName: 'email-threat-analysis',
+          jobName: 'threat-analysis',
+          payload: {
+            organizationId: handoff.organizationId,
+            resourceId: emailId,
+            emailId,
+            operation: 'threat-analysis',
+            ...(handoff.requestId ? { requestId: handoff.requestId } : {}),
+            ...(handoff.traceId ? { traceId: handoff.traceId } : {}),
+          },
         });
       }
     });

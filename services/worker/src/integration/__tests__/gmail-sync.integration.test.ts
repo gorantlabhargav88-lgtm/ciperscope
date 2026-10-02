@@ -186,7 +186,7 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
 
   // --- A. Successful synchronization ---
 
-  it('A: a successful sync fetches history from the stored historyId, retrieves raw MIME, and enqueues a real ingestion job', async () => {
+  it('A: a successful sync fetches raw MIME and transactionally persists email plus dispatch intent', async () => {
     const rawContent = `From: sender@example.com\r\nTo: ${emailAddressA}\r\nSubject: Test A\r\n\r\nBody A`;
     historyListMock.mockResolvedValue({ data: { history: [{ messagesAdded: [{ message: { id: 'msgA1' } }] }], historyId: '150' } });
     messagesGetMock.mockResolvedValue({ data: { raw: rawEmailBase64Url(rawContent) } });
@@ -208,17 +208,22 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
     for await (const chunk of storedRaw) chunks.push(chunk as Buffer);
     expect(Buffer.concat(chunks).toString('utf-8')).toBe(rawContent);
 
-    const jobId = `ingest-${emailRow!.id}`;
-    createdJobIds.push(jobId);
-    const job = await queueManager.getQueue('email-processing').getJob(jobId);
-    expect(job).toBeDefined();
-    expect(job!.data.organizationId).toBe(orgA);
-    expect(job!.data.rawSha256).toBe(sha256);
-    expect(job!.data.source).toBe('GMAIL');
-    // The ingestion job payload must never carry OAuth material — only these fields.
-    expect(Object.keys(job!.data).sort()).toEqual(
-      ['emailId', 'jobId', 'operation', 'organizationId', 'rawSha256', 'requestId', 'resourceId', 'source', 'storageReference'].sort()
-    );
+    const dispatchIntent = await prisma.emailDispatchOutbox.findUnique({
+      where: { eventKey: `email:${orgA}:${emailRow!.id}:PROCESSING` },
+    });
+    expect(dispatchIntent?.state).toBe('PENDING');
+    expect(dispatchIntent?.queueName).toBe('email-processing');
+    expect(dispatchIntent?.priority).toBe(3);
+    expect(dispatchIntent?.payload).toMatchObject({
+      organizationId: orgA,
+      resourceId: emailRow!.id,
+      rawSha256: sha256,
+      source: 'GMAIL',
+      outboxEventId: dispatchIntent?.id,
+    });
+    const payloadText = JSON.stringify(dispatchIntent?.payload);
+    expect(payloadText).not.toContain('real-access-token-value-A');
+    expect(payloadText).not.toContain('real-refresh-token-value-A');
   });
 
   // --- Defect regression: authoritative historyId ---
@@ -335,7 +340,7 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
 
   // --- E. Duplicate / idempotency ---
 
-  it('E: processing the same message content twice does not create a duplicate Email row or a duplicate ingestion job', async () => {
+  it('E: processing the same message twice does not duplicate its Email row or outbox event', async () => {
     const rawContent = `From: dup@example.com\r\nTo: ${emailAddressA}\r\nSubject: Dup\r\n\r\nSame body`;
     historyListMock.mockResolvedValue({ data: { history: [{ messagesAdded: [{ message: { id: 'msgDup' } }] }], historyId: '210' } });
     messagesGetMock.mockResolvedValue({ data: { raw: rawEmailBase64Url(rawContent) } });
@@ -355,6 +360,9 @@ describe('GmailSyncWorker.process (Integration — real Postgres + Redis, mocked
 
     const allMatching = await prisma.email.findMany({ where: { sha256, organizationId: orgA } });
     expect(allMatching).toHaveLength(1); // still exactly one — no duplicate created
+    expect(await prisma.emailDispatchOutbox.count({
+      where: { organizationId: orgA, emailId: firstRow!.id, stage: 'PROCESSING' },
+    })).toBe(1);
   });
 
   // --- Security: organization isolation ---
