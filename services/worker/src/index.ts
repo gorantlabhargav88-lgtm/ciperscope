@@ -1,5 +1,13 @@
 import { logger, runWithContext, generateRequestId } from '@ciperscope/logger';
 import { QueueManager, createTenantScopedWorker, IdempotencyManager, EmailIngestionJobPayload, EmailAuthenticationVerificationJobPayload } from '@ciperscope/queue';
+import {
+  completeEmailOutboxEvent,
+  EmailOutboxRelay,
+  EmailProcessingStage,
+  ensureEmailOutboxEvent,
+  isEmailOutboxEventCompleted,
+} from '@ciperscope/queue';
+import crypto from 'crypto';
 import { prisma } from '@ciperscope/database';
 import { env, defaultRawEmailStoragePath } from '@ciperscope/config';
 import IORedis from 'ioredis';
@@ -58,6 +66,7 @@ const reportResourceValidator = async (resourceId: string, organizationId: strin
 };
 
 const notificationService = new WebhookNotificationService(prisma, queueManager);
+const emailOutboxRelay = new EmailOutboxRelay(prisma, queueManager);
 
 export async function start() {
   logger.info('Starting CiperScope Worker Service...');
@@ -98,6 +107,21 @@ export async function start() {
           }
 
           try {
+            if (await isEmailOutboxEventCompleted(
+              prisma,
+              job.data.outboxEventId,
+              job.data.organizationId,
+              job.data.resourceId
+            )) {
+              await idempotencyManager.markCompleted(
+                job.data.organizationId,
+                operationKey,
+                job.data.resourceId,
+                'result-ref-success'
+              );
+              return { skipped: true, reason: 'outbox-completed' };
+            }
+
             // Worker Logic for Phase 7
             // 1. Retrieve the email record
             const emailRecord = await prisma.email.findUnique({
@@ -208,25 +232,25 @@ export async function start() {
                   analysisStatus: 'PROCESSING'
                 }
               });
+              await completeEmailOutboxEvent(tx, job.data.outboxEventId);
+              await ensureEmailOutboxEvent(tx, {
+                organizationId: job.data.organizationId,
+                emailId: job.data.resourceId,
+                stage: EmailProcessingStage.AUTHENTICATION,
+                queueName: 'email-authentication',
+                jobName: 'verify-authentication',
+                payload: {
+                  organizationId: job.data.organizationId,
+                  resourceId: job.data.resourceId,
+                  emailId: job.data.resourceId,
+                  operation: 'verify-authentication',
+                  ...(job.data.requestId ? { requestId: job.data.requestId } : {}),
+                  ...(job.data.traceId ? { traceId: job.data.traceId } : {}),
+                },
+              });
             });
 
             logger.info({ emailId: job.data.resourceId }, 'Email successfully ingested and validated');
-
-            // Dispatch Authentication Verification Phase 9
-            const authQueue = queueManager.getQueue('email-authentication');
-            await authQueue.add(
-              'verify-authentication',
-              {
-                organizationId: job.data.organizationId,
-                resourceId: job.data.resourceId,
-                jobId: job.id as string,
-                operation: 'verify-authentication',
-                emailId: job.data.resourceId,
-                requestId: job.data.requestId,
-                traceId: job.data.traceId
-              },
-              { jobId: `auth-${job.data.resourceId}` }
-            );
 
             await idempotencyManager.markCompleted(
               job.data.organizationId,
@@ -306,29 +330,33 @@ export async function start() {
           }
 
           try {
-            await authVerifier.verifyEmail(job.data.resourceId);
+            if (await isEmailOutboxEventCompleted(
+              prisma,
+              job.data.outboxEventId,
+              job.data.organizationId,
+              job.data.resourceId
+            )) {
+              await idempotencyManager.markCompleted(
+                job.data.organizationId,
+                operationKey,
+                job.data.resourceId,
+                'result-ref-success'
+              );
+              return { skipped: true, reason: 'outbox-completed' };
+            }
+
+            await authVerifier.verifyEmail(job.data.resourceId, {
+              outboxEventId: job.data.outboxEventId,
+              organizationId: job.data.organizationId,
+              requestId: job.data.requestId,
+              traceId: job.data.traceId,
+            });
 
             await idempotencyManager.markCompleted(
               job.data.organizationId,
               operationKey,
               job.data.resourceId,
               'result-ref-success'
-            );
-
-            // Dispatch Threat Analysis Phase 10
-            const threatQueue = queueManager.getQueue('email-threat-analysis');
-            await threatQueue.add(
-              'threat-analysis',
-              {
-                organizationId: job.data.organizationId,
-                resourceId: job.data.resourceId,
-                jobId: job.id as string,
-                operation: 'threat-analysis',
-                emailId: job.data.resourceId,
-                requestId: job.data.requestId,
-                traceId: job.data.traceId
-              },
-              { jobId: `threat-${job.data.resourceId}` }
             );
 
             return { success: true, processedAt: new Date().toISOString() };
@@ -392,29 +420,33 @@ export async function start() {
           }
 
           try {
-            await threatAnalyzer.analyzeEmail(job.data.resourceId);
+            if (await isEmailOutboxEventCompleted(
+              prisma,
+              job.data.outboxEventId,
+              job.data.organizationId,
+              job.data.resourceId
+            )) {
+              await idempotencyManager.markCompleted(
+                job.data.organizationId,
+                operationKey,
+                job.data.resourceId,
+                'result-ref-success'
+              );
+              return { skipped: true, reason: 'outbox-completed' };
+            }
+
+            await threatAnalyzer.analyzeEmail(job.data.resourceId, {
+              outboxEventId: job.data.outboxEventId,
+              organizationId: job.data.organizationId,
+              requestId: job.data.requestId,
+              traceId: job.data.traceId,
+            });
 
             await idempotencyManager.markCompleted(
               job.data.organizationId,
               operationKey,
               job.data.resourceId,
               'result-ref-success'
-            );
-
-            // Dispatch CTI Enrichment Phase 14.3
-            const ctiQueue = queueManager.getQueue('email-cti-enrichment');
-            await ctiQueue.add(
-              'cti-enrichment',
-              {
-                organizationId: job.data.organizationId,
-                resourceId: job.data.resourceId,
-                jobId: job.id as string,
-                operation: 'cti-enrichment',
-                emailId: job.data.resourceId,
-                requestId: job.data.requestId,
-                traceId: job.data.traceId
-              },
-              { jobId: `cti-${job.data.resourceId}` }
             );
 
             return { success: true, processedAt: new Date().toISOString() };
@@ -453,7 +485,11 @@ export async function start() {
         indicatorType: ioc.type,
         emailId,
         organizationId
-      } as CTIEnrichmentJob);
+      } as CTIEnrichmentJob, {
+        jobId: `ioc-${crypto.createHash('sha256')
+          .update(`${organizationId}:${emailId}:${ioc.type}:${ioc.value}`)
+          .digest('hex')}`,
+      });
     },
     ctiReevalCoordinator
   );
@@ -492,29 +528,47 @@ export async function start() {
           }
 
           try {
+            if (await isEmailOutboxEventCompleted(
+              prisma,
+              job.data.outboxEventId,
+              job.data.organizationId,
+              job.data.resourceId
+            )) {
+              await idempotencyManager.markCompleted(
+                job.data.organizationId,
+                operationKey,
+                job.data.resourceId,
+                'result-ref-success'
+              );
+              return { skipped: true, reason: 'outbox-completed' };
+            }
+
             await ctiWorkerLogic.processEmail(job.data.resourceId, job.data.organizationId);
+
+            await prisma.$transaction(async (tx) => {
+              await completeEmailOutboxEvent(tx, job.data.outboxEventId);
+              await ensureEmailOutboxEvent(tx, {
+                organizationId: job.data.organizationId,
+                emailId: job.data.resourceId,
+                stage: EmailProcessingStage.ML_CLASSIFICATION,
+                queueName: 'email-ml-classification',
+                jobName: 'ml-classification',
+                payload: {
+                  organizationId: job.data.organizationId,
+                  resourceId: job.data.resourceId,
+                  emailId: job.data.resourceId,
+                  operation: 'ml-classification',
+                  ...(job.data.requestId ? { requestId: job.data.requestId } : {}),
+                  ...(job.data.traceId ? { traceId: job.data.traceId } : {}),
+                },
+              });
+            });
 
             await idempotencyManager.markCompleted(
               job.data.organizationId,
               operationKey,
               job.data.resourceId,
               'result-ref-success'
-            );
-
-            // Dispatch ML Classification Phase 11
-            const mlQueue = queueManager.getQueue('email-ml-classification');
-            await mlQueue.add(
-              'ml-classification',
-              {
-                organizationId: job.data.organizationId,
-                resourceId: job.data.resourceId,
-                jobId: job.id as string,
-                operation: 'ml-classification',
-                emailId: job.data.resourceId,
-                requestId: job.data.requestId,
-                traceId: job.data.traceId
-              },
-              { jobId: `ml-${job.data.resourceId}` }
             );
 
             return { success: true, processedAt: new Date().toISOString() };
@@ -626,6 +680,21 @@ export async function start() {
           }
 
           try {
+            if (await isEmailOutboxEventCompleted(
+              prisma,
+              job.data.outboxEventId,
+              job.data.organizationId,
+              job.data.resourceId
+            )) {
+              await idempotencyManager.markCompleted(
+                job.data.organizationId,
+                operationKey,
+                job.data.resourceId,
+                'result-ref-success'
+              );
+              return { skipped: true, reason: 'outbox-completed' };
+            }
+
             // Phase 13: ML classification, then Fusion Engine to create Risk
             // Assessment. Phase 7D: a CTI-triggered re-evaluation skips
             // re-classification (see runMlEvaluationStage) since only the CTI
@@ -633,7 +702,7 @@ export async function start() {
             const fusionEngine = new FusionEngine(prisma, notificationService, idempotencyRedis);
             await runMlEvaluationStage(job.data.resourceId, job.data.operation, {
               classifyEmail: (emailId) => mlClassifier.classifyEmail(emailId),
-              evaluateFusion: (emailId) => fusionEngine.evaluate(emailId)
+              evaluateFusion: (emailId) => fusionEngine.evaluate(emailId, job.data.outboxEventId)
             });
 
             await idempotencyManager.markCompleted(
@@ -841,6 +910,7 @@ export async function start() {
   });
 
   logger.info('Workers registered and listening for jobs.');
+  emailOutboxRelay.start();
 
   // Start Metrics Server
   const server = createMetricsServer();
@@ -854,6 +924,7 @@ export async function start() {
 async function shutdown(signal: string) {
   logger.info(`Received ${signal}, shutting down gracefully...`);
   try {
+    await emailOutboxRelay.stop();
     await queueManager.closeAll();
     await prisma.$disconnect();
     logger.info('Graceful shutdown completed');

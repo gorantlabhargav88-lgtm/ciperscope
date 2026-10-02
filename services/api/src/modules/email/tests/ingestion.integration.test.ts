@@ -75,6 +75,14 @@ describe('Email Ingestion API (Integration)', () => {
     const email = await prisma.email.findUnique({ where: { id: json.emailId } });
     expect(email).toBeDefined();
     expect(email?.organizationId).toBe(testOrgId);
+
+    const dispatchIntent = await prisma.emailDispatchOutbox.findUnique({
+      where: {
+        eventKey: `email:${testOrgId}:${json.emailId}:PROCESSING`,
+      },
+    });
+    expect(dispatchIntent?.state).toBe('PENDING');
+    expect(dispatchIntent?.queueName).toBe('email-processing');
     
     const hash = crypto.createHash('sha256').update(fileContent).digest('hex');
     expect(email?.sha256).toBe(hash);
@@ -109,6 +117,11 @@ describe('Email Ingestion API (Integration)', () => {
       payload: form,
     });
     expect(res1.statusCode).toBe(202);
+    const eventKey = `email:${testOrgId}:${res1.json().emailId}:PROCESSING`;
+    await prisma.emailDispatchOutbox.update({
+      where: { eventKey },
+      data: { attemptCount: 1, lastError: 'test Redis dispatch failure' },
+    });
 
     // Create a new stream for the same content
     const form2 = new FormData();
@@ -124,6 +137,47 @@ describe('Email Ingestion API (Integration)', () => {
     expect(res2.statusCode).toBe(200);
     expect(res2.json().duplicate).toBe(true);
     expect(res2.json().emailId).toBe(res1.json().emailId);
+    expect(await prisma.emailDispatchOutbox.count({
+      where: { organizationId: testOrgId, emailId: res1.json().emailId },
+    })).toBe(1);
+    const retainedEvent = await prisma.emailDispatchOutbox.findUniqueOrThrow({ where: { eventKey } });
+    expect(retainedEvent.state).toBe('PENDING');
+    expect(retainedEvent.attemptCount).toBe(1);
+  });
+
+  it('does not recreate dispatch work for an already completed duplicate', async () => {
+    const form = new FormData();
+    const fileContent = `Subject: Completed duplicate ${crypto.randomUUID()}\n\nBody`;
+    form.append('file', Buffer.from(fileContent), { filename: 'completed.eml' });
+    const firstResponse = await server.inject({
+      method: 'POST',
+      url: '/api/v1/emails/ingest',
+      headers: { ...form.getHeaders(), 'x-organization-id': testOrgId },
+      payload: form,
+    });
+    expect(firstResponse.statusCode).toBe(202);
+
+    const emailId = firstResponse.json().emailId as string;
+    const eventKey = `email:${testOrgId}:${emailId}:PROCESSING`;
+    await prisma.$transaction([
+      prisma.email.update({ where: { id: emailId }, data: { analysisStatus: 'COMPLETED' } }),
+      prisma.emailDispatchOutbox.update({ where: { eventKey }, data: { state: 'COMPLETED' } }),
+    ]);
+
+    const duplicateForm = new FormData();
+    duplicateForm.append('file', Buffer.from(fileContent), { filename: 'completed.eml' });
+    const duplicateResponse = await server.inject({
+      method: 'POST',
+      url: '/api/v1/emails/ingest',
+      headers: { ...duplicateForm.getHeaders(), 'x-organization-id': testOrgId },
+      payload: duplicateForm,
+    });
+
+    expect(duplicateResponse.statusCode).toBe(200);
+    expect(duplicateResponse.json()).toMatchObject({ emailId, status: 'COMPLETED', duplicate: true });
+    const sha256 = crypto.createHash('sha256').update(fileContent).digest('hex');
+    expect(await prisma.email.count({ where: { organizationId: testOrgId, sha256 } })).toBe(1);
+    expect(await prisma.emailDispatchOutbox.count({ where: { eventKey } })).toBe(1);
   });
 
   it('should reject empty files', async () => {

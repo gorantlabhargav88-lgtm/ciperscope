@@ -3,7 +3,7 @@ import psl from 'psl';
 import { EmailIngestionService } from './ingestion.service';
 import { prisma, Prisma } from '@ciperscope/database';
 import { LocalRawEmailStore, S3RawEmailStore, RawEmailStore } from '@ciperscope/storage';
-import { QueueManager, IdempotencyManager, createRedisConnection } from '@ciperscope/queue';
+import { QueueManager } from '@ciperscope/queue';
 import { env, defaultRawEmailStoragePath } from '@ciperscope/config';
 import { getRequestContext } from '@ciperscope/logger';
 import { classifyIp } from '@ciperscope/http-client';
@@ -44,16 +44,13 @@ export default async function emailRoutes(server: FastifyInstance) {
   } else {
     storage = new LocalRawEmailStore(defaultRawEmailStoragePath);
   }
-  const redisConnection = createRedisConnection(env.REDIS_URL || 'redis://127.0.0.1:6379');
   const queueManager = new QueueManager(env.REDIS_URL || 'redis://127.0.0.1:6379');
-  const idempotencyManager = new IdempotencyManager(redisConnection, prisma);
 
-  const ingestionService = new EmailIngestionService(prisma, storage, idempotencyManager, queueManager);
+  const ingestionService = new EmailIngestionService(prisma, storage);
 
   // Close connections when Fastify closes
   server.addHook('onClose', async () => {
     await queueManager.closeAll();
-    redisConnection.disconnect();
   });
 
   // GET / — List ingested emails for authenticated tenant with search, filtering, and pagination

@@ -1,10 +1,11 @@
-import { Queue, Worker, QueueEvents, Job, DefaultJobOptions } from 'bullmq';
+import { Queue, Worker, QueueEvents, Job, DefaultJobOptions, DelayedError } from 'bullmq';
 import IORedis from 'ioredis';
 import { logger } from '@ciperscope/logger';
 import { PrismaClient, IdempotencyOperationStatus } from '@ciperscope/database';
 
 export * from './cti-job';
 export * from './notificationChannel';
+export * from './emailOutbox';
 
 // Standard connection options
 export const createRedisConnection = (url: string) => {
@@ -37,6 +38,9 @@ export class QueueManager {
 
   constructor(redisUrl: string) {
     this.connection = createRedisConnection(redisUrl);
+    this.connection.on('error', (err) => {
+      logger.error({ err }, 'Queue Redis connection error');
+    });
   }
 
   public getQueue(name: string): Queue {
@@ -122,7 +126,13 @@ export class IdempotencyManager {
 
     const lockAcquired = await this.redis.set(redisKey, 'locked', 'EX', ttlSeconds, 'NX');
     if (!lockAcquired) {
-      return false;
+      const retryAfterMs = await this.redis.pttl(redisKey);
+      throw new IdempotencyLockBusyError(
+        organizationId,
+        operationKey,
+        resourceId,
+        Math.max(1_000, retryAfterMs)
+      );
     }
 
     try {
@@ -256,11 +266,24 @@ export class IdempotencyManager {
   }
 }
 
+export class IdempotencyLockBusyError extends Error {
+  constructor(
+    organizationId: string,
+    operationKey: string,
+    resourceId: string,
+    public readonly retryAfterMs: number
+  ) {
+    super(`Operation is already in progress: ${organizationId}/${operationKey}/${resourceId}`);
+    this.name = 'IdempotencyLockBusyError';
+  }
+}
+
 export interface TenantAwareJobPayload {
   organizationId: string;
   resourceId: string;
   jobId: string;
   operation: string;
+  outboxEventId?: string;
   actorId?: string;
   requestId?: string;
   traceId?: string;
@@ -339,7 +362,17 @@ export const createTenantScopedWorker = <T extends TenantAwareJobPayload, R>(
 ): Worker => {
   const wrappedProcessor = wrapTenantScopedProcessor(processor, resourceValidator);
 
-  return new Worker<T, R>(name, wrappedProcessor, {
+  return new Worker<T, R>(name, async (job) => {
+    try {
+      return await wrappedProcessor(job);
+    } catch (error) {
+      if (error instanceof IdempotencyLockBusyError && job.token) {
+        await job.moveToDelayed(Date.now() + error.retryAfterMs, job.token);
+        throw new DelayedError();
+      }
+      throw error;
+    }
+  }, {
     connection,
     concurrency,
   });

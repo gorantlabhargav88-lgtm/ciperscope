@@ -7,6 +7,7 @@ const mockRedis = {
   set: vi.fn(),
   get: vi.fn(),
   del: vi.fn(),
+  pttl: vi.fn(),
 };
 
 // Mock Prisma
@@ -50,12 +51,12 @@ describe('IdempotencyManager', () => {
     expect(mockRedis.del).toHaveBeenCalledWith('idempotency_lock:org-1:op-key:res-1');
   });
 
-  it('3. Concurrent duplicate operations (Redis lock prevents DB check)', async () => {
+  it('3. Concurrent duplicate operations retry instead of succeeding while the lock is held', async () => {
     mockRedis.set.mockResolvedValue(null); // Lock not acquired
+    mockRedis.pttl.mockResolvedValue(2_000);
 
-    const result = await manager.acquireLock('org-1', 'op-key', 'res-1', 'analyze');
-    
-    expect(result).toBe(false);
+    await expect(manager.acquireLock('org-1', 'op-key', 'res-1', 'analyze'))
+      .rejects.toThrow('Operation is already in progress');
     expect(mockPrisma.idempotencyOperation.findUnique).not.toHaveBeenCalled();
   });
 
@@ -186,4 +187,3 @@ describe('Worker Tenant Isolation Security Tests', () => {
     await expect(result).rejects.toThrow('Tenant isolation failed: Missing resourceId in job payload.');
   });
 });
-

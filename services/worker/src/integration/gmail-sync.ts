@@ -3,7 +3,12 @@ import { prisma } from '@ciperscope/database';
 import { env, decryptToken, encryptToken, requireGmailTokenEncryptionKey } from '@ciperscope/config';
 import { logger, generateRequestId } from '@ciperscope/logger';
 import { RawEmailStore } from '@ciperscope/storage';
-import { QueueManager, EmailIngestionJobPayload, createRedisConnection, publishNotification } from '@ciperscope/queue';
+import {
+  createRedisConnection,
+  ensureEmailOutboxEvent,
+  EmailProcessingStage,
+  publishNotification,
+} from '@ciperscope/queue';
 import IORedis from 'ioredis';
 import crypto from 'crypto';
 import { Readable } from 'node:stream';
@@ -25,11 +30,9 @@ interface GoogleApiError {
 }
 
 export class GmailSyncWorker {
-  private queueManager: QueueManager;
   private notificationRedis: IORedis;
 
   constructor(private rawEmailStore: RawEmailStore) {
-    this.queueManager = new QueueManager(env.REDIS_URL);
     // A dedicated connection, created once here (GmailSyncWorker itself is
     // instantiated once at worker startup, never per-job — see
     // services/worker/src/index.ts) — same self-contained pattern this
@@ -116,8 +119,6 @@ export class GmailSyncWorker {
     });
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-    const emailQueue = this.queueManager.getQueue('email-processing');
-
     // Gmail's history.list is paginated: a busy mailbox can have more history
     // records than fit on one page. Per Google's own documented contract,
     // "If you receive no nextPageToken in the response, there are no updates
@@ -260,41 +261,69 @@ export class GmailSyncWorker {
               const existing = await prisma.email.findFirst({
                 where: { sha256, organizationId: integration.organizationId }
               });
+              const priority = 3;
 
-              if (existing) continue;
+              if (existing) {
+                if (existing.analysisStatus !== 'COMPLETED' && existing.rawStorageKey) {
+                  await prisma.$transaction((tx) => ensureEmailOutboxEvent(tx, {
+                    organizationId: integration.organizationId,
+                    emailId: existing.id,
+                    stage: EmailProcessingStage.PROCESSING,
+                    queueName: 'email-processing',
+                    jobName: 'process-email',
+                    priority,
+                    payload: {
+                      organizationId: integration.organizationId,
+                      resourceId: existing.id,
+                      jobId: `ingest-${existing.id}`,
+                      emailId: existing.id,
+                      operation: 'ingest',
+                      requestId: generateRequestId(),
+                      storageReference: existing.rawStorageKey,
+                      rawSha256: existing.sha256,
+                      source: existing.ingestionSrc,
+                    },
+                  }));
+                }
+                continue;
+              }
 
               const storageKey = `emails/${integration.organizationId}/${sha256}.eml`;
               await this.rawEmailStore.put(storageKey, Readable.from(rawDecoded));
 
-              const priority = 3;
-
-              const emailRecord = await prisma.email.create({
-                data: {
+              const requestId = generateRequestId();
+              await prisma.$transaction(async (tx) => {
+                const emailRecord = await tx.email.create({
+                  data: {
+                    organizationId: integration.organizationId,
+                    rawStorageKey: storageKey,
+                    sha256,
+                    analysisStatus: 'PENDING',
+                    ingestionSrc: 'GMAIL',
+                  }
+                });
+                await ensureEmailOutboxEvent(tx, {
                   organizationId: integration.organizationId,
-                  rawStorageKey: storageKey,
-                  sha256,
-                  analysisStatus: 'PENDING'
-                }
+                  emailId: emailRecord.id,
+                  stage: EmailProcessingStage.PROCESSING,
+                  queueName: 'email-processing',
+                  jobName: 'process-email',
+                  priority,
+                  payload: {
+                    organizationId: integration.organizationId,
+                    resourceId: emailRecord.id,
+                    jobId: `ingest-${emailRecord.id}`,
+                    emailId: emailRecord.id,
+                    operation: 'ingest',
+                    requestId,
+                    storageReference: storageKey,
+                    rawSha256: sha256,
+                    source: 'GMAIL',
+                  },
+                });
               });
 
-              const payload: EmailIngestionJobPayload = {
-                organizationId: integration.organizationId,
-                resourceId: emailRecord.id,
-                jobId: `ingest-${emailRecord.id}`,
-                operation: 'ingest',
-                emailId: emailRecord.id,
-                storageReference: storageKey,
-                rawSha256: sha256,
-                source: 'GMAIL',
-                requestId: generateRequestId()
-              };
-
-              await emailQueue.add('ingest', payload, {
-                priority,
-                jobId: payload.jobId
-              });
-
-              logger.info({ emailId: emailRecord.id, messageId }, 'Enqueued Gmail message for processing');
+              logger.info({ organizationId: integration.organizationId, messageId }, 'Persisted Gmail message and processing intent');
 
             } catch (err) {
               logger.error({ err, messageId }, 'Failed to process message from history');
